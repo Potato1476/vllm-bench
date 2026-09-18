@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars. That file is gitignored.
+
+region      = "us-east-1"
+project     = "vllm-bench"
+project_tag = "da51"
+owner       = "bao"
+
+# REQUIRED. With an empty list the budget is created but notifies nobody, so the
+# precondition in budget.tf refuses the apply.
+budget_emails = ["ban@example.com", "minh@example.com"]
+
+budget_limit_usd = 200

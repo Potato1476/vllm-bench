@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars. That file is gitignored.
+
+cluster_name = "da51-lab"
+k8s_version  = "1.31"
+project_tag  = "da51"
+owner        = "bao"
+
+# REQUIRED -- the variable has no default. One /32 per team member. With nodes on public
+# subnets this is the cluster's only front door. Residential IPs rotate; `make fix-cidr`
+# rewrites this from your current address.
+#   curl -s https://checkip.amazonaws.com
+allowed_cidrs = ["203.0.113.10/32", "203.0.113.11/32"]
+
+cpu_instance_type = "m7i.large"
+
+# L4 24GB, $0.8048/hr. Ada, so FP8 is available.
+gpu_instance_type = "g6.xlarge"
+# 0 outside a measurement window, 1 for normal work, 3 for the scale-verification session.
+gpu_desired = 0
+
+# L40S 48GB, $1.861/hr. Raised to 1 for the single four-hour comparison session in week 2.
+gpu_l40s_instance_type = "g6e.xlarge"
+gpu_l40s_desired       = 0
+
+# Both GPU groups draw from one regional pool at 4 vCPU per node. Raise this only after
+# the quota increase is actually granted.
+gpu_vcpu_quota = 16

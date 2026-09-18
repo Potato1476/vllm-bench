@@ -1,0 +1,39 @@
+# Recording rules turn the raw histograms into the handful of series the dashboards and
+# alerts actually read. Computing a p99 from buckets on every dashboard refresh is both
+# slow and easy to get subtly different in two places.
+#
+# METRIC NAMES ARE NOT GUARANTEED. vLLM renames series between versions, and these were
+# written against the names in the runbook, not against a live v0.29.0 engine. Run
+# `make audit-metrics` once the engine is up and fix anything reported MISSING before
+# trusting a single number that comes out of here.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vllm-recording
+  namespace: monitoring
+spec:
+  groups:
+    - name: vllm.latency
+      interval: 15s
+      rules:
+        - record: vllm:ttft_seconds:p99
+          expr: histogram_quantile(0.99, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
+
+        - record: vllm:ttft_seconds:p95
+          expr: histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
+
+        - record: vllm:tpot_seconds:p99
+          expr: histogram_quantile(0.99, sum by (le) (rate(vllm:time_per_output_token_seconds_bucket[2m])))
+
+        - record: vllm:output_tokens:rate1m
+          expr: sum(rate(vllm:generation_tokens_total[1m]))
+
+        # clamp_min keeps the ratio defined when the engine is idle: with no traffic at
+        # all both sums are zero, and 0/0 would render as a gap that looks like an
+        # outage rather than as silence.
+        - record: vllm:error_ratio:rate5m
+          expr: |
+            sum(rate(vllm:request_failure_total[5m]))
+            / clamp_min(
+                sum(rate(vllm:request_success_total[5m]))
+                + sum(rate(vllm:request_failure_total[5m])), 0.001)

@@ -1,0 +1,91 @@
+# GPU Operator, DCGM only.
+#
+# Chart: nvidia/gpu-operator v26.7.0
+#
+# The node runs ami_type = AL2023_x86_64_NVIDIA, which already ships the NVIDIA driver,
+# the container toolkit and the device plugin. Letting the Operator install its own
+# copies gives the node two drivers, and the symptom is that the GPU disappears from
+# `kubectl describe node` entirely. This is the most expensive mistake available in the
+# project, so all three stay off and we take only DCGM metrics and NFD.
+driver:
+  enabled: false
+toolkit:
+  enabled: false
+# The device plugin is ENABLED, unlike the driver and toolkit.
+#
+# It is what advertises nvidia.com/gpu to the scheduler, and Kubernetes hands out a GPU
+# whole. The lab runs a class-A and a class-B model on one card to save credit, and two
+# pods cannot both hold nvidia.com/gpu: 1 -- so the plugin has to be configured for
+# sharing, and only the Operator's copy is configurable.
+#
+# VERIFY ON FIRST gpu-up that exactly ONE device plugin DaemonSet exists:
+#   kubectl get ds -A | grep -i nvidia
+# Two of them (this one plus an EKS nvidia-device-plugin addon, or one baked into the
+# AMI) fight over the same device and the symptom is intermittent scheduling failures.
+devicePlugin:
+  enabled: true
+  config:
+    create: true
+    name: device-plugin-config
+    default: shared
+    data:
+      shared: |-
+        version: v1
+        flags:
+          migStrategy: none
+        sharing:
+          timeSlicing:
+            resources:
+              - name: nvidia.com/gpu
+                # Two logical GPUs from one physical card. This is TIME-SLICING, not
+                # partitioning: the two pods take turns on the whole device and memory is
+                # NOT isolated, so the sum of their --gpu-memory-utilization must stay
+                # below 1 or the second model OOMs the first.
+                #
+                # It also adds latency jitter, which lands directly in the p95 this
+                # project exists to measure. That is why the capacity plan takes three
+                # readings -- large model alone, small model alone, both together -- and
+                # reports the interference between them rather than hiding it.
+                replicas: 2
+
+# VERIFY ON FIRST gpu-up:
+#   kubectl get nodes -l workload=inference \
+#     -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}'
+# Expect "2" with time-slicing on, not "1". A "1" means the sharing config was not picked
+# up; an empty value means no device plugin is running at all.
+
+# Labels the node with its PCI ids. DCGM's own placement depends on those labels.
+nfd:
+  enabled: true
+
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    # Left to the chart rather than hand-written. The exporter's Service is created by
+    # the operator from a ClusterPolicy at runtime, not by a chart template, so its port
+    # name cannot be read from the repo -- and a ServiceMonitor that names the port
+    # wrongly fails silently, as a target that simply never appears.
+    enabled: true
+    # 5s because a benchmark run is minutes long and GPU state changes within a single
+    # batch. The 15s default would smooth away the transients the analysis depends on.
+    interval: 5s
+    scrapeTimeout: 4s
+    relabelings:
+      # Without this the series carry a pod name that changes on every restart, and
+      # joining GPU metrics to a node across a session becomes impossible.
+      - sourceLabels: [__meta_kubernetes_pod_node_name]
+        targetLabel: node
+
+# The chart default already tolerates nvidia.com/gpu=...:NoSchedule; it is repeated here
+# so that a future change to the taint in eks.tf has an obvious place to be mirrored.
+daemonsets:
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+# The operator's own controller is not a GPU workload and must not consume the
+# measurement node's four vCPU.
+operator:
+  nodeSelector:
+    workload: tooling

@@ -1,0 +1,58 @@
+# Two tiers, deliberately.
+#
+# vllm.slo fires when a user would notice. vllm.cause never pages: it records the engine
+# state that explains a latency number. A full KV-Cache at high load is the system
+# working as designed, not an incident -- treating it as one is how an alert channel
+# stops being read.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vllm-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: vllm.slo
+      rules:
+        # Both conditions together: errors alone can be a bad client, slow alone can be
+        # a deliberate overload test. Together they mean the service is failing.
+        - alert: VllmSloBurnFast
+          expr: vllm:error_ratio:rate5m > 0.02 and vllm:ttft_seconds:p99 > 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "SLO burning fast: errors above 2% while TTFT p99 is over 1s"
+
+        - alert: VllmSloBurnSlow
+          expr: avg_over_time(vllm:ttft_seconds:p99[30m]) > 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TTFT p99 has been over 1s for half an hour"
+
+    - name: vllm.cause
+      rules:
+        - alert: KvCacheSaturated
+          expr: vllm:gpu_cache_usage_perc > 0.95
+          for: 2m
+          labels:
+            severity: info
+          annotations:
+            summary: "KV-Cache nearly full -- context for a latency reading, not a fault"
+
+        - alert: RequestsQueueing
+          expr: vllm:num_requests_waiting > 0
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "Requests are queueing -- offered load is past what the engine absorbs"
+
+        - alert: GpuThermalThrottle
+          expr: DCGM_FI_DEV_GPU_TEMP > 85
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "GPU over 85C -- sustained capacity may be below the short-run number"

@@ -1,0 +1,40 @@
+# --- Terraform ---
+# State holds resource IDs and can hold plaintext values; it belongs in S3, never in git.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl.bak
+crash.log
+crash.*.log
+*.tfplan
+*.tfplan.*
+
+# tfvars carry per-account values (bucket names, owner tags). Only the example is tracked.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+# --- Benchmark output ---
+# Raw runs are large and regenerable; only curated files under reports/ get committed.
+results/
+
+# --- Secrets / local env ---
+*.env
+.env
+.envrc
+kubeconfig
+*.pem
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+.rendered/

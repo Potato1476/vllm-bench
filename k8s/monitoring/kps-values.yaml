@@ -1,0 +1,155 @@
+# kube-prometheus-stack, sized for ONE m5.xlarge tooling node.
+#
+# Chart: prometheus-community/kube-prometheus-stack 91.4.1
+#
+# CPU budget for that node (4 vCPU, ~3920m allocatable):
+#   bench-runner (week 3)   2000m  reserved -- a load generator that gets throttled
+#                                  reports TTFT higher than reality
+#   monitoring stack below   ~650m requested
+#   kube-system daemonsets   ~200m
+#   headroom                ~1000m
+# Anything added here comes out of the benchmark's share, so every request is explicit.
+
+prometheus:
+  prometheusSpec:
+    # The cluster is destroyed at the end of every session, so it never lives long
+    # enough for retention to matter. What matters is the PV size, which is billed.
+    # Per-run time series are exported to S3 before session-end -- that is the copy
+    # that actually survives.
+    retention: 7d
+    scrapeInterval: 15s
+
+    # Without these two, Prometheus only picks up ServiceMonitors and rules carrying
+    # this Helm release's labels, and the hand-written ones in other namespaces are
+    # ignored -- silently, as targets that never appear.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    ruleNamespaceSelector: {}
+
+    nodeSelector:
+      workload: tooling
+
+    resources:
+      requests:
+        cpu: 300m
+        memory: 2Gi
+      limits:
+        # No CPU limit on purpose. A throttled Prometheus misses scrapes, and the gaps
+        # land in exactly the data used to explain a benchmark result. Memory is
+        # limited because exceeding it kills the pod rather than slowing it.
+        memory: 3Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+grafana:
+  nodeSelector:
+    workload: tooling
+  # Never a literal password in git. `make monitoring-secret` generates one and creates
+  # this Secret; the value is printed once and not stored in the repo.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  defaultDashboardsTimezone: Asia/Ho_Chi_Minh
+  sidecar:
+    dashboards:
+      enabled: true
+      # Dashboards load from any ConfigMap carrying this label, which is how the JSON in
+      # observability/dashboards/ gets in without a manual import.
+      label: grafana_dashboard
+      searchNamespace: ALL
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      workload: tooling
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  # Chart defaults, plus one rule of our own. Overriding this key replaces the whole
+  # block, so the defaults are reproduced rather than assumed.
+  config:
+    global:
+      resolve_timeout: 5m
+    inhibit_rules:
+      - source_matchers: ["severity = critical"]
+        target_matchers: ["severity =~ warning|info"]
+        equal: ["namespace", "alertname"]
+      - source_matchers: ["severity = warning"]
+        target_matchers: ["severity = info"]
+        equal: ["namespace", "alertname"]
+      - source_matchers: ["alertname = InfoInhibitor"]
+        target_matchers: ["severity = info"]
+        equal: ["namespace"]
+      - target_matchers: ["alertname = InfoInhibitor"]
+      # Ours: `make gpu-down` deliberately removes the GPU node, which takes the vLLM
+      # and DCGM targets with it. Without this, every end of day pages as if the
+      # service had failed, and real alerts stop being read.
+      - source_matchers: ["alertname = TargetDown"]
+        target_matchers: ['severity =~ "critical|warning"']
+        equal: ["namespace"]
+    route:
+      group_by: ["namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: "null"
+      routes:
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+    receivers:
+      - name: "null"
+    templates:
+      - /etc/alertmanager/config/*.tmpl
+
+prometheusOperator:
+  nodeSelector:
+    workload: tooling
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+kube-state-metrics:
+  nodeSelector:
+    workload: tooling
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+prometheus-node-exporter:
+  # Must run on the GPU node too, otherwise the machine being measured is the one
+  # machine with no host-level metrics.
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

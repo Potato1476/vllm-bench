@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-svc
+  namespace: inference
+  labels:
+    # The week-2 ServiceMonitor selects on this label, and it must match the SERVICE,
+    # not the pod. Changing it silently breaks metric collection.
+    app: vllm-server
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-server
+  ports:
+    # The port MUST be named: the ServiceMonitor references it by name, not by number.
+    - name: http
+      port: 8000
+      targetPort: http

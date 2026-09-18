@@ -1,0 +1,18 @@
+---
+extends: default
+
+rules:
+  line-length:
+    max: 120
+    level: error
+  # Kubernetes manifests use bare `on:` keys (and y/n/yes/no in some CRDs), which the
+  # YAML 1.1 truthy rule flags as booleans. Disabling avoids rewriting valid manifests.
+  truthy: disable
+  document-start:
+    present: false
+    level: warning
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
