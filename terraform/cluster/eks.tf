@@ -89,6 +89,7 @@ module "eks" {
     # mistaken for a saturated engine.
     cpu = {
       name           = "cpu"
+      subnet_ids     = local.node_subnet_ids
       instance_types = [var.cpu_instance_type]
       capacity_type  = "ON_DEMAND"
 
@@ -119,6 +120,7 @@ module "eks" {
     # model in the plan depends on.
     gpu = {
       name           = "gpu"
+      subnet_ids     = local.node_subnet_ids
       instance_types = [var.gpu_instance_type]
       capacity_type  = "ON_DEMAND"
 
@@ -166,6 +168,7 @@ module "eks" {
     # it is worth 7.44 USD. Left at 0 for the rest of the project.
     gpu-l40s = {
       name           = "gpu-l40s"
+      subnet_ids     = local.node_subnet_ids
       instance_types = [var.gpu_l40s_instance_type]
       capacity_type  = "ON_DEMAND"
 

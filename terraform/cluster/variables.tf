@@ -40,6 +40,26 @@ variable "allowed_cidrs" {
   }
 }
 
+# EKS itself requires subnets in at least two Availability Zones -- that is an AWS
+# constraint on the control plane and cannot be avoided. Subnets, route tables and the
+# internet gateway are free, so spanning two costs nothing.
+#
+# What this controls is where the NODES go. Pinning every node group to one AZ keeps the
+# benchmark on one network segment: no cross-AZ hop between the load generator and the
+# engine, and no chance of an EBS volume being stranded in the AZ a replacement node did
+# not come up in. Set to 2 for the week-6 HA demo, which is the one time the point is to
+# show the topology surviving an AZ.
+variable "node_subnet_count" {
+  description = "How many AZs the node groups may use. 1 for measurement work, 2 for the HA demo."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.node_subnet_count)
+    error_message = "node_subnet_count must be 1 or 2."
+  }
+}
+
 # --- CPU node group ---------------------------------------------------------
 variable "cpu_instance_type" {
   description = "Runs the gateway, guardrail, Prometheus and Grafana. m7i.large is what the budget assumes."

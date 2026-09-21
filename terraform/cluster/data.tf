@@ -18,6 +18,9 @@ locals {
   artifacts_bucket  = data.terraform_remote_state.core.outputs.artifacts_bucket_name
   artifacts_arn     = data.terraform_remote_state.core.outputs.artifacts_bucket_arn
 
+  # Subnets the NODE GROUPS may use. The cluster itself still gets all of them.
+  node_subnet_ids = slice(local.public_subnet_ids, 0, var.node_subnet_count)
+
   # Every G-family instance in this account draws from one regional vCPU quota. Both GPU
   # node groups use 4 vCPU per node, so the two desired counts compete for the same pool.
   gpu_vcpus_requested = (var.gpu_desired + var.gpu_l40s_desired) * 4
