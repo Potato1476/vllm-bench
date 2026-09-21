@@ -13,28 +13,69 @@ spec:
   groups:
     - name: vllm.slo
       rules:
-        # Both conditions together: errors alone can be a bad client, slow alone can be
-        # a deliberate overload test. Together they mean the service is failing.
-        - alert: VllmSloBurnFast
-          expr: vllm:error_ratio:rate5m > 0.02 and vllm:ttft_seconds:p99 > 1
+        # Thresholds come from the SLO table and differ by class, so the alerts are split
+        # rather than sharing one number. Class A streams and is judged on time-to-first-
+        # token; class B returns a JSON blob in one piece and only end-to-end matters.
+        #
+        # Both conditions together on purpose: errors alone can be a bad client, and slow
+        # alone can be a deliberate overload test. Together they mean the service is
+        # failing the people using it.
+        # Latency only, for now. The error term that belongs here needs a failure
+        # counter, and vLLM v0.29 exports none -- see recording.yaml. Add
+        # `and <gateway error ratio> > 0.02` once LiteLLM is in place.
+        - alert: VllmSloBurnFastClassA
+          expr: vllm:ttft_seconds:p95{model_class="a"} > 0.8
           for: 2m
           labels:
             severity: critical
+            request_class: a
           annotations:
-            summary: "SLO burning fast: errors above 2% while TTFT p99 is over 1s"
+            summary: "Class A TTFT p95 is over the 800ms objective"
 
-        - alert: VllmSloBurnSlow
-          expr: avg_over_time(vllm:ttft_seconds:p99[30m]) > 1
+        - alert: VllmSloBurnFastClassB
+          expr: vllm:e2e_seconds:p95{model_class="b"} > 1.5
+          for: 2m
+          labels:
+            severity: critical
+            request_class: b
+          annotations:
+            summary: "Class B end-to-end p95 is over the 1.5s objective"
+
+        # The slow-burn pair. A latency objective missed for half an hour is a ticket,
+        # not a page -- but it must not be invisible either.
+        - alert: VllmSloBurnSlowClassA
+          expr: avg_over_time(vllm:e2e_seconds:p95{model_class="a"}[30m]) > 3
           for: 30m
           labels:
             severity: warning
+            request_class: a
           annotations:
-            summary: "TTFT p99 has been over 1s for half an hour"
+            summary: "Class A end-to-end p95 has been over 3s for half an hour"
+
+        - alert: VllmSloBurnSlowClassB
+          expr: avg_over_time(vllm:e2e_seconds:p95{model_class="b"}[30m]) > 1.5
+          for: 30m
+          labels:
+            severity: warning
+            request_class: b
+          annotations:
+            summary: "Class B end-to-end p95 has been over 1.5s for half an hour"
+
+        # Class A only: a stuttering stream is a distinct failure from a slow one, and
+        # it points at a different fix (decode batch too large).
+        - alert: VllmInterTokenLatencyClassA
+          expr: vllm:tpot_seconds:p99{model_class="a"} > 0.06
+          for: 5m
+          labels:
+            severity: warning
+            request_class: a
+          annotations:
+            summary: "Class A inter-token latency p99 over the 60ms objective -- the stream stutters"
 
     - name: vllm.cause
       rules:
         - alert: KvCacheSaturated
-          expr: vllm:gpu_cache_usage_perc > 0.95
+          expr: vllm:kv_cache_usage_perc > 0.95
           for: 2m
           labels:
             severity: info

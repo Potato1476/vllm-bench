@@ -2,6 +2,11 @@
 # alerts actually read. Computing a p99 from buckets on every dashboard refresh is both
 # slow and easy to get subtly different in two places.
 #
+# EVERY RULE AGGREGATES BY model_name. With two models on one card, `sum by (le)` alone
+# would merge a 7B class-A histogram with a 1.5B class-B one and produce a p99 that
+# describes neither. vLLM tags every series with model_name, so keeping that label is
+# what makes the two classes separable -- and the SLOs are per class.
+#
 # METRIC NAMES ARE NOT GUARANTEED. vLLM renames series between versions, and these were
 # written against the names in the runbook, not against a live v0.29.0 engine. Run
 # `make audit-metrics` once the engine is up and fix anything reported MISSING before
@@ -17,23 +22,38 @@ spec:
       interval: 15s
       rules:
         - record: vllm:ttft_seconds:p99
-          expr: histogram_quantile(0.99, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, model_name, model_class) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
 
         - record: vllm:ttft_seconds:p95
-          expr: histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model_name, model_class) (rate(vllm:time_to_first_token_seconds_bucket[2m])))
 
         - record: vllm:tpot_seconds:p99
-          expr: histogram_quantile(0.99, sum by (le) (rate(vllm:time_per_output_token_seconds_bucket[2m])))
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, model_name, model_class) (rate(vllm:inter_token_latency_seconds_bucket[2m])))
+
+        # The SLO table states both classes in terms of end-to-end latency (A < 3s,
+        # B < 1.5s), so it has to be recorded or those two numbers cannot be checked
+        # against anything.
+        - record: vllm:e2e_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model_name, model_class) (rate(vllm:e2e_request_latency_seconds_bucket[2m])))
 
         - record: vllm:output_tokens:rate1m
-          expr: sum(rate(vllm:generation_tokens_total[1m]))
+          expr: sum by (model_name, model_class) (rate(vllm:generation_tokens_total[1m]))
 
-        # clamp_min keeps the ratio defined when the engine is idle: with no traffic at
-        # all both sums are zero, and 0/0 would render as a gap that looks like an
-        # outage rather than as silence.
-        - record: vllm:error_ratio:rate5m
-          expr: |
-            sum(rate(vllm:request_failure_total[5m]))
-            / clamp_min(
-                sum(rate(vllm:request_success_total[5m]))
-                + sum(rate(vllm:request_failure_total[5m])), 0.001)
+        # NO error-ratio rule. vLLM v0.29 exports no failure counter at all -- there is
+        # no vllm:request_failure_total, only vllm:request_success_total. An error rate
+        # therefore cannot be computed from engine metrics.
+        #
+        # That is arguably where it belongs anyway: the SLO in the plan is "5xx and
+        # timeouts", which is a gateway-level view. A request the engine never received
+        # is still a failure to the caller, and only LiteLLM can see it. Add the rule
+        # here once the gateway exposes its own counters.
+        - record: vllm:request_rate:rate1m
+          expr: sum by (model_name, model_class) (rate(vllm:request_success_total[1m]))

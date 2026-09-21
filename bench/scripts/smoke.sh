@@ -6,10 +6,17 @@
 # recording.
 set -euo pipefail
 
+# CLASS picks which model to smoke-test. The chart names one Deployment and one Service
+# per class, so both are derived from it rather than passed separately and drifting.
+CLASS=${CLASS:-a}
 NS=${NS:-inference}
-SVC=${SVC:-vllm-svc}
+SVC=${SVC:-vllm-$CLASS}
 PORT=${PORT:-8000}
-MODEL=${MODEL:-qwen2.5-7b}
+case "$CLASS" in
+  a) MODEL=${MODEL:-qwen2.5-7b} ;;
+  b) MODEL=${MODEL:-qwen2.5-1.5b} ;;
+  *) echo "CLASS must be a or b" >&2; exit 2 ;;
+esac
 OUT=${OUT:-reports}
 
 pf_pid=""
@@ -19,9 +26,9 @@ trap cleanup EXIT
 say() { printf '\n=== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-say "0. pod is ready"
-kubectl -n "$NS" wait --for=condition=ready pod -l app=vllm-server --timeout=1800s \
-  || fail "vLLM pod never became ready -- check: kubectl -n $NS describe pod -l app=vllm-server"
+say "0. pod is ready (class $CLASS, service $SVC, model $MODEL)"
+kubectl -n "$NS" wait --for=condition=ready pod -l app=vllm-server,model-class="$CLASS" --timeout=1800s \
+  || fail "vLLM pod never became ready -- check: kubectl -n $NS describe pod -l model-class=$CLASS"
 
 kubectl -n "$NS" port-forward "svc/$SVC" "${PORT}:8000" >/dev/null 2>&1 &
 pf_pid=$!
@@ -37,7 +44,7 @@ echo "  served model: $got"
 [ "$got" = "$MODEL" ] || fail "expected model name '$MODEL', got '$got'"
 
 say "2. the GPU is actually the one we think it is"
-kubectl -n "$NS" exec deploy/vllm-server -- nvidia-smi \
+kubectl -n "$NS" exec "deploy/vllm-$CLASS" -- nvidia-smi \
   --query-gpu=name,memory.used,memory.total --format=csv,noheader \
   || fail "nvidia-smi failed inside the container"
 
@@ -73,13 +80,13 @@ echo "  time to first byte: ${ttft}s"
 say "6. metrics endpoint exposes the vllm: series"
 mkdir -p "$OUT"
 curl -s "localhost:${PORT}/metrics" | grep '^vllm:' | cut -d'{' -f1 | sort -u \
-  > "$OUT/w1-metric-names.txt"
-n=$(wc -l < "$OUT/w1-metric-names.txt" | tr -d ' ')
+  > "$OUT/w1-metric-names-$CLASS.txt"
+n=$(wc -l < "$OUT/w1-metric-names-$CLASS.txt" | tr -d ' ')
 echo "  $n distinct vllm: metrics -> $OUT/w1-metric-names.txt"
 [ "$n" -gt 5 ] || fail "only $n vllm: metrics found -- week 2 dashboards will have nothing to read"
 
 for m in vllm:time_to_first_token_seconds vllm:gpu_cache_usage_perc vllm:num_requests_waiting; do
-  grep -q "^$m" "$OUT/w1-metric-names.txt" \
+  grep -q "^$m" "$OUT/w1-metric-names-$CLASS.txt" \
     && echo "  ok      $m" \
     || echo "  MISSING $m  (name may have changed in this vLLM version -- record it in docs/metric-names.md)"
 done

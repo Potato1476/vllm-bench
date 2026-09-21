@@ -24,3 +24,15 @@ spec:
       path: /metrics
       interval: 5s
       scrapeTimeout: 4s
+      relabelings:
+        # Copy the Service's model-class label onto every metric. vLLM already tags
+        # series with model_name, but that string changes whenever the checkpoint
+        # changes; model_class is "a" or "b" forever. The SLO table sets different
+        # thresholds per class, so the alerts need a label they can match on that does
+        # not move when the model does.
+        - sourceLabels: [__meta_kubernetes_service_label_model_class]
+          targetLabel: model_class
+        # Without this every series carries a pod name that changes on restart, and
+        # joining across a session becomes impossible.
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node

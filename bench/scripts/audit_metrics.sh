@@ -13,14 +13,14 @@ PROM=${PROM:-localhost:9090}
 NEEDED=(
   # consumed by observability/rules/recording.yaml
   vllm:time_to_first_token_seconds_bucket
-  vllm:time_per_output_token_seconds_bucket
+  vllm:inter_token_latency_seconds_bucket
+  vllm:e2e_request_latency_seconds_bucket
   vllm:generation_tokens_total
   vllm:request_success_total
-  vllm:request_failure_total
   # consumed by dashboards and by bench/scripts/analyze.py
   vllm:num_requests_running
   vllm:num_requests_waiting
-  vllm:gpu_cache_usage_perc
+  vllm:kv_cache_usage_perc
   vllm:num_preemptions_total
   vllm:prompt_tokens_total
   # hardware layer

@@ -10,6 +10,27 @@
 #   headroom                ~1000m
 # Anything added here comes out of the benchmark's share, so every request is explicit.
 
+# --- Components AWS does not let us see -------------------------------------------
+# On EKS the control plane is managed: the scheduler, the controller manager and etcd
+# run in AWS's own account and expose no metrics endpoint to this cluster. Left at the
+# chart defaults (enabled), kube-prometheus-stack scrapes for them anyway and produces:
+#
+#   - three Grafana dashboards that can never draw a line
+#   - KubeSchedulerDown and KubeControllerManagerDown, firing permanently
+#
+# Those two alerts are the expensive part. An alert that is always firing trains
+# everyone to ignore the alert list, which is where a real SLO breach will appear.
+#
+# kube-proxy stays ENABLED. It is not part of the managed control plane -- it runs as a
+# DaemonSet on the worker nodes and its two targets are healthy. Turning it off would
+# discard metrics that work.
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
 prometheus:
   prometheusSpec:
     # The cluster is destroyed at the end of every session, so it never lives long
