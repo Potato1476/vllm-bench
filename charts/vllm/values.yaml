@@ -1,0 +1,99 @@
+# Which models run, and how the card is divided between them.
+#
+#   shared  both models on one GPU. This is the lab's normal state and what the pilot
+#           runs on: it halves the credit spend, and it is the configuration whose
+#           numbers describe the pilot.
+#   solo-a  only the class-A model, given the whole card. Production gives each model
+#           its own node group, so THIS is the configuration that produces X_A -- the
+#           number that goes into the production GPU-count formula.
+#   solo-b  same, for class B.
+#
+# Measuring only `shared` would size production for an architecture nobody intends to
+# deploy: on a shared card the class-A model loses roughly 40% of its concurrent
+# capacity, because every GiB given to the small model comes out of the large model's
+# KV cache.
+mode: shared
+
+# What a g6.xlarge leaves for pods after the kube-system and GPU-operator daemonsets.
+# Measured, not guessed: 3920m allocatable minus ~185m of daemonsets.
+nodeAllocatableCpu: 3.7
+
+image:
+  repository: vllm/vllm-openai
+  tag: v0.29.0
+  pullPolicy: IfNotPresent
+
+fetcher:
+  repository: amazon/aws-cli
+  tag: "2.36.47"
+
+# Both supplied by `make vllm-up` from terraform output. Never committed: the IRSA role
+# is recreated with every cluster, and an ARN in git both leaks the account number and
+# goes stale silently.
+artifactsBucket: ""
+roleArn: ""
+
+serviceAccount:
+  name: vllm
+
+# Fraction of TOTAL GPU memory each instance may use, weights included.
+#
+# On a shared card the two values must sum below 1.0 or the second model to start will
+# OOM the first. 0.65 + 0.25 leaves 10% for CUDA context and fragmentation.
+gpuMemory:
+  shared:
+    a: 0.65
+    b: 0.25
+  solo:
+    a: 0.90
+    b: 0.90
+
+models:
+  a:
+    servedName: qwen2.5-7b
+    s3Prefix: models/Qwen2.5-7B-Instruct
+    # Class A: 1000 input + 300 output. 8192 leaves room for the RAG profile too.
+    maxModelLen: 8192
+    maxNumSeqs: 128
+    dtype: float16
+    weightsSizeLimit: 40Gi
+    # Sized per mode, because the node is shared in exactly the way the card is.
+    # g6.xlarge has 4 vCPU and ~14.4 GiB allocatable; giving each model what it would
+    # get alone does not fit, and the symptom is a pod stuck Pending with
+    # "Insufficient cpu", not an error anyone reads as a sizing mistake.
+    resources:
+      solo:
+        requests: {cpu: "3", memory: 12Gi}
+        limits: {memory: 12Gi}
+      shared:
+        requests: {cpu: "2", memory: 8Gi}
+        limits: {memory: 8Gi}
+  b:
+    servedName: qwen2.5-1.5b
+    s3Prefix: models/Qwen2.5-1.5B-Instruct
+    # Class B: 800 input + 100 output JSON. A smaller context leaves more KV per
+    # sequence, which is what lets the batch grow.
+    maxModelLen: 4096
+    maxNumSeqs: 256
+    dtype: float16
+    weightsSizeLimit: 20Gi
+    resources:
+      solo:
+        requests: {cpu: "3", memory: 10Gi}
+        limits: {memory: 10Gi}
+      shared:
+        requests: {cpu: "1", memory: 5Gi}
+        limits: {memory: 5Gi}
+
+# Extra engine flags applied to every model. Week 4 sweeps these; the Makefile passes
+# them with --set so the value lands in the benchmark's lineage record.
+extraArgs: []
+
+nodeSelector:
+  workload: inference
+
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Equal
+    value: "true"
+    effect: NoSchedule

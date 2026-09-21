@@ -1,0 +1,158 @@
+{{- $root := . -}}
+{{- range $key := splitList " " (include "vllm.activeModels" .) }}
+{{- $m := index $root.Values.models $key }}
+{{- $gmu := include "vllm.gpuMemory" (dict "root" $root "key" $key) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-{{ $key }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    app: vllm-server
+    model-class: {{ $key }}
+  annotations:
+    # Recorded here so `kubectl describe` answers "which configuration produced this
+    # number" without cross-referencing anything.
+    vllm-bench/mode: {{ $root.Values.mode }}
+    vllm-bench/gpu-memory-utilization: {{ $gmu | quote }}
+spec:
+  replicas: 1
+  # One physical GPU. A rolling update would ask the scheduler to place a second pod
+  # while the first still holds its GPU slot, so it would hang on Pending forever.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm-server
+      model-class: {{ $key }}
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+        model-class: {{ $key }}
+    spec:
+      serviceAccountName: {{ $root.Values.serviceAccount.name }}
+
+      # The taint keeps everything else off the GPU node; the nodeSelector keeps vLLM off
+      # every other node. Both halves are needed -- a toleration alone would still let
+      # vLLM land on the tooling node and quietly measure a CPU-only run.
+      nodeSelector:
+        {{- toYaml $root.Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml $root.Values.tolerations | nindent 8 }}
+
+      volumes:
+        - name: weights
+          # Instance-store NVMe, not an EBS PVC: free, faster, and it does not pin the
+          # node to one AZ. Each model gets its own emptyDir so the two never collide.
+          emptyDir:
+            sizeLimit: {{ $m.weightsSizeLimit }}
+        - name: shm
+          # vLLM's workers coordinate over shared memory. The 64 MiB container default
+          # fails as a hang during model load, not as an error message.
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+
+      initContainers:
+        - name: fetch-weights
+          image: "{{ $root.Values.fetcher.repository }}:{{ $root.Values.fetcher.tag }}"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ -f /weights/.sync-complete ]; then
+                echo "weights already cached, skipping sync"
+                exit 0
+              fi
+              echo "syncing ${S3_MODEL_URI} -> /weights"
+              aws s3 sync "${S3_MODEL_URI}" /weights/ --only-show-errors
+              # A finished sync is not the same as a complete one. Fail here, with a clear
+              # message, rather than inside vLLM as an unreadable load error.
+              test -f /weights/config.json
+              ls /weights/*.safetensors >/dev/null
+              touch /weights/.sync-complete
+              echo "sync complete: $(du -sh /weights | cut -f1)"
+              # Proves the emptyDir landed on NVMe and not the root EBS volume. Without
+              # this the only symptom of a misconfigured node is "the sync got slower".
+              df -h /weights | tail -1
+          env:
+            - name: S3_MODEL_URI
+              value: "s3://{{ $root.Values.artifactsBucket }}/{{ $m.s3Prefix }}/"
+          volumeMounts:
+            - name: weights
+              mountPath: /weights
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+
+      containers:
+        - name: vllm
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          args:
+            - --model=/weights
+            # Stable API name, so benchmark configs survive a checkpoint change.
+            - --served-model-name={{ $m.servedName }}
+            - --dtype={{ $m.dtype }}
+            - --max-model-len={{ $m.maxModelLen }}
+            # The value that divides the card. In shared mode the two models' shares must
+            # sum below 1.0; the chart refuses to render otherwise.
+            - --gpu-memory-utilization={{ $gmu }}
+            - --max-num-seqs={{ $m.maxNumSeqs }}
+            - --port=8000
+            # No --disable-log-requests here. That flag was removed in vLLM v0.29; the
+            # replacement is --enable-log-requests, and its default is already False, so
+            # per-request logging is off without asking. Passing the old flag makes the
+            # engine exit immediately with "unrecognized arguments", which reads as a
+            # crash loop rather than as a flag that moved.
+            {{- range $root.Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # Weights come from S3 and nowhere else. If the sync missed a file we want a
+            # hard failure, not a silent download that makes one run's model subtly
+            # different from the next one's.
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          volumeMounts:
+            - name: weights
+              mountPath: /weights
+              # The engine under test must not mutate the weights that define the
+              # experiment.
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+          {{- $res := include "vllm.resources" (dict "root" $root "key" $key) | fromYaml }}
+          resources:
+            requests:
+              {{- toYaml $res.requests | nindent 14 }}
+              nvidia.com/gpu: 1
+            limits:
+              # Deliberately no CPU limit. A limit would only risk CFS throttling, which
+              # inflates exactly the TTFT numbers this platform exists to measure.
+              {{- toYaml $res.limits | nindent 14 }}
+              nvidia.com/gpu: 1
+          startupProbe:
+            # Up to 20 minutes: a cold NVMe syncs the weights from S3 and then loads them
+            # onto the GPU. Too tight a threshold turns a slow start into a crash loop.
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 120
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            failureThreshold: 6
+{{- end }}

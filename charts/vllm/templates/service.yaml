@@ -1,0 +1,26 @@
+{{- $root := . -}}
+{{- range $key := splitList " " (include "vllm.activeModels" .) }}
+{{- $m := index $root.Values.models $key }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-{{ $key }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    # The ServiceMonitor selects on app=vllm-server and matches BOTH services, so
+    # Prometheus scrapes each model. They stay apart in the data because vLLM tags every
+    # series with model_name -- which is why the recording rules aggregate by it.
+    app: vllm-server
+    model-class: {{ $key }}
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-server
+    model-class: {{ $key }}
+  ports:
+    # MUST be named: the ServiceMonitor references the port by name, never by number.
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}
