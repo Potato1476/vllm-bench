@@ -1,0 +1,65 @@
+# One NGINX ingress controller fronting every lab UI, published on a NodePort of the
+# tooling node's own public address.
+#
+# WHY NOT A LOAD BALANCER. An NLB bills ~0.0225 USD/hr whether or not anyone opens a
+# dashboard, and what it sells is a stable endpoint. This lab destroys its cluster every
+# evening, so the NLB would be recreated with a new name every morning anyway -- paying
+# for stability that the teardown schedule removes. A NodePort costs nothing extra: the
+# nodes already carry public IPv4 addresses, billed at 0.005 USD/hr, because dropping the
+# NAT Gateway left them to reach ECR and S3 on their own.
+#
+# WHAT IT COSTS INSTEAD. The URL carries a port number, and the address changes whenever
+# the node is replaced -- which is every `lab-up`. `make ingress-url` reprints it.
+controller:
+  replicaCount: 1
+
+  # The tooling node is an m7i.large with ~265m of CPU left once kube-prometheus-stack
+  # has taken its share, so this asks for little and caps nothing on CPU.
+  nodeSelector:
+    workload: tooling
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  # Terminating at the ingress rather than per-service keeps the SLO measurement honest:
+  # every request crosses exactly one proxy hop, the same one, for every UI.
+  service:
+    # A LoadBalancer Service would have had the cloud provider write the firewall rules
+    # from loadBalancerSourceRanges. With NodePort nothing does that automatically, so
+    # `make ingress-up` writes them into the node security group itself and
+    # `make ingress-down` takes them back out. Those rules are the real access control.
+    type: NodePort
+    nodePorts:
+      http: 30080
+      https: 30443
+
+    # Local, not Cluster. With Cluster, kube-proxy SNATs the packet on its way to
+    # whichever node holds the controller, and NGINX logs the node's address for every
+    # visitor -- which would make the edge metrics useless for telling callers apart.
+    # Local keeps the client address, at the cost that only the node actually running
+    # the controller answers on this port. That node is the tooling node by the
+    # nodeSelector above, and it is the address `make ingress-url` publishes.
+    externalTrafficPolicy: Local
+
+  # Edge-level request rate, latency and status codes, which no vLLM metric can provide:
+  # a request rejected or queued before it reaches the engine is invisible to the engine.
+  # This is also where the gateway error ratio will come from once LiteLLM is in front.
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        release: kps
+
+  config:
+    # vLLM streams SSE. Buffering would hold tokens back and make any TTFT measured
+    # through this path meaningless.
+    proxy-buffering: "off"
+    proxy-read-timeout: "300"
+    proxy-send-timeout: "300"
+    use-forwarded-headers: "true"
+    # The NLB preserves the client IP, so this records the real caller.
+    compute-full-forwarded-for: "true"

@@ -16,3 +16,14 @@ rules:
   indentation:
     spaces: 2
     indent-sequences: consistent
+
+# Helm templates are Go templates, not YAML: `{{- range ... }}` is a syntax error to any
+# YAML parser. They are checked by `helm lint` and by rendering them instead.
+#
+# ingress.tpl.yaml is a template too -- it carries a %%IP%% placeholder and is never
+# applied directly -- and being multi-document it needs the `---` separators that
+# document-start forbids. `make ingress-up` renders it and applies the result, which is
+# what `kubectl apply --dry-run` validates.
+ignore: |
+  charts/*/templates/
+  k8s/ingress/ingress.tpl.yaml

@@ -1,0 +1,130 @@
+# GENERATED FROM A TEMPLATE -- edit ingress.tpl.yaml, never the rendered copy.
+# `make ingress-up` substitutes %%IP%% with the NLB's address.
+#
+# Routing is by HOSTNAME, not by path, and that is a deliberate trade. Path routing
+# (/grafana, /prometheus) would have meant reconfiguring every backend to know it lives
+# under a prefix -- Grafana's serve_from_sub_path, Prometheus's routePrefix,
+# Alertmanager's routePrefix, vLLM's --root-path -- which means a helm upgrade of a
+# stack that currently works, for cosmetics. Host routing needs no backend change at all.
+#
+# Two host suffixes are published for each service:
+#   *.%%IP%%.nip.io   nip.io resolves any name containing an IP to that IP. No DNS to
+#                     own, no records to update. It is a third-party resolver though,
+#                     and some corporate networks block it.
+#   *.da51.lab        resolves only via /etc/hosts. The fallback for when nip.io is
+#                     unreachable, and the option that depends on nobody.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: grafana.%%IP%%.nip.io
+      http: &grafana
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kps-grafana
+                port:
+                  number: 80
+    - host: grafana.da51.lab
+      http: *grafana
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus
+  namespace: monitoring
+  annotations:
+    # Prometheus ships with NO authentication whatsoever -- anyone who reaches it reads
+    # every metric and can run arbitrary queries. loadBalancerSourceRanges already limits
+    # that to one /32, but that lock is one `make fix-cidr` away from being widened by
+    # hand on a bad day, and an ISP can hand our old address to a stranger. Basic auth is
+    # the second, independent lock. Same reasoning for Alertmanager below.
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: ingress-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "da51 lab"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: prometheus.%%IP%%.nip.io
+      http: &prom
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kps-kube-prometheus-stack-prometheus
+                port:
+                  number: 9090
+    - host: prometheus.da51.lab
+      http: *prom
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: ingress-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "da51 lab"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: alertmanager.%%IP%%.nip.io
+      http: &am
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kps-kube-prometheus-stack-alertmanager
+                port:
+                  number: 9093
+    - host: alertmanager.da51.lab
+      http: *am
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm-a
+  namespace: inference
+  annotations:
+    # Streaming: hold nothing back, and allow a long generation to finish.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # vLLM's OpenAI server has no auth either, and an open LLM endpoint is the one
+    # exposure here that costs money per abusive request.
+    #
+    # This whitelist is what keeps `make ingress-up PUBLIC=1` from publishing the GPU
+    # along with the dashboards. The security group opens port 30080 to everyone in that
+    # mode, so the restriction has to live here, at the only layer that can still tell
+    # the four hostnames apart. It works because the Service uses
+    # externalTrafficPolicy: Local -- with Cluster, kube-proxy would SNAT every packet
+    # and NGINX would see a node address for all callers, matching nobody.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: ingress-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "da51 lab"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: vllm.%%IP%%.nip.io
+      http: &vllm
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm-a
+                port:
+                  name: http
+    - host: vllm.da51.lab
+      http: *vllm

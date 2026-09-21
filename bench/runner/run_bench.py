@@ -138,7 +138,7 @@ def build_vllm_cmd(a, out_dir: Path, result_name: str) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=os.getenv("VLLM_URL", "http://vllm-svc.inference:8000"))
+    ap.add_argument("--url", default=os.getenv("VLLM_URL", "http://vllm-a.inference:8000"))
     ap.add_argument("--prom", default=os.getenv("PROM_URL",
                     "http://kps-kube-prometheus-stack-prometheus.monitoring:9090"))
     ap.add_argument("--model", default=os.getenv("MODEL", "qwen2.5-7b"))

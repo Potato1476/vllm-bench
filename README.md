@@ -230,12 +230,11 @@ make smoke           # chứng minh nó trả lời đúng trước khi đo bấ
 **Điều kiện tiên quyết:** trọng số model phải có sẵn trên S3, nếu không initContainer sẽ
 lỗi. Làm một lần, xem mục "Bootstrap backend".
 
-### Vì sao manifest có placeholder
+### ARN và tên bucket không nằm trong repo
 
-`k8s/vllm/*.yaml` chứa `__VLLM_ROLE_ARN__` và `__ARTIFACTS_BUCKET__`. `make vllm-up` thay
-chúng bằng `terraform output` rồi mới apply. Không commit giá trị thật vì IRSA role được
-tạo lại theo mỗi cụm, nên ARN trong git vừa lộ account ID vừa cũ đi trong im lặng. Target
-sẽ dừng nếu còn placeholder nào chưa được thay.
+`make vllm-up` đọc chúng từ `terraform output` rồi truyền vào Helm bằng `--set`. Không
+commit giá trị thật vì IRSA role được tạo lại theo mỗi cụm, nên ARN trong git vừa lộ
+account ID vừa cũ đi trong im lặng. Chart từ chối render nếu hai giá trị đó rỗng.
 
 ### Trọng số: S3 là nguồn, PVC là bộ đệm
 
@@ -317,6 +316,73 @@ vLLM bỏ qua.
 tự câu bị xáo trộn theo từng mẫu. Lý do không phải thẩm mỹ: vLLM cache KV theo **tiền tố**
 prompt. Nếu mọi prompt bắt đầu bằng cùng một đoạn mở đầu, phần lớn request được phục vụ từ
 cache, TTFT sụp xuống, và bạn đang đo cache chứ không đo engine.
+
+## Hai model, và chế độ đo
+
+`charts/vllm/` là Helm chart nhận N model. Biến `MODE` quyết định model nào chạy và card
+được chia thế nào:
+
+| `MODE` | Chạy gì | `gpu-memory-utilization` | Dùng để |
+|---|---|---|---|
+| `shared` | cả hai model trên 1 GPU | A 0,65 · B 0,25 | **mặc định của lab và của pilot** |
+| `solo-a` | chỉ lớp A, trọn card | A 0,90 | **đo X_A** cho việc tính số GPU production |
+| `solo-b` | chỉ lớp B, trọn card | B 0,90 | đo X_B |
+
+```bash
+make vllm-up MODE=solo-a     # đo X_A
+make vllm-up MODE=shared     # quay lại cấu hình pilot
+make vllm-diff MODE=solo-b   # xem trước, không apply
+```
+
+### Vì sao cần `solo-*`
+
+Production (§2.7) cho **mỗi model một node group riêng**, nên model 7B độc chiếm một card.
+Lab thì dùng chung để tiết kiệm credit. Hai hình dạng khác nhau:
+
+| | KV cache còn lại | Request lớp A đồng thời |
+|---|---|---|
+| 7B trọn card (`solo-a`) | 14,1 GiB | **203** |
+| 7B dùng chung (`shared`) | 8,5 GiB | **123** |
+
+Lớp A mất khoảng **40% năng lực** khi dùng chung, vì mỗi GiB cấp cho model nhỏ lấy thẳng
+từ KV cache của model lớn. Nếu lấy X_A đo ở chế độ `shared` rồi đưa vào công thức
+
+```
+N = ceil(35 / (0,7 × X_A)) + ceil(15 / (0,7 × X_B))
+```
+
+thì N tăng gần gấp rưỡi và bạn đề xuất mua thừa GPU cho một kiến trúc không ai triển khai.
+
+Phiên so sánh L4 với L40S ở tuần 2 **bắt buộc** chạy `solo-*` trên cả hai card — nếu không
+bạn đang so hai khối lượng công việc khác nhau, mà đó là căn cứ duy nhất để chọn phần cứng
+production.
+
+### Chart từ chối cấu hình không chạy được
+
+```
+gpuMemory.shared.a + gpuMemory.shared.b = 1.05, which is >= 1.0.
+Two vLLM instances on one card would OOM each other.
+```
+
+Tổng vượt 1,0 là model thứ hai sẽ OOM model thứ nhất — nhưng chỉ sau khi node GPU đã chạy
+được 20 phút. Chart chặn ngay lúc render. Nó cũng từ chối `mode` sai và `artifactsBucket`
+hay `roleArn` rỗng.
+
+### Nhãn `model_class` — thứ làm hai model tách được ra
+
+ServiceMonitor sao nhãn `model-class` của Service vào mọi chuỗi chỉ số. Không có nó,
+`sum by (le)` sẽ gộp histogram của model 7B với model 1,5B và cho ra một p99 **không mô tả
+model nào cả**.
+
+vLLM vốn đã gắn `model_name`, nhưng chuỗi đó đổi mỗi khi đổi checkpoint; `model_class` là
+`a` hoặc `b` mãi mãi. Bảng SLO đặt ngưỡng **khác nhau theo lớp**, nên alert cần một nhãn
+không xê dịch:
+
+| Alert | Lớp | Ngưỡng |
+|---|---|---|
+| `VllmSloBurnFastClassA` | A | lỗi > 2% **và** TTFT p95 > 800ms |
+| `VllmSloBurnFastClassB` | B | lỗi > 2% **và** E2E p95 > 1,5s |
+| `VllmInterTokenLatencyClassA` | A | TBT p99 > 60ms |
 
 ## Tầng giám sát
 

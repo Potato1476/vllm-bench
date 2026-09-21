@@ -22,6 +22,13 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
+# --- Benchmark datasets ---
+# The generated JSONL is ~64 MB and regenerable byte-for-byte from make_datasets.py
+# with the same --version and --model. S3 is where it lives; git keeps the manifest,
+# which carries the checksums that make a result traceable to its input.
+bench/datasets/*.jsonl
+!bench/datasets/manifest-*.json
+
 # --- Benchmark output ---
 # Raw runs are large and regenerable; only curated files under reports/ get committed.
 results/
@@ -43,3 +50,4 @@ kubeconfig
 .idea/
 .vscode/
 .rendered/
+.gstack/

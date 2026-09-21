@@ -15,9 +15,10 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 .DEFAULT_GOAL := help
 .PHONY: help init fmt validate lint plan kubeconfig hooks \
 	core-plan core-up core-down lab-up lab-down gpu gpu-l40s cost fix-cidr \
-	vllm-up vllm-down smoke \
+	vllm-up vllm-diff vllm-down smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
-	cleanup-volumes orphans datasets datasets-check runner-image model-fetch
+	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
+	ingress-up ingress-down ingress-url creds
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -46,28 +47,71 @@ lab-up: ## Start a working session: create the cluster tier, GPU still at 0
 	@echo "  make kubeconfig && make monitoring-up"
 	@echo "  make gpu n=1     when you are ready to measure"
 
+snapshot: ## Export this session's time series to s3://<artifacts>/runs/. HOURS=12 LABEL=
+	@python3 bench/scripts/snapshot.py --hours "$(or $(HOURS),12)" --label "$(LABEL)"
+
 lab-down: ## End a session: snapshot metrics, release volumes, destroy the cluster tier
-	@echo "Before destroying, confirm each of these:"
-	@echo "  1. Prometheus time series for every run_id are exported to S3."
-	@echo "  2. Benchmark results and raw run output are synced to S3."
-	@echo "  3. Grafana dashboard changes worth keeping are committed to observability/."
+# The snapshot runs here rather than sitting in a checklist. It used to be item 1 of three
+# lines of text followed by a yes/no prompt, with nothing in the repo that could perform
+# it -- so the honest description of the old behaviour was "type yes to delete your
+# measurements". Prometheus stores them in a PVC that cleanup-volumes deletes two steps
+# below, and reproducing them costs GPU hours.
+	@echo "exporting this session's time series before anything is deleted..."
+	@$(MAKE) --no-print-directory snapshot; rc=$$?; \
+		if [ $$rc -eq 2 ]; then \
+			echo "  khong tim thay Prometheus -- khong co gi de xuat, di tiep"; \
+		elif [ $$rc -ne 0 ]; then \
+			echo; \
+			echo "SNAPSHOT THAT BAI trong khi Prometheus van song."; \
+			echo "Destroy bay gio la mat du lieu do duoc."; \
+			echo "Chay 'make snapshot' de xem loi, hoac ep bo qua bang:"; \
+			echo "  make lab-down SKIP_SNAPSHOT=1"; \
+			test -n "$(SKIP_SNAPSHOT)"; \
+		fi
+	@echo
+	@echo "Still worth confirming by hand:"
+	@echo "  1. Benchmark results and raw run output are synced to S3."
+	@echo "  2. Grafana dashboard changes worth keeping are committed to observability/."
 	@echo
 	@echo "Destroying loses all in-cluster state. Anything not on S3 is gone for good."
 	@printf 'Type yes to destroy the cluster tier: '; \
 		read -r ans; [ "$$ans" = "yes" ] || { echo "aborted"; exit 1; }
+	@echo "deleting the load balancer before the cluster that owns it..."
+	-@$(MAKE) --no-print-directory ingress-down
 	@echo "releasing EBS volumes while the CSI driver still exists..."
 	-@$(MAKE) --no-print-directory cleanup-volumes
 	$(TF) destroy -var cluster_name=$(CLUSTER)
 	@echo; echo "checking for volumes that outlived the cluster:"
 	-@$(MAKE) --no-print-directory orphans
 
+# Scaling goes through the AWS API, not Terraform.
+#
+# terraform-aws-modules/eks sets `ignore_changes = [scaling_config[0].desired_size]` on
+# every managed node group, so Terraform deliberately never touches desired_size after
+# creation -- the field is left to a cluster autoscaler. `terraform apply -var
+# gpu_desired=1` therefore reports "0 changed" and silently does nothing, which is the
+# worst possible failure for the one command that controls the project's largest cost.
+#
+# Because Terraform ignores the field, changing it out of band creates no drift.
 gpu: ## Scale the L4 node group: make gpu n=0|1|3
 	@test -n "$(n)" || { echo "usage: make gpu n=0|1|3"; exit 1; }
-	$(TF) apply -var cluster_name=$(CLUSTER) -var gpu_desired=$(n)
+	@ng=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
+		--query "nodegroups[?starts_with(@,'gpu-2')]|[0]" --output text); \
+	echo "scaling $$ng to $(n) ..."; \
+	aws eks update-nodegroup-config --cluster-name $(CLUSTER) --region $(REGION) \
+		--nodegroup-name "$$ng" --scaling-config minSize=0,maxSize=3,desiredSize=$(n) \
+		--query 'update.status' --output text
+	@echo "a new node needs ~3-4 min to join, plus 1-3 min to sync weights from S3."
+	@echo "watch: kubectl get nodes -l workload=inference -w"
 
 gpu-l40s: ## Scale the L40S comparison node group: make gpu-l40s n=0|1
 	@test -n "$(n)" || { echo "usage: make gpu-l40s n=0|1"; exit 1; }
-	$(TF) apply -var cluster_name=$(CLUSTER) -var gpu_l40s_desired=$(n)
+	@ng=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
+		--query "nodegroups[?starts_with(@,'gpu-l40s')]|[0]" --output text); \
+	echo "scaling $$ng to $(n) ..."; \
+	aws eks update-nodegroup-config --cluster-name $(CLUSTER) --region $(REGION) \
+		--nodegroup-name "$$ng" --scaling-config minSize=0,maxSize=1,desiredSize=$(n) \
+		--query 'update.status' --output text
 
 fmt: ## Rewrite Terraform files to canonical format
 	terraform fmt -recursive terraform/
@@ -112,50 +156,75 @@ cost: ## Show the last 7 days of spend, grouped by service
 # A residential connection hands out a new address whenever it reconnects, and the
 # symptom is a kubectl that hangs and times out rather than a permission error -- it
 # looks like a broken cluster, not a firewall. This makes the fix one command.
-fix-cidr: ## Repoint allowed_cidrs at your current public IP, then apply
+fix-cidr: ## Repoint the cluster at your current public IP after an ISP address change
+# Goes through the EKS API on purpose, not `terraform apply`. The cluster state holds
+# kubernetes_storage_class_v1, which Terraform must read through the Kubernetes API --
+# and that API is exactly what a stale CIDR blocks. Applying to fix the lockout therefore
+# deadlocks on the lockout. The EKS control-plane API stays reachable, so it can.
+# The tfvars edit afterwards keeps Terraform's config in step with reality.
 	@ip=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
 		[ -n "$$ip" ] || { echo "could not determine public IP"; exit 1; }; \
-		echo "current public IP: $$ip"; \
+		cur=$$(aws eks describe-cluster --name $(CLUSTER) \
+			--query 'cluster.resourcesVpcConfig.publicAccessCidrs' --output text); \
+		echo "public IP : $$ip"; echo "on cluster: $$cur"; \
+		if [ "$$cur" = "$$ip/32" ]; then echo "already current -- nothing to do"; exit 0; fi; \
+		q() { aws eks describe-cluster --name $(CLUSTER) \
+			--query "cluster.resourcesVpcConfig.$$1" --output text; }; \
+		pub=$$(q endpointPublicAccess); priv=$$(q endpointPrivateAccess); \
+		id=$$(aws eks update-cluster-config --name $(CLUSTER) \
+			--resources-vpc-config "endpointPublicAccess=$$pub,endpointPrivateAccess=$$priv,publicAccessCidrs=$$ip/32" \
+			--query 'update.id' --output text); \
+		echo "update $$id -- takes a few minutes"; \
+		until [ "$$(aws eks describe-update --name $(CLUSTER) --update-id $$id \
+			--query 'update.status' --output text)" != "InProgress" ]; do sleep 15; done; \
+		st=$$(aws eks describe-update --name $(CLUSTER) --update-id $$id \
+			--query 'update.status' --output text); \
+		[ "$$st" = "Successful" ] || { echo "update ended $$st"; exit 1; }; \
 		sed -i.bak "s|^allowed_cidrs.*|allowed_cidrs = [\"$$ip/32\"]|" $(CLUSTER_DIR)/terraform.tfvars; \
 		rm -f $(CLUSTER_DIR)/terraform.tfvars.bak; \
-		grep allowed_cidrs $(CLUSTER_DIR)/terraform.tfvars
-	$(TF) apply -var cluster_name=$(CLUSTER)
+		grep allowed_cidrs $(CLUSTER_DIR)/terraform.tfvars; \
+		kubectl get --raw /healthz && echo " -- API reachable again"
 
 
 # --- vLLM workload ----------------------------------------------------------
-# The manifests carry __PLACEHOLDERS__ instead of the IRSA role ARN and bucket name.
-# Both are outputs of a cluster that gets rebuilt every session, so committing them
-# would bake in a stale value and leak the account number. They are substituted here.
-RENDER_DIR := .rendered/vllm
+# MODE picks which models run and how the card is divided:
+#   shared  both models on one GPU  -- the lab default and the pilot configuration
+#   solo-a  class A alone, whole card -- produces X_A for production sizing
+#   solo-b  class B alone, whole card -- produces X_B
+#
+# Production gives each model its own node group, so the numbers that go into the GPU
+# count formula must come from the solo modes. Measuring only `shared` would size
+# production for an architecture nobody intends to deploy.
+MODE ?= shared
 
-vllm-up: ## Render and apply the vLLM manifests (cluster must be up)
+vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b
 	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null); \
-	bkt=$$($(TF) output -raw artifacts_bucket_name 2>/dev/null); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null); \
 	if [ -z "$$arn" ] || [ -z "$$bkt" ]; then \
 		echo "terraform outputs are empty -- is the cluster up? try: make lab-up"; \
 		exit 1; \
 	fi; \
-	rm -rf $(RENDER_DIR); mkdir -p $(RENDER_DIR); \
-	for f in k8s/vllm/*.yaml; do \
-		sed -e "s|__VLLM_ROLE_ARN__|$$arn|g" -e "s|__ARTIFACTS_BUCKET__|$$bkt|g" \
-			"$$f" > "$(RENDER_DIR)/$$(basename $$f)"; \
-	done; \
-	if grep -l '__[A-Z_]*__' $(RENDER_DIR)/*.yaml; then \
-		echo "a placeholder was left unsubstituted in the files above"; exit 1; \
-	fi; \
-	kubectl apply -f $(RENDER_DIR)/
+	helm upgrade --install vllm charts/vllm \
+		-n inference --create-namespace \
+		--set mode=$(MODE) \
+		--set artifactsBucket="$$bkt" \
+		--set roleArn="$$arn" \
+		--wait --timeout 25m
 	@echo
-	@echo "Applied. First start syncs 14.2 GiB from S3 and loads it onto the GPU;"
+	@echo "mode=$(MODE). A cold node syncs weights from S3 before the engine starts;"
 	@echo "allow up to 20 minutes. Watch with:"
 	@echo "  kubectl -n inference get pod -w"
-	@echo "  kubectl -n inference logs -f deploy/vllm-server -c fetch-weights"
+	@echo "  kubectl -n inference logs -f deploy/vllm-a -c fetch-weights"
 
-vllm-down: ## Remove the vLLM workload but keep the cluster
-	kubectl delete -f k8s/vllm/00-namespace.yaml --ignore-not-found
+vllm-diff: ## Render the chart without applying it. MODE=shared|solo-a|solo-b
+	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null || echo PLACEHOLDER); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null || echo PLACEHOLDER); \
+	helm template vllm charts/vllm -n inference \
+		--set mode=$(MODE) --set artifactsBucket="$$bkt" --set roleArn="$$arn"
 
-smoke: ## Prove the deployment answers correctly before measuring anything
-	./bench/scripts/smoke.sh
-
+vllm-down: ## Remove the vLLM release but keep the cluster
+	-helm uninstall vllm -n inference
+	-kubectl delete namespace inference --ignore-not-found
 
 # --- Monitoring stack -------------------------------------------------------
 CHART_GPU_OPERATOR ?= v26.7.0
@@ -212,9 +281,55 @@ audit-metrics: ## Confirm every metric the rules depend on exists by name
 pf: ## Port-forward Prometheus 9090, Grafana 3000, vLLM 8000
 	@kubectl -n monitoring port-forward svc/kps-kube-prometheus-stack-prometheus 9090:9090 >/dev/null 2>&1 &
 	@kubectl -n monitoring port-forward svc/kps-grafana 3000:80 >/dev/null 2>&1 &
-	@kubectl -n inference port-forward svc/vllm-svc 8000:8000 >/dev/null 2>&1 &
-	@sleep 3; echo "prometheus :9090   grafana :3000   vllm :8000"
+	@kubectl -n inference port-forward svc/vllm-a 8000:8000 >/dev/null 2>&1 &
+	-@kubectl -n inference port-forward svc/vllm-b 8001:8000 >/dev/null 2>&1 &
+	@sleep 3; echo "prometheus :9090   grafana :3000   vllm class A :8000   class B :8001"
 	@echo "stop with: pkill -f 'kubectl.*port-forward'"
+
+# --- Shared ingress ---------------------------------------------------------
+# `make pf` tunnels through the Kubernetes API server: free, encrypted, authenticated by
+# your IAM identity -- but it dies with the terminal and adds a home-to-us-east-1 round
+# trip to anything measured through it. The ingress exists for the week-6 demo and for
+# anyone who is not sitting at this laptop.
+ingress-up: ## Publish the UIs. EXTRA_CIDRS=a/32,b/32 adds people; PUBLIC=1 opens to all
+	@EXTRA_CIDRS="$(EXTRA_CIDRS)" PUBLIC="$(PUBLIC)" k8s/ingress/up.sh
+
+ingress-down: ## Remove the ingress and close the port it opened on the node
+	@REGION=$(REGION) k8s/ingress/down.sh
+
+ingress-url: ## Reprint the published URLs
+	@ip=$$(kubectl -n monitoring get ingress grafana \
+		-o jsonpath='{.spec.rules[0].host}' 2>/dev/null \
+		| sed 's/^grafana\.//; s/\.nip\.io$$//'); \
+		[ -n "$$ip" ] || { echo "no ingress yet -- run: make ingress-up"; exit 1; }; \
+		echo "  Grafana       http://grafana.$$ip.nip.io:30080"; \
+		echo "  Prometheus    http://prometheus.$$ip.nip.io:30080"; \
+		echo "  Alertmanager  http://alertmanager.$$ip.nip.io:30080"; \
+		echo "  vLLM          http://vllm.$$ip.nip.io:30080/v1/models"; \
+		echo; \
+		echo "  /etc/hosts:  $$ip  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab vllm.da51.lab"; \
+		echo; \
+		cur=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
+		sg=$$(aws ec2 describe-security-groups --region $(REGION) \
+			--filters "Name=ip-permission.from-port,Values=30080" \
+			--query 'SecurityGroups[0].GroupId' --output text 2>/dev/null); \
+		allowed=$$(aws ec2 describe-security-groups --region $(REGION) --group-ids $$sg \
+			--query "SecurityGroups[0].IpPermissions[?FromPort==\`30080\`].IpRanges[].CidrIp" \
+			--output text 2>/dev/null); \
+		echo "  cho phep: $$allowed"; \
+		case " $$allowed " in \
+			*" 0.0.0.0/0 "*) echo "  MO CONG KHAI -- bat ky ai cung vao duoc ba dashboard";; \
+			*" $$cur/32 "*) ;; \
+			*) echo "  IP cua ban ($$cur) KHONG nam trong danh sach -- chay lai: make ingress-up";; \
+		esac
+
+creds: ## Print the lab passwords
+	@printf '  Grafana       admin / %s\n' \
+		"$$(kubectl -n monitoring get secret grafana-admin \
+			-o jsonpath='{.data.admin-password}' | base64 -d)"
+	@printf '  Ingress auth  admin / %s\n' \
+		"$$(kubectl -n monitoring get secret ingress-basic-auth \
+			-o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo '(none yet)')"
 
 # --- EBS hygiene ------------------------------------------------------------
 # Dynamically provisioned volumes are deleted by the EBS CSI controller when their PVC

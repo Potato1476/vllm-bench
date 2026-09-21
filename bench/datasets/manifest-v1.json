@@ -1,0 +1,47 @@
+{
+  "version": "v1",
+  "tokenizer": "/tmp/qwen7b",
+  "n_per_profile": 2000,
+  "datasets": [
+    {
+      "file": "chat-v1.jsonl",
+      "profile": "chat",
+      "n": 2000,
+      "target_prompt_tokens": 500,
+      "actual_prompt_tokens_mean": 499.9,
+      "actual_prompt_tokens_min": 499,
+      "actual_prompt_tokens_max": 500,
+      "drift_from_target": 0.0001,
+      "output_tokens": 300,
+      "sha256": "7c8eeb710d901184c400cd00a60d273e63bd80daf415f45ad23ae3d531f0bb3e",
+      "why": "short prompt, medium answer -- decode-dominated"
+    },
+    {
+      "file": "rag-v1.jsonl",
+      "profile": "rag",
+      "n": 2000,
+      "target_prompt_tokens": 4000,
+      "actual_prompt_tokens_mean": 4000.0,
+      "actual_prompt_tokens_min": 3999,
+      "actual_prompt_tokens_max": 4000,
+      "drift_from_target": 0.0,
+      "output_tokens": 250,
+      "sha256": "abb6a994f1923452b5577736154b08fb9eb146d1975eb602b53ac6802db33bab",
+      "why": "long prompt, short answer -- prefill and KV-cache dominated"
+    },
+    {
+      "file": "code-v1.jsonl",
+      "profile": "code",
+      "n": 2000,
+      "target_prompt_tokens": 1500,
+      "actual_prompt_tokens_mean": 1499.9,
+      "actual_prompt_tokens_min": 1499,
+      "actual_prompt_tokens_max": 1500,
+      "drift_from_target": 0.0001,
+      "output_tokens": 800,
+      "sha256": "dfabea9e644f9d552a13f9f65618cbbac574d23c9dc3984585c40f30f3fdcf2d",
+      "why": "medium prompt, long answer -- the longest time in flight"
+    }
+  ],
+  "note": "regenerating with the same --version and --model reproduces these checksums"
+}
