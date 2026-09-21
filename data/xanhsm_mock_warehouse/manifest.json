@@ -1,0 +1,34 @@
+{
+  "name": "xanhsm-mock-warehouse",
+  "version": "1.0.0",
+  "generated_at": "2026-09-21",
+  "seed": 20260921,
+  "period": {
+    "start": "2026-01-01",
+    "days": 240,
+    "end": "2026-08-28"
+  },
+  "data_scope": "synthetic-demo-only",
+  "warning": "No record represents a real Xanh SM customer, driver, vehicle, station, policy, or business result.",
+  "row_counts": {
+    "agg_daily_city_service": 3600,
+    "dim_campaign": 24,
+    "dim_charging_station": 36,
+    "dim_customer": 60000,
+    "dim_date": 240,
+    "dim_driver": 5000,
+    "dim_location": 66,
+    "dim_service": 5,
+    "dim_vehicle": 3500,
+    "fact_bookings": 300000,
+    "fact_charging_sessions": 60000,
+    "fact_driver_offers": 760970,
+    "fact_driver_online_sessions": 360000,
+    "fact_payments": 271224,
+    "fact_promotions": 70764,
+    "fact_trips": 276661,
+    "fact_vehicle_status": 840000
+  },
+  "total_rows": 3012090,
+  "primary_database": "xanhsm_mock_warehouse.sqlite"
+}

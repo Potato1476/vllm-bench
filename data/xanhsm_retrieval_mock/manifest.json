@@ -1,0 +1,21 @@
+{
+  "name": "xanhsm-da-retrieval-mock-vi",
+  "version": "1.0.0",
+  "primary_purpose": "retrieval-corpus",
+  "primary_file": "corpus/retrieval_corpus.jsonl",
+  "generated_at": "2026-09-21",
+  "seed": 20260921,
+  "language": "vi",
+  "license_note": "Synthetic content is for demo/testing. Public briefs are paraphrases with source URLs; review source terms before redistribution.",
+  "warning": "No synthetic policy or figure in this dataset represents actual Xanh SM internal data.",
+  "counts": {
+    "documents": 798,
+    "chunks": 798,
+    "retrieval_records": 798,
+    "knowledge_base_articles": 30,
+    "evaluation_queries": 144,
+    "public_source_briefs": 6,
+    "synthetic_daily_reports": 720,
+    "hard_negative_documents": 4
+  }
+}

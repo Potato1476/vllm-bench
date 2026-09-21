@@ -26,6 +26,11 @@ venv/
 # Raw runs are large and regenerable; only curated files under reports/ get committed.
 results/
 
+# The synthetic warehouse is reproducible from its generator. Publish these bulky
+# runtime artifacts to S3 instead of storing hundreds of megabytes in Git.
+data/xanhsm_mock_warehouse/csv/
+data/xanhsm_mock_warehouse/xanhsm_mock_warehouse.sqlite
+
 # --- Secrets / local env ---
 *.env
 .env

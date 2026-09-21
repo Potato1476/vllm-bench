@@ -1,0 +1,70 @@
+[
+  {
+    "source_id": "PUB-XSM-EXPRESS",
+    "title": "Green Express - trang đặt dịch vụ",
+    "url": "https://booking.xanhsm.com/",
+    "summary": "Trang công khai xác nhận Green Express là dịch vụ giao hàng và luồng đăng nhập có bước đồng ý điều khoản, xử lý dữ liệu cá nhân. Dataset chỉ dùng thông tin phân loại dịch vụ; không thu thập dữ liệu người dùng.",
+    "tags": [
+      "express",
+      "public",
+      "service"
+    ]
+  },
+  {
+    "source_id": "PUB-XSM-ENTERPRISE",
+    "title": "Green SM Enterprise - đăng ký tư vấn",
+    "url": "https://business.xanhsm.com/lead",
+    "summary": "Trang công khai mô tả giải pháp giao thông xanh cho doanh nghiệp, nhấn mạnh tối ưu chi phí vận hành, đáp ứng nhu cầu di chuyển, tài xế sẵn sàng và hệ thống quản lý.",
+    "tags": [
+      "enterprise",
+      "public",
+      "service"
+    ]
+  },
+  {
+    "source_id": "PUB-XSM-DRIVER",
+    "title": "Trang tuyển dụng tài xế Green SM",
+    "url": "https://tuyentaixe.xanhsm.com/gioithieu",
+    "summary": "Trang công khai cho thấy hệ sinh thái có nhóm tài xế taxi ô tô điện và xe máy điện. Các con số thu nhập hoặc ưu đãi trên trang mang tính thời điểm và không được dùng làm chính sách nội bộ trong corpus mock.",
+    "tags": [
+      "driver",
+      "taxi",
+      "bike",
+      "public"
+    ]
+  },
+  {
+    "source_id": "PUB-XSM-PLATFORM",
+    "title": "Thông tin nền tảng dành cho tài xế",
+    "url": "https://tuyentaixe.xanhsm.com/kolkoc",
+    "summary": "Nguồn công khai mô tả mô hình nền tảng cho tài xế xe máy điện và hoạt động vận doanh. Corpus chỉ dùng để tạo taxonomy đối tác/nội bộ; không coi tỷ lệ chia sẻ hoặc ưu đãi công khai là quy tắc cố định.",
+    "tags": [
+      "driver",
+      "platform",
+      "public"
+    ]
+  },
+  {
+    "source_id": "PUB-XSM-PROMO",
+    "title": "Ví dụ chương trình ưu đãi công khai đã hết hạn",
+    "url": "https://www.xanhsm.com/news/den-golden-gate-khai-tiec-no-ne-goi-xanh-sm-don-phu-phe-uu-dai",
+    "summary": "Bài công khai năm 2024 minh họa chương trình ưu đãi có phạm vi dịch vụ, mức giảm, trần giảm, số lượt và thời hạn. Nguồn chỉ dùng để thiết kế schema promotion; mọi ưu đãi nêu tại đây được đánh dấu historical/expired.",
+    "tags": [
+      "promotion",
+      "historical",
+      "public"
+    ]
+  },
+  {
+    "source_id": "PUB-XSM-DRIVER-POLICY",
+    "title": "Ví dụ Q&A chính sách thu nhập tài xế công khai",
+    "url": "https://cdn.xanhsm.com/2026/04/0cbee2eb-qa-chinh-sach-thu-nhap-tai-xe-bike-20.04.2026.pdf",
+    "summary": "Tài liệu công khai dạng hỏi đáp minh họa rằng chính sách tài xế được version hóa theo thời gian, dịch vụ và điều kiện vận doanh. Dataset không sao chép mức chia sẻ; nguồn được dùng để tạo bài test ưu tiên phiên bản tài liệu hiện hành.",
+    "tags": [
+      "driver",
+      "policy",
+      "versioning",
+      "public"
+    ]
+  }
+]

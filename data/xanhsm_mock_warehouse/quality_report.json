@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-09-21",
+  "status": "pass",
+  "checks": {
+    "sqlite_integrity": "ok",
+    "orphan_booking_customer": 0,
+    "orphan_booking_service": 0,
+    "orphan_trip_booking": 0,
+    "orphan_trip_driver": 0,
+    "orphan_trip_vehicle": 0,
+    "orphan_payment_trip": 0,
+    "orphan_offer_booking": 0,
+    "valid_bookings": 298244,
+    "completed_trips": 261241
+  }
+}
