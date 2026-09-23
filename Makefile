@@ -19,6 +19,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
+	dense-env dense-build dense-eval dense-ablation \
 	ingress-up ingress-down ingress-url creds
 
 help: ## Show this help
@@ -351,7 +352,28 @@ rag-data: ## Pull the retrieval corpus and warehouse from S3 into data/
 		done
 
 rag-eval: ## Measure retrieval on the 144 gold queries
-	@PYTHONPATH=. python3 -m rag.run_eval
+	@PYTHONPATH=. python3 -m rag.run_eval $(RAG_ARGS)
+
+# Two pythons on purpose. The serving path imports numpy and nothing heavier, so it stays
+# a small image that restarts fast; the encode needs torch and runs once, offline. Keeping
+# them apart is what stops 2.4 GB of weights from following the gateway into production.
+EMBED_PY ?= .venv-embed/bin/python
+
+dense-env: ## One-time: a python 3.12 venv with torch for the offline encode
+	uv venv --python 3.12 .venv-embed
+	VIRTUAL_ENV=.venv-embed uv pip install "sentence-transformers>=3" torch
+
+dense-build: ## Encode the corpus into data/index/dense-vi.npy (needs dense-env)
+	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+	@PYTHONPATH=. $(EMBED_PY) -m rag.build_dense
+
+dense-eval: ## Retrieval with lexical + dense fused by RRF
+	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+	@PYTHONPATH=. $(EMBED_PY) -m rag.run_eval --dense --canonical
+
+dense-ablation: ## lexical vs dense vs fused, split by query type
+	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+	@PYTHONPATH=. $(EMBED_PY) -m rag.ablation
 
 rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is worth
 	@PYTHONPATH=. python3 -m rag.run_eval --no-policy

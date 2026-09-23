@@ -18,7 +18,14 @@ crash.*.log
 __pycache__/
 *.py[cod]
 .venv/
+.venv-embed/
 venv/
+
+# Dense vectors are derived data: ~3 MB per 800 chunks today, and the corpus is the
+# thing under version control. Rebuild with `make dense-build`, or pull the built index
+# from S3 beside the corpus it was built from -- the model id is recorded next to the
+# vectors so a mismatched pair fails loudly instead of returning plausible nonsense.
+data/index/
 .ruff_cache/
 .pytest_cache/
 

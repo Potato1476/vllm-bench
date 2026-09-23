@@ -22,6 +22,10 @@ def main() -> int:
     ap.add_argument("--no-policy", action="store_true",
                     help="skip the metadata layer, to show what it is worth")
     ap.add_argument("--access", default="internal-demo")
+    ap.add_argument("--dense", nargs="?", const="data/index/dense-vi", default=None,
+                    help="path to a dense index; enables hybrid retrieval")
+    ap.add_argument("--canonical", action="store_true",
+                    help="strip discourse lead-ins before retrieving")
     a = ap.parse_args()
 
     chunks = load_chunks()
@@ -38,13 +42,29 @@ def main() -> int:
     print(f"  index {index.n_docs} doc, {len(index.postings)} term, "
           f"avgdl={index.avgdl:.0f}, dung {t_index*1000:.0f} ms\n")
 
+    dense = None
+    if a.dense:
+        # Imported here so the lexical path stays runnable on a python without numpy's
+        # heavier friends, and so a missing index is a clear error rather than a stack
+        # trace three functions deep.
+        from .dense import DenseIndex, DenseRankerAdapter, SentenceTransformerBackend
+        t0 = time.perf_counter()
+        didx = DenseIndex.load(a.dense)
+        dense = DenseRankerAdapter(didx, SentenceTransformerBackend())
+        print(f"  dense: {len(didx.ids)} vector dim={didx.vectors.shape[1]}, "
+              f"nap {time.perf_counter()-t0:.1f}s\n")
+
     policy = pol.Policy(access_level=a.access, require_current=not a.no_policy)
 
     per_query = []
     lat = []
     for q in queries:
+        text = q.query
+        if a.canonical:
+            from prompt.canonical import canonicalise
+            text = canonicalise(text).text
         t = time.perf_counter()
-        hits = retrieve.hybrid(q.query, index, by_id, dense=None,
+        hits = retrieve.hybrid(text, index, by_id, dense=dense,
                                candidates=a.candidates, top_k=a.top_k * 3)
         result = pol.apply([h.chunk for h in hits], policy)
         ranked = result.allowed[: a.top_k] if not a.no_policy else \

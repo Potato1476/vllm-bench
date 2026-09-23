@@ -155,6 +155,32 @@ def test_pipeline_refuses_before_retrieval() -> None:
     check("pipeline: nothing was retrieved for a refused request", not p.context)
 
 
+def test_dense_index_math_without_a_model() -> None:
+    """The search and the guard rails around it, with synthetic vectors.
+
+    Kept free of torch so it runs in CI and in the bench-runner image. What it protects is
+    the silent failure: an index built with one model and searched with another returns k
+    results and no error, and every one of them is meaningless.
+    """
+    import numpy as np
+
+    from rag.dense import DenseIndex
+
+    vecs = np.eye(4, dtype=np.float32)          # four orthogonal unit vectors
+    idx = DenseIndex(ids=["a", "b", "c", "d"], vectors=vecs)
+    top = idx.search(np.array([0, 1, 0, 0], dtype=np.float32), k=2)
+    check("dense: nearest vector ranks first", top[0][0] == "b", str(top))
+    check("dense: similarity is the dot product", abs(top[0][1] - 1.0) < 1e-6)
+    check("dense: k larger than the corpus is clamped",
+          len(idx.search(vecs[0], k=99)) == 4)
+
+    try:
+        DenseIndex(ids=["a"], vectors=vecs)
+        check("dense: mismatched ids/vectors rejected", False, "no error raised")
+    except ValueError:
+        check("dense: mismatched ids/vectors rejected", True)
+
+
 def test_text_normalisation_is_idempotent() -> None:
     """NFC vs NFD is invisible on screen and fatal to a token-level cache."""
     nfd = "chuyển đổi"
