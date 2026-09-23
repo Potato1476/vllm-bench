@@ -5,6 +5,13 @@ không đi sâu vào lý do từng quyết định. Phần lý do nằm trong `R
 trong chính các file mã — mọi module đều mở đầu bằng một khối giải thích **vì sao** nó
 được viết như vậy. Khi tài liệu này và mã mâu thuẫn nhau thì tin vào mã.
 
+Tài liệu chi tiết cho từng mảng:
+
+| | |
+|---|---|
+| [`GUARDRAILS.md`](GUARDRAILS.md) | Mô hình mối đe doạ, ba lớp phòng thủ, bộ test 298 mẫu chia hai nửa, và số đo trên nửa giữ lại |
+| [`diagrams/request_flow.png`](diagrams/request_flow.png) | Sơ đồ luồng một request, cả nhánh cache HIT lẫn MISS |
+
 ---
 
 ## 1. Đề tài và tiêu chí nghiệm thu
