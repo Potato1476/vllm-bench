@@ -19,7 +19,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
-	attacks-build attacks-score \
+	attacks-build attacks-score defenses-dryrun defenses-eval spotlight-cost \
 	dense-env dense-build dense-eval dense-ablation \
 	ingress-up ingress-down ingress-url creds
 
@@ -391,6 +391,19 @@ attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 # much the rule layer generalises to attacks nobody anticipated.
 attacks-score: ## Score the guardrail. FOLD=A|B to split seen from held-out techniques
 	@PYTHONPATH=. python3 bench/scripts/score_guardrail.py $(if $(FOLD),--fold=$(FOLD),)
+
+# L3 needs a live engine: ASV, MR and PNA all require generating from the model under
+# attack. --dry-run checks the harness against a stub and reports nothing quotable.
+defenses-dryrun: ## Exercise the L2/L3 harness with no GPU
+	@PYTHONPATH=. python3 bench/scripts/eval_defenses.py --dry-run
+
+defenses-eval: ## Measure spotlighting + known-answer detection against the running engine
+	@PYTHONPATH=. python3 bench/scripts/eval_defenses.py \
+		--base-url $(or $(BASE_URL),http://localhost:8000/v1) --n $(or $(N),50)
+
+spotlight-cost: ## Token cost of datamarking, per marker choice (needs dense-env)
+	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+	@PYTHONPATH=. $(EMBED_PY) bench/scripts/spotlight_cost.py
 
 # --- EBS hygiene ------------------------------------------------------------
 # Dynamically provisioned volumes are deleted by the EBS CSI controller when their PVC

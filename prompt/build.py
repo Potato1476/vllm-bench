@@ -50,10 +50,17 @@ from guardrails.injection import spotlight_rule, wrap_untrusted
 from rag.corpus import Chunk
 from rag.text_vi import normalise
 
-# Measured in this project with the Qwen2.5 tokenizer on Vietnamese text: 30.2 tokens per
-# 100 characters, against 18.8 for English. Used only to report cache estimates in
-# character terms; nothing functional depends on it.
-VI_TOKENS_PER_CHAR = 0.302
+# Measured with the Qwen2.5 tokenizer ON THIS CORPUS: 43.8 tokens per 100 characters.
+#
+# An earlier constant here said 30.2, measured on conversational Vietnamese. Both are
+# right for what they measured, and the difference matters: this corpus is technical
+# prose full of identifiers -- trip_status, pickup_zone_id, METRIC-TRIP-001 -- which a
+# BPE vocabulary trained on natural text splits into several pieces each. Using the
+# conversational figure here would have under-counted every prompt by a third, in the
+# direction that makes a capacity plan look comfortable.
+#
+# Used only to report cache estimates in character terms; nothing functional depends on it.
+VI_TOKENS_PER_CHAR = 0.438
 BLOCK_TOKENS = 16
 
 
