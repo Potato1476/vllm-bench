@@ -75,3 +75,85 @@ spec:
           expr: |
             histogram_quantile(0.95,
               sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+        # --- Theo AGENT -------------------------------------------------------
+        #
+        # The brief asks for a dashboard split by agent across >=7 MOC copilots, and this
+        # is the only place that dimension exists: vLLM sees one stream of requests and
+        # cannot tell callers apart, so every per-agent number has to come from the
+        # gateway.
+        #
+        # end_user is the label LiteLLM populates from the OpenAI `user` field in the
+        # request body. It is used here instead of api_key_alias because it needs no
+        # database: virtual keys live in Aurora, and the platform has to report per-agent
+        # numbers whether or not that tier is up. Each agent sends {"user": "moc-<name>"}.
+        #
+        # LABEL NAMES ARE NOT GUARANTEED. These are written against LiteLLM's documented
+        # Prometheus labels, not against a running proxy. Run `make audit-metrics` once
+        # the gateway is up and fix anything reported MISSING before trusting a number --
+        # the same discipline that caught four renamed vLLM metrics in week 1.
+        - record: agent:request_rate:rate1m
+          expr: |
+            sum by (end_user, requested_model) (
+              rate(litellm_proxy_total_requests_metric_total[1m]))
+
+        - record: agent:error_ratio:rate5m
+          expr: |
+            sum by (end_user) (rate(litellm_proxy_failed_requests_metric_total[5m]))
+            /
+            clamp_min(
+              sum by (end_user) (rate(litellm_proxy_total_requests_metric_total[5m])),
+              0.001)
+
+        - record: agent:e2e_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, end_user) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+        - record: agent:output_tokens:rate5m
+          expr: |
+            sum by (end_user) (rate(litellm_output_tokens_metric_total[5m]))
+
+    # --- Chi phi -------------------------------------------------------------------
+    #
+    # The acceptance criterion is "cost per 1k tokens at least 30% below an external API",
+    # and nothing in the stack measured it. The inputs are a throughput series that
+    # already exists and an hourly price that does not change during a session, so this
+    # is arithmetic rather than new infrastructure.
+    #
+    # THE HOURLY RATE IS A LITERAL AND HAS TO BE EDITED BY HAND when the instance mix
+    # changes. Deriving it from the AWS Pricing API at query time would need an exporter,
+    # a set of credentials inside the cluster and a network call on the evaluation path --
+    # for a number that changes when someone runs `make gpu`.
+    #
+    # It counts the WHOLE platform, not just the GPU. A comparison against an external
+    # API where the vendor absorbs the control plane and the tooling node is not a
+    # comparison; excluding them would flatter self-hosting by about 20 US cents an hour.
+    - name: platform.cost
+      interval: 30s
+      rules:
+        - record: platform:cost_usd_per_hour
+          # EKS control plane 0.10 + m7i.large tooling 0.1008 + g6.xlarge GPU 0.8048.
+          # us-east-1 on-demand, September 2026.
+          expr: vector(1.0056)
+
+        # Output tokens per hour, floored so an idle platform reports no cost per token
+        # rather than +Inf. Idle cost per token is undefined, not infinite, and an
+        # infinity on a dashboard trains people to ignore the panel.
+        - record: platform:output_tokens_per_hour
+          expr: sum(vllm:output_tokens:rate1m) * 3600
+
+        - record: platform:cost_usd_per_1k_output_tokens
+          expr: |
+            platform:cost_usd_per_hour
+            /
+            clamp_min(platform:output_tokens_per_hour / 1000, 1)
+
+        # Break-even: how many output tokens per hour the platform must produce before it
+        # costs less per token than an external API. Below this line self-hosting is more
+        # expensive, and the honest justification becomes data sovereignty, not price.
+        #
+        # 0.60 USD per million output tokens is the reference point; change it to whichever
+        # API the report actually compares against.
+        - record: platform:breakeven_output_tokens_per_hour
+          expr: platform:cost_usd_per_hour / 0.60 * 1e6

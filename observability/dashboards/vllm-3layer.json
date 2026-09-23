@@ -1123,6 +1123,528 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "row",
+      "id": 18,
+      "title": "Chi ph\u00ed v\u00e0 theo agent  \u2014  hai ti\u00eau ch\u00ed nghi\u1ec7m thu",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Chi ph\u00ed / 1k token \u0111\u1ea7u ra",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "To\u00e0n n\u1ec1n t\u1ea3ng: EKS + node tooling + GPU, kh\u00f4ng ch\u1ec9 ri\u00eang GPU. So v\u1edbi API ngo\u00e0i m\u00e0 nh\u00e0 cung c\u1ea5p g\u00e1nh control plane th\u00ec lo\u1ea1i hai kho\u1ea3n kia ra l\u00e0 so sai. N\u1ec1n t\u1ea3ng r\u1ed7i s\u1ebd b\u1ecb ch\u1eb7n d\u01b0\u1edbi thay v\u00ec cho ra v\u00f4 c\u1ef1c.",
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "platform:cost_usd_per_1k_output_tokens",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Chi ph\u00ed n\u1ec1n t\u1ea3ng / gi\u1edd",
+      "id": 20,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "H\u1eb1ng s\u1ed1, s\u1eeda tay khi \u0111\u1ed5i lo\u1ea1i m\u00e1y. L\u1ea5y t\u1eeb AWS Pricing API l\u00fac truy v\u1ea5n s\u1ebd c\u1ea7n exporter, credential trong c\u1ee5m v\u00e0 m\u1ed9t l\u1ea7n g\u1ecdi m\u1ea1ng tr\u00ean \u0111\u01b0\u1eddng \u0111\u00e1nh gi\u00e1 \u2014 cho m\u1ed9t con s\u1ed1 ch\u1ec9 \u0111\u1ed5i khi ai \u0111\u00f3 ch\u1ea1y `make gpu`.",
+      "gridPos": {
+        "x": 6,
+        "y": 41,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "platform:cost_usd_per_hour",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Token \u0111\u1ea7u ra / gi\u1edd",
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "M\u1eabu s\u1ed1 c\u1ee7a ph\u00e9p t\u00ednh chi ph\u00ed.",
+      "gridPos": {
+        "x": 12,
+        "y": 41,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "platform:output_tokens_per_hour",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "\u0110i\u1ec3m ho\u00e0 v\u1ed1n (token/gi\u1edd)",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "D\u01b0\u1edbi m\u1ee9c n\u00e0y, t\u1ef1 host \u0110\u1eaeT H\u01a0N API ngo\u00e0i \u1edf m\u1ee9c 0,60 USD/tri\u1ec7u token \u0111\u1ea7u ra. Khi \u0111\u00f3 l\u00fd do ch\u00ednh \u0111\u00e1ng \u0111\u1ec3 t\u1ef1 host l\u00e0 ch\u1ee7 quy\u1ec1n d\u1eef li\u1ec7u, kh\u00f4ng ph\u1ea3i gi\u00e1.",
+      "gridPos": {
+        "x": 18,
+        "y": 41,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "platform:breakeven_output_tokens_per_hour",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Chi ph\u00ed / 1k token so v\u1edbi \u0111i\u1ec3m ho\u00e0 v\u1ed1n",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "\u0110\u01b0\u1eddng ngang l\u00e0 gi\u00e1 tham chi\u1ebfu c\u1ee7a API ngo\u00e0i. Chi ph\u00ed th\u1ef1c n\u1eb1m d\u01b0\u1edbi \u0111\u01b0\u1eddng \u0111\u00f3 m\u1edbi \u0111\u1ea1t ti\u00eau ch\u00ed. \u1ede t\u1ea3i th\u1ea5p n\u00f3 s\u1ebd n\u1eb1m r\u1ea5t cao \u2014 \u0111\u00f3 l\u00e0 k\u1ebft qu\u1ea3 th\u1eadt, kh\u00f4ng ph\u1ea3i l\u1ed7i.",
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "platform:cost_usd_per_1k_output_tokens",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "th\u1ef1c t\u1ebf"
+        },
+        {
+          "expr": "0.60 / 1000 * 1000",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "API ngo\u00e0i (0,60 USD/tri\u1ec7u)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request/s theo agent",
+      "id": 24,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Nh\u00e3n agent ch\u1ec9 t\u1ed3n t\u1ea1i \u1edf gateway: vLLM th\u1ea5y m\u1ed9t d\u00f2ng request duy nh\u1ea5t v\u00e0 kh\u00f4ng ph\u00e2n bi\u1ec7t \u0111\u01b0\u1ee3c ng\u01b0\u1eddi g\u1ecdi. R\u1ed7ng ngh\u0129a l\u00e0 agent ch\u01b0a g\u1eedi tr\u01b0\u1eddng `user` trong body.",
+      "gridPos": {
+        "x": 12,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (end_user) (agent:request_rate:rate1m)",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{end_user}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "E2E p95 theo agent",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "\u0110o \u1edf gateway n\u00ean \u0111\u00e3 g\u1ed3m c\u1ea3 guardrail v\u00e0 h\u00e0ng \u0111\u1ee3i, t\u1ee9c l\u00e0 th\u1ee9 ng\u01b0\u1eddi g\u1ecdi th\u1eadt s\u1ef1 ch\u1ecbu \u2014 kh\u00e1c v\u1edbi TTFT \u0111o b\u00ean trong engine.",
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "agent:e2e_seconds:p95",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{end_user}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "T\u1ec9 l\u1ec7 l\u1ed7i theo agent",
+      "id": 26,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "vLLM v0.29 kh\u00f4ng c\u00f3 counter th\u1ea5t b\u1ea1i, n\u00ean t\u1ec9 l\u1ec7 l\u1ed7i ch\u1ec9 t\u00ednh \u0111\u01b0\u1ee3c \u1edf gateway. M\u1ed9t request engine ch\u01b0a t\u1eebng nh\u1eadn v\u1eabn l\u00e0 l\u1ed7i v\u1edbi ng\u01b0\u1eddi g\u1ecdi.",
+      "gridPos": {
+        "x": 12,
+        "y": 53,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "agent:error_ratio:rate5m",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{end_user}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }
