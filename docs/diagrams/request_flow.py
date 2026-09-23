@@ -101,6 +101,20 @@ def side(label: str = "") -> Edge:
     return Edge(color="#8c8c8c", style="dotted", label=label, fontcolor="#8c8c8c")
 
 
+def store(label: str = "") -> Edge:
+    """Writing the finished answer back into the cache.
+
+    constraint=false is load-bearing. Without it this edge pulls Redis to the far right
+    of the graph, next to the last stage that writes to it, and the cache lookup at
+    stage 4 becomes a wire running the entire width of the picture. The HIT branch then
+    reduces to a stub in the corner -- the single most important decision in the flow,
+    drawn as the least visible thing on the page. constraint=false says "draw this edge
+    but do not let it decide where the nodes go".
+    """
+    return Edge(color="#8c8c8c", style="dotted", label=label, fontcolor="#8c8c8c",
+                constraint="false")
+
+
 def main() -> None:
     with Diagram(
         "Luồng một request — MOC copilot\n"
@@ -122,7 +136,9 @@ def main() -> None:
             key = EC2("4 · Cache key\nhash(câu chuẩn hoá\n+ agent + access_level)\n"
                       "CÓ PII → KHÔNG cache")
 
-        redis = ElasticacheForRedis("Redis — SEMANTIC CACHE\nlưu CÂU TRẢ LỜI đã kiểm")
+        redis = ElasticacheForRedis("Redis — SEMANTIC CACHE\n"
+                                    "lưu CÂU TRẢ LỜI đã qua kiểm\n"
+                                    "key = câu chuẩn hoá + agent + access_level")
         aurora = Aurora("Aurora PG\nkey · quota · log")
 
         with Cluster("Chỉ chạy khi CACHE MISS"):
@@ -151,12 +167,15 @@ def main() -> None:
         auth >> side() >> aurora
         gin >> stop("BLOCK\ndừng hẳn") >> back
 
-        # --- cache ----------------------------------------------------------------
-        key >> hot("tra cứu\n(chỉ khi không có PII)") >> redis
-        redis >> skip("HIT: bỏ qua\ntruy hồi VÀ GPU") >> restore
+        # --- cache: điểm rẽ nhánh của cả luồng ------------------------------------
+        key >> hot("tra cứu\n(bỏ qua nếu câu hỏi có PII)") >> redis
 
-        # --- miss -----------------------------------------------------------------
-        key >> hot("MISS") >> ret
+        # HIT: nhảy thẳng tới bước 12. Không truy hồi, không GPU, không guardrail ra --
+        # an toàn vì chỉ câu trả lời ĐÃ QUA bước 10-11 mới được lưu vào đây.
+        redis >> skip("CACHE HIT\n→ bỏ qua 5-11\nkhông chạm GPU") >> restore
+
+        # MISS: đi hết đường dài.
+        key >> hot("CACHE MISS\n→ chạy 5-11") >> ret
         ret >> side() >> vstore
         ret >> hot() >> pol
         pol >> hot() >> dscan
@@ -167,7 +186,7 @@ def main() -> None:
         # --- về -------------------------------------------------------------------
         vllm >> hot() >> ground
         ground >> hot() >> pout
-        pout >> side("chỉ lưu câu\nĐÃ QUA kiểm") >> redis
+        pout >> store("lưu lại\n(chỉ câu đã qua kiểm)") >> redis
         pout >> hot() >> restore
         restore >> hot() >> back
 
