@@ -10,11 +10,11 @@ WORKDIR /app
 COPY guardrails/ guardrails/
 COPY prompt/ prompt/
 COPY rag/ rag/
-COPY guardrail_service/ guardrail_service/
+COPY services/ services/
 COPY data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl \
      data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl
 
 USER 65532:65532
 EXPOSE 8080
 
-CMD ["python", "-m", "guardrail_service.app"]
+CMD ["python", "-m", "services.llm_pipeline.app"]

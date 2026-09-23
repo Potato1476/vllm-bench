@@ -254,7 +254,7 @@ vllm-down: ## Remove the vLLM release but keep the cluster
 # and releases the answer only after the output checks pass.
 # Hash the actual build inputs, including uncommitted files. Tagging only with HEAD would
 # put changed source under an old immutable ECR tag and make the next push fail.
-GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag guardrail_service \
+GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag services/llm_pipeline \
 	data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl \
 	-type f ! -path '*/__pycache__/*' ! -name '*.pyc' \
 	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
@@ -265,7 +265,7 @@ guardrail-image: ## Build and push the guardrail service image to the core ECR r
 	reg=$${repo%%/*}; \
 	aws ecr get-login-password --region $(REGION) \
 		| docker login --username AWS --password-stdin "$$reg"; \
-	docker build --platform linux/amd64 -f guardrail_service/Dockerfile \
+	docker build --platform linux/amd64 -f services/llm_pipeline/Dockerfile \
 		-t "$$repo:$(GUARDRAIL_TAG)" .; \
 	docker push "$$repo:$(GUARDRAIL_TAG)"; \
 	echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"
@@ -502,7 +502,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
-	@PYTHONPATH=. python3 -m unittest tests.test_guardrail_service
+	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py

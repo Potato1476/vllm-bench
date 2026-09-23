@@ -160,7 +160,7 @@ Chart mới nằm ở `charts/litellm/` và bao gồm:
 
 ### Guardrail service
 
-`guardrail_service/` đóng gói pipeline từ nhánh main thành một OpenAI-compatible HTTP
+`services/llm_pipeline/` đóng gói pipeline từ nhánh main thành một OpenAI-compatible HTTP
 hop. LiteLLM không còn gọi thẳng vLLM:
 
 1. `pipeline.prepare` chặn injection, che PII, truy hồi, áp policy và dựng prompt.
@@ -241,7 +241,7 @@ danh sách model, completion thường, streaming và endpoint metrics.
 |---|---|
 | `charts/litellm/` | Helm chart của LiteLLM gateway. |
 | `charts/guardrail/` | Helm chart của guardrail service. |
-| `guardrail_service/` | HTTP adapter nối pipeline guardrail với vLLM. |
+| `services/llm_pipeline/` | HTTP adapter điều phối guardrail, retrieval và vLLM. |
 | `terraform/data/` | Aurora PostgreSQL, subnet group, SG, log group và outputs. |
 | `bench/scripts/smoke_litellm.sh` | Smoke test end-to-end cho gateway. |
 | `k8s/monitoring/servicemonitor-litellm.yaml` | Cấu hình Prometheus scrape LiteLLM. |

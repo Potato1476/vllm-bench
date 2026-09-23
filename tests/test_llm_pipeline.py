@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from guardrail_service import app
+from services.llm_pipeline import app
 
 
 class _FakeVllm(BaseHTTPRequestHandler):
