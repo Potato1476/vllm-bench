@@ -151,6 +151,13 @@ bằng RRF k=60 → 15 ứng viên.
 giữ phần còn lại** — một tài liệu nhiễm không được phép giết mọi câu hỏi chạm tới nó.
 Đặt sau bước 7 vì quét 50 ứng viên để bảo vệ 5 cái sống sót là gấp 10 lần việc cần làm.
 
+**8b · Known-answer detection — tuỳ chọn, mặc định tắt.** Chèn một khoá 7 ký tự kèm chỉ
+dẫn *"lặp lại khoá này và bỏ qua văn bản bên dưới"*. Nếu model **không** trả về khoá thì
+dữ liệu đã làm nó chệch hướng → từ chối. Nó **không nhìn vào văn bản**, nên bắt được tấn
+công bằng bất kỳ ngôn ngữ nào mà luật không có mẫu. Giá: **một lần sinh thêm**, prefill
+lại toàn bộ ngữ cảnh, và không dùng chung prefix cache với request chính. Chi tiết:
+[`GUARDRAILS.md`](GUARDRAILS.md) §3.3.
+
 **9 · Dựng prompt.** Prefix ổn định lên trước, datamarking cho nội dung chunk, `cache_salt`
 theo `agent|access_level`. Chi tiết ở §3.1 và §3.2.
 
@@ -210,6 +217,7 @@ theo `document_id`.
 | 7 · quyền | bỏ im lặng, chỉ đếm | nêu tên đã là rò rỉ về việc cái gì tồn tại |
 | 7 · hiệu lực | giữ lại **và nói ra** | người dùng cần biết định nghĩa đã đổi |
 | 8 · injection tài liệu | bỏ chunk, giữ phần còn lại | một tài liệu nhiễm không được giết mọi câu hỏi chạm tới nó |
+| 8b · known-answer | từ chối cả request | kiểm trên ngữ cảnh gộp nên không biết chunk nào; localise tốn 1 lần sinh mỗi chunk để tới cùng một kết luận |
 | 11 · trích dẫn bịa | chặn câu trả lời | |
 | 12 · PII đầu ra | chặn câu trả lời | |
 
@@ -226,7 +234,7 @@ Nên prompt được xếp theo thứ tự **ít đổi nhất lên trước**:
 ┌─ system ──────────────────────────────────────────────────────┐
 │ Luật cơ bản                        giống hệt mọi request      │  ← cache
 │ Luật spotlight + ký tự đánh dấu    cố định theo phiên         │  ← cache
-│ Lời nhắc tài liệu hết hiệu lực     chỉ khi ⑤ giữ lại gì đó    │  ← cache
+│ Lời nhắc tài liệu hết hiệu lực     chỉ khi bước 7 giữ lại gì đó    │  ← cache
 │ ## Dữ liệu tham khảo                                           │
 │ [METRIC-REV-001]                   ← MÃ NẰM NGOÀI vùng đánh dấu│
 │ Gross^Booking^Value^và^doanh^thu…  ← nội dung đã datamark      │
@@ -242,11 +250,11 @@ cache_salt = sha256("<agent>|<access_level>")[:16]
 **Vì sao sắp chunk theo `document_id` chứ không theo điểm.** Hai cách diễn đạt của cùng
 một câu hỏi thường lấy ra cùng tập chunk nhưng khác thứ tự. Sắp theo điểm thì prefix vỡ
 ngay ở chunk đầu; sắp theo id thì hai prompt giống nhau đến tận câu hỏi. Đo được: **+0,9%**
-— nhỏ, vì chỉ 18,5% cặp lấy ra cùng tập. Bước ③ mới là đòn bẩy thật, kéo con số đó lên
+— nhỏ, vì chỉ 18,5% cặp lấy ra cùng tập. Bước 2 mới là đòn bẩy thật, kéo con số đó lên
 100% trên bộ eval.
 
 **Vì sao mã tài liệu nằm ngoài vùng đánh dấu.** Model phải nhắc lại `[METRIC-REV-001]`
-nguyên văn để bước ⑧ đối chiếu được. Datamark nó thành `[METRIC-REV-001]` có dấu chen vào
+nguyên văn để bước 11 đối chiếu được. Datamark nó thành `[METRIC-REV-001]` có dấu chen vào
 là không trích dẫn nào khớp được nữa.
 
 **`cache_salt` là kiểm soát bảo mật, không phải nút tinh chỉnh.** vLLM trộn salt vào hash
@@ -285,18 +293,6 @@ thời gian prefill và KV cache mà batch không dùng được.
 `^` được chọn tự động vì nó rẻ hơn và **không xuất hiện lần nào** trong corpus này —
 kiểm tại thời điểm dựng index, không phải giả định. Corpus tương lai có mã nguồn hay LaTeX
 thì nó tự rơi về U+E000.
-
-### 3.3 Ở đâu thì dừng, và dừng kiểu gì
-
-| Chặng | Phản ứng | Vì sao |
-|---|---|---|
-| ① injection người dùng | từ chối cả request | không có gì đáng cứu |
-| ⑤ quyền | bỏ im lặng, chỉ đếm | nêu tên đã là rò rỉ |
-| ⑤ hiệu lực | giữ lại **và nói ra** | người dùng cần biết định nghĩa đã đổi |
-| ⑥ injection tài liệu | bỏ chunk, giữ phần còn lại | một tài liệu nhiễm không được giết mọi câu hỏi chạm tới nó |
-| ⑥b known-answer | từ chối cả request | kiểm trên ngữ cảnh gộp, không biết chunk nào |
-| ⑧ trích dẫn bịa | chặn câu trả lời | |
-| ⑨ PII đầu ra | chặn câu trả lời | |
 
 ## 4. Vòng đời một phiên làm việc
 

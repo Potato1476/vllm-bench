@@ -50,6 +50,36 @@ còn đứng vững khi lớp phát hiện trượt.
 
 ---
 
+## 2b. Guardrail chạy ở pod nào
+
+Kiến trúc mục tiêu tách LiteLLM và guardrail thành **hai pod riêng**:
+
+```
+POD 1  LiteLLM Gateway   API key · quota · router · nhãn agent
+POD 2  Guardrail         mọi bước đọc nội dung
+POD 3  vLLM              chỉ sinh văn bản
+```
+
+Ranh giới là *"ai được đọc nội dung câu hỏi"*. Gateway định tuyến theo metadata và không
+cần biết người dùng hỏi gì. Toàn bộ `guardrails/` cộng với truy hồi nằm trong POD 2, nên
+chỉ có **một nơi để audit và một codebase để sửa** khi thêm luật.
+
+**Hệ quả với cache, và đây là chỗ sơ đồ hạ tầng cần sửa.** Sơ đồ nối Redis vào *gateway*.
+Nhưng cache key chỉ đúng khi dựng từ câu hỏi **đã chuẩn hoá** và **đã che PII** — cả hai
+đều nằm trong POD 2. Gateway tra cache trước khi gọi guardrail sẽ: lấy key trên văn bản
+thô (hai cách diễn đạt thành hai entry), đưa PII chưa che vào Redis và vào log, và có thể
+trả về câu trả lời cho prompt mà guardrail sẽ chặn.
+
+Redis phải nối vào **POD 2**. Luồng vẫn thẳng đúng như mũi tên trong sơ đồ hạ tầng.
+
+**Truy hồi cũng ở POD 2**, vì bước quét injection trên tài liệu phải đọc chính các chunk
+vừa truy hồi. Tách hai bước luôn chạy cùng nhau nghĩa là chuyển 5 chunk × ~900 ký tự qua
+mạng hai lần mỗi request.
+
+Chi tiết từng bước và sơ đồ: [`OVERVIEW.md` §3](OVERVIEW.md#3-một-request-đi-qua-những-gì).
+
+---
+
 ## 3. Từng thành phần
 
 ### 3.1 PII tiếng Việt — `pii_vi.py`
