@@ -1,55 +1,67 @@
 #!/usr/bin/env python3
-"""Request flow for the MOC copilot platform: what happens, in what order, and why.
+"""Request flow for the MOC copilot platform: what happens, in what order, in which pod.
 
-    .venv-embed/bin/python docs/diagrams/request_flow.py
+    make diagrams        (or: .venv-embed/bin/python docs/diagrams/request_flow.py)
 
-This complements the infrastructure diagram rather than replacing it. The infra diagram
-answers "what runs where"; this one answers "in what order", which is where the
-correctness lives. Four orderings that are bugs if you get them wrong:
+This complements the infrastructure diagram. That one answers "what runs where"; this one
+answers "in what order", which is where the correctness lives.
 
-1. NORMALISATION COMES BEFORE THE CACHE KEY.
-   "Cho tôi biết: X" and "X" are the same question. Keyed on the raw text they are two
-   entries and the hit rate collapses. Measured on this project's evaluation set:
-   canonicalising first took the proportion of paraphrase pairs retrieving an identical
-   chunk set from 18.5% to 100%.
+THE POD SPLIT IS NOT COSMETIC. The target architecture runs LiteLLM and the guardrail as
+two pods:
 
-2. THE CACHE KEY MUST INCLUDE access_level.
-   A cached answer was computed from documents the first caller was allowed to read.
-   Serving it to someone with fewer rights leaks those documents through their summary.
-   Same argument as vLLM's cache_salt, one layer up, and Redis will not make it for you.
+    LiteLLM Gateway Pod  (API key, quota, router)
+        -> Guardrail Pod (PII scan, injection check)
+            -> vLLM Pod
 
-3. PII IS REDACTED BEFORE THE CACHE IS TOUCHED, not before the model is called.
-   Redacting only on the way to the model still leaves the raw value in the cache key,
-   the request log and the trace exporter -- three copies outside the model that nobody
-   thinks of as an LLM problem.
+An earlier version of this diagram merged them, and the merge hid a real ordering bug.
+The infrastructure diagram wires Redis to the GATEWAY. But a cache key is only correct
+when built from the question after normalisation and after PII redaction, and both of
+those happen in the GUARDRAIL pod. A gateway that looks up the cache before calling the
+guardrail therefore:
 
-3b. AND A REQUEST THAT CONTAINED PII IS NEVER CACHED.
-   Redaction creates a collision that reads as a feature until you trace it:
+    1. keys on raw text, so "Cho tôi biết: X" and "X" are two entries
+    2. puts unredacted PII into the cache key, into Redis and into the request log
+    3. can serve a cached answer for a prompt the guardrail would have blocked
 
-       A asks  "tra cứu chuyến của 0912345678"  ->  "tra cứu chuyến của [PHONE_1]"
-       B asks  "tra cứu chuyến của 0987654321"  ->  "tra cứu chuyến của [PHONE_1]"
+So Redis moves to the guardrail pod. The flow stays linear -- gateway, guardrail, vLLM,
+exactly the arrows in the infrastructure diagram -- and the ordering becomes correct. The
+gateway stays a thin router: auth, quota, per-agent labelling, retry.
 
-   Same key. B is served the answer computed from A's data, and step 12 then rewrites
-   [PHONE_1] with B's number, so the leak arrives wearing B's own details and nothing
-   looks wrong. Including the redacted VALUES in the key would fix the collision and
-   would also put the identity data back in the key, which is what redaction was for.
-   A question about a specific person has an answer about that person; it is not a
-   shared result, so it is not cached.
+THE ALTERNATIVE, for the record: keep Redis on the gateway and use LiteLLM's built-in
+cache, which then forces normalisation and PII redaction into the gateway too. That works,
+and it splits the safety logic across two services. Two homes for one security control is
+the arrangement where the copy that gets fixed is never the copy in use, so this project
+keeps all of it in one pod.
 
-4. A CACHE HIT MUST NOT BYPASS THE OUTPUT GUARDRAIL.
-   Solved by construction rather than by a second check: only responses that already
-   passed grounding and PII egress are stored, so a hit is safe because of what was
-   allowed in. Re-running the checks on every hit throws away most of the latency the
-   cache was bought for.
+RETRIEVAL LIVES IN THE GUARDRAIL POD, which the infrastructure diagram does not show at
+all. The reason is stage 8: the document-level injection scan reads the retrieved chunks.
+Splitting retrieval from the scanner that inspects its output means shipping five chunks
+of ~900 characters across the network twice per request, to separate two steps that
+always run together.
 
-TWO CACHES, NOT THE SAME THING. Redis stores finished ANSWERS and a hit skips retrieval
-and the GPU entirely. vLLM's prefix cache stores KV BLOCKS inside the engine and only
-helps requests that reach it. They compose, and the prompt layout that maximises the
-second has nothing to do with the key that maximises the first.
+FOUR ORDERINGS THAT ARE BUGS IF REVERSED:
 
-DRAWING NOTE. Every edge is its own statement. Chaining `a >> Edge(label=...) >> b >> c`
-in `diagrams` applies that label to BOTH hops, which silently scatters "MISS" across the
-whole graph -- the first render of this file had it on six unrelated edges.
+1. Normalisation before the cache key. Measured: canonicalising first took the proportion
+   of paraphrase pairs retrieving an identical chunk set from 18.5% to 100%.
+
+2. The cache key includes access_level. A cached answer was computed from documents the
+   first caller could read; serving it to someone with fewer rights leaks them through
+   the summary. Same argument as vLLM's cache_salt, one layer up.
+
+3. PII redacted before the cache is touched, not before the model is called -- and a
+   request that contained PII is never cached at all. Redaction makes two different
+   questions collide: "chuyến của 0912345678" and "chuyến của 0987654321" both become
+   "chuyến của [PHONE_1]". B would be served A's answer with B's number pasted back in.
+
+4. A cache hit must not bypass the output guardrail. Solved by construction: only answers
+   that already passed stages 11 and 12 are stored, so a hit is safe because of what was
+   allowed in.
+
+DRAWING NOTES. Every edge is its own statement: chaining `a >> Edge(label=x) >> b >> c`
+applies the label to BOTH hops. The write-back edge carries constraint="false" so it does
+not drag Redis to the far right and shrink the HIT branch to a stub. The caller is drawn
+twice, as sender and receiver, because one node pulls every return edge back across the
+graph and turns a left-to-right flow into a knot.
 """
 
 from __future__ import annotations
@@ -70,15 +82,13 @@ GRAPH_ATTR = {
     "fontsize": "14",
     "labelloc": "t",
     "splines": "ortho",
-    "nodesep": "0.6",
-    "ranksep": "1.1",
+    "nodesep": "0.55",
+    "ranksep": "1.0",
     "pad": "0.5",
-    "compound": "true",
 }
 NODE_ATTR = {"fontsize": "11"}
 
 
-# Fresh Edge per call: reusing one instance across statements lets attributes leak.
 def hot(label: str = "") -> Edge:
     """On the critical path of a cache miss."""
     return Edge(color="#1f77b4", penwidth="2.2", label=label, fontcolor="#1f77b4")
@@ -102,14 +112,12 @@ def side(label: str = "") -> Edge:
 
 
 def store(label: str = "") -> Edge:
-    """Writing the finished answer back into the cache.
+    """Write-back into the cache.
 
-    constraint=false is load-bearing. Without it this edge pulls Redis to the far right
-    of the graph, next to the last stage that writes to it, and the cache lookup at
-    stage 4 becomes a wire running the entire width of the picture. The HIT branch then
-    reduces to a stub in the corner -- the single most important decision in the flow,
-    drawn as the least visible thing on the page. constraint=false says "draw this edge
-    but do not let it decide where the nodes go".
+    constraint=false is load-bearing. Without it this edge pulls Redis to the far right,
+    next to the last stage that writes to it, the lookup becomes a wire spanning the whole
+    picture, and the HIT branch shrinks to a stub in the corner -- the most important
+    decision in the flow drawn as the least visible thing on the page.
     """
     return Edge(color="#8c8c8c", style="dotted", label=label, fontcolor="#8c8c8c",
                 constraint="false")
@@ -118,75 +126,80 @@ def store(label: str = "") -> Edge:
 def main() -> None:
     with Diagram(
         "Luồng một request — MOC copilot\n"
-        "xanh đậm = đường khi CACHE MISS · xanh lá đứt = đường tắt khi CACHE HIT · "
-        "đỏ = từ chối · xám chấm = ngoài đường tới hạn",
+        "xanh đậm = CACHE MISS · xanh lá đứt = CACHE HIT · đỏ = từ chối · "
+        "xám chấm = ngoài đường tới hạn",
         filename=str(OUT), outformat="png", show=False,
         graph_attr=GRAPH_ATTR, node_attr=NODE_ATTR, direction="LR",
     ):
-        # The caller is drawn twice, as sender and receiver. One node would pull every
-        # return edge back across the graph and turn a left-to-right flow into a knot.
         caller = User("7 agent MOC\n(gửi)")
         back = User("7 agent MOC\n(nhận)")
         nlb = ElbNetworkLoadBalancer("NLB nội bộ\nTLS 1.3 : 443")
 
-        with Cluster("Gateway — LiteLLM (pod CPU)"):
-            auth = EC2("1 · Auth + quota\ngắn nhãn agent")
-            norm = EC2("2 · Chuẩn hoá câu hỏi\nNFC · cắt cụm dẫn nhập")
-            gin = EC2("3 · Guardrail vào\ninjection · che PII")
-            key = EC2("4 · Cache key\nhash(câu chuẩn hoá\n+ agent + access_level)\n"
-                      "CÓ PII → KHÔNG cache")
+        with Cluster("POD 1 — LiteLLM Gateway (CPU)\nđịnh tuyến, không chạm nội dung"):
+            auth = EC2("1 · Auth + quota\ngắn nhãn agent cho metric")
 
-        redis = ElasticacheForRedis("Redis — SEMANTIC CACHE\n"
-                                    "lưu CÂU TRẢ LỜI đã qua kiểm\n"
-                                    "key = câu chuẩn hoá + agent + access_level")
         aurora = Aurora("Aurora PG\nkey · quota · log")
 
-        with Cluster("Chỉ chạy khi CACHE MISS"):
-            ret = EC2("5 · Truy hồi\nBM25 + dense, RRF k=60")
-            pol = EC2("6 · Policy metadata\nquyền: bỏ · hiệu lực: giữ + báo")
-            dscan = EC2("7 · Quét injection\ntrong tài liệu")
-            build = EC2("8 · Dựng prompt\ndatamark · cache_salt")
-            vllm = EC2("9 · vLLM sinh\n(prefix cache KV bên trong)")
+        with Cluster("POD 2 — Guardrail (CPU)\nmọi bước đọc nội dung đều ở đây"):
+            with Cluster("Vào"):
+                norm = EC2("2 · Chuẩn hoá câu hỏi\nNFC · cắt cụm dẫn nhập")
+                gin = EC2("3 · Chặn injection\nnguồn = người dùng")
+                pii = EC2("4 · Che PII\n0912345678 → [PHONE_1]")
+                key = EC2("5 · Cache key\nhash(chuẩn hoá + agent\n+ access_level)\n"
+                          "có PII → KHÔNG cache")
 
+            with Cluster("Chỉ khi CACHE MISS"):
+                ret = EC2("6 · Truy hồi\nBM25 + dense, RRF k=60")
+                pol = EC2("7 · Policy metadata\nquyền: bỏ · hiệu lực: giữ + báo")
+                dscan = EC2("8 · Chặn injection\nnguồn = tài liệu")
+                build = EC2("9 · Dựng prompt\ndatamark · cache_salt")
+
+        redis = ElasticacheForRedis("Redis — SEMANTIC CACHE\n"
+                                    "nối vào POD 2, không phải gateway\n"
+                                    "chỉ lưu câu ĐÃ QUA kiểm")
         vstore = Aurora("pgvector\nvector corpus dựng sẵn")
 
-        with Cluster("Guardrail ra — đường về"):
-            ground = EC2("10 · Kiểm căn cứ\ntrích dẫn bịa → chặn")
-            pout = EC2("11 · Quét PII ra")
+        with Cluster("POD 3 — vLLM (GPU)"):
+            vllm = EC2("10 · Sinh câu trả lời\nprefix cache KV bên trong")
 
-        restore = EC2("12 · Khôi phục placeholder")
+        # Declared after POD 3 on purpose: graphviz ranks clusters in declaration order,
+        # and declaring the return stages alongside the inbound ones put 11-13 ABOVE 2-5,
+        # so the picture read backwards.
+        with Cluster("POD 2 — Guardrail, đường về"):
+            ground = EC2("11 · Kiểm căn cứ\ntrích dẫn bịa → chặn")
+            pout = EC2("12 · Quét PII ra")
+            restore = EC2("13 · Khôi phục placeholder")
+
         s3 = S3("S3\ntrọng số · dataset")
         prom = Prometheus("Prometheus\nTTFT · TPOT · VRAM")
 
         # --- vào ------------------------------------------------------------------
         caller >> hot() >> nlb
         nlb >> hot() >> auth
-        auth >> hot() >> norm
-        norm >> hot() >> gin
-        gin >> hot() >> key
         auth >> side() >> aurora
+        auth >> hot("sang POD 2") >> norm
+        norm >> hot() >> gin
+        gin >> hot() >> pii
+        pii >> hot() >> key
         gin >> stop("BLOCK\ndừng hẳn") >> back
 
-        # --- cache: điểm rẽ nhánh của cả luồng ------------------------------------
-        key >> hot("tra cứu\n(bỏ qua nếu câu hỏi có PII)") >> redis
+        # --- cache: điểm rẽ nhánh -------------------------------------------------
+        key >> hot("tra cứu") >> redis
+        redis >> skip("CACHE HIT\nbỏ qua 6-12\nkhông chạm GPU") >> restore
+        key >> hot("CACHE MISS\nchạy 6-12") >> ret
 
-        # HIT: nhảy thẳng tới bước 12. Không truy hồi, không GPU, không guardrail ra --
-        # an toàn vì chỉ câu trả lời ĐÃ QUA bước 10-11 mới được lưu vào đây.
-        redis >> skip("CACHE HIT\n→ bỏ qua 5-11\nkhông chạm GPU") >> restore
-
-        # MISS: đi hết đường dài.
-        key >> hot("CACHE MISS\n→ chạy 5-11") >> ret
+        # --- miss -----------------------------------------------------------------
         ret >> side() >> vstore
         ret >> hot() >> pol
         pol >> hot() >> dscan
         dscan >> hot() >> build
-        build >> hot() >> vllm
+        build >> hot("sang POD 3") >> vllm
         vllm >> side() >> s3
 
         # --- về -------------------------------------------------------------------
-        vllm >> hot() >> ground
+        vllm >> hot("về POD 2") >> ground
         ground >> hot() >> pout
-        pout >> store("lưu lại\n(chỉ câu đã qua kiểm)") >> redis
+        pout >> store("lưu lại\nchỉ câu đã qua kiểm") >> redis
         pout >> hot() >> restore
         restore >> hot() >> back
 
