@@ -1,6 +1,11 @@
 # The guardrail image is built from the repository root because it packages modules from
 # several top-level directories. Send only its runtime files; Terraform provider caches
 # alone are hundreds of MB and must never become Docker build context.
+#
+# THIS FILE HAS TO BE UPDATED WHENEVER A PACKAGED DIRECTORY IS RENAMED. It still said
+# guardrail_service/ after that package became services/llm_pipeline/, so `services/`
+# was excluded from the build context and `COPY services/ services/` failed with
+# "/services": not found -- an error that points at the Dockerfile and is caused here.
 **
 !guardrails/
 !guardrails/**
@@ -8,8 +13,8 @@
 !prompt/**
 !rag/
 !rag/**
-!guardrail_service/
-!guardrail_service/**
+!services/
+!services/**
 !data/
 !data/xanhsm_retrieval_mock/
 !data/xanhsm_retrieval_mock/corpus/

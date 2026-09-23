@@ -83,15 +83,23 @@ spec:
         # cannot tell callers apart, so every per-agent number has to come from the
         # gateway.
         #
-        # end_user is the label LiteLLM populates from the OpenAI `user` field in the
-        # request body. It is used here instead of api_key_alias because it needs no
-        # database: virtual keys live in Aurora, and the platform has to report per-agent
-        # numbers whether or not that tier is up. Each agent sends {"user": "moc-<name>"}.
+        # MEASURED ON A RUNNING PROXY, and the first assumption here was wrong.
         #
-        # LABEL NAMES ARE NOT GUARANTEED. These are written against LiteLLM's documented
-        # Prometheus labels, not against a running proxy. Run `make audit-metrics` once
-        # the gateway is up and fix anything reported MISSING before trusting a number --
-        # the same discipline that caught four renamed vLLM metrics in week 1.
+        # The plan was to key on end_user, populated from the OpenAI `user` field in the
+        # request body, so per-agent numbers would work without the Aurora tier. Sending
+        # {"user": "moc-analytics"} through LiteLLM v1.90.2 produces:
+        #
+        #     end_user="None"   user="default_user_id"   api_key_alias="None"
+        #
+        # The label exists; LiteLLM does not fill it from the request body. It is
+        # populated from end-user tracking attached to a VIRTUAL KEY, and virtual keys
+        # live in the database. So per-agent attribution needs `make data-up` and one key
+        # per agent -- there is no database-free shortcut.
+        #
+        # The rules are kept as written because the shape is right and they start
+        # reporting the moment keys exist. Until then they return ONE merged series, which
+        # is the failure `make audit-metrics` now checks for: a dashboard drawing a single
+        # plausible line where there should be seven.
         - record: agent:request_rate:rate1m
           expr: |
             sum by (end_user, requested_model) (

@@ -1,0 +1,34 @@
+# Scrape the NVIDIA DCGM exporter.
+#
+# Written by hand rather than left to the gpu-operator chart. The chart's
+# dcgmExporter.serviceMonitor option produced nothing here, because the operator creates
+# the exporter's Service at runtime from a ClusterPolicy -- so on a cluster where the
+# GPU operator is installed BEFORE kube-prometheus-stack, the ServiceMonitor CRD does not
+# exist at the moment the chart would create it, and the object is silently skipped. A
+# later `helm upgrade` does not recreate it either.
+#
+# The symptom is not an error. It is Prometheus reporting zero DCGM series while the
+# exporter pod sits there Running, which reads as "the GPU has no metrics" rather than
+# "nobody is scraping it".
+#
+# Port name and labels are copied from the live Service, not guessed: a ServiceMonitor
+# naming the port wrongly fails the same silent way.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-operator
+  labels:
+    release: kps
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+  endpoints:
+    - port: gpu-metrics
+      # 5s because a GPU utilisation figure averaged over 30s hides exactly the bursts
+      # a benchmark is trying to see.
+      interval: 5s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
