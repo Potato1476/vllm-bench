@@ -1,0 +1,284 @@
+{
+  "uid": "gateway-guardrail",
+  "title": "Gateway & guardrail — traffic, safety, dependencies",
+  "description": "Caller-facing LiteLLM SLIs, guardrail latency and decisions, then routing, PostgreSQL, token and cost context. All panels use bounded labels and never expose prompt, response, PII or request IDs.",
+  "tags": ["litellm", "guardrail", "slo"],
+  "timezone": "",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "graphTooltip": 1,
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "hide": 0,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "model",
+        "label": "Requested model",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": {"query": "label_values(litellm_proxy_total_requests_metric_total, requested_model)", "refId": "variable-model"},
+        "definition": "label_values(litellm_proxy_total_requests_metric_total, requested_model)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {"text": "All", "value": "$__all"},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Caller SLI — what LiteLLM clients experience",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requests / s",
+      "description": "All requests received by LiteLLM for the selected model.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "targets": [{"refId": "A", "expr": "sum(litellm:request_rate:rate1m{requested_model=~\"$model\"})", "legendFormat": "requests/s", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area", "textMode": "auto"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Gateway error ratio",
+      "description": "Authentication, quota, routing, timeout and upstream failures visible to callers.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "targets": [{"refId": "A", "expr": "max(litellm:error_ratio:rate2m{requested_model=~\"$model\"})", "legendFormat": "errors", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.02}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area", "textMode": "auto"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Guardrail refusal ratio",
+      "description": "Policy/safety refusals are separate from service errors.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "targets": [{"refId": "A", "expr": "max(guardrail:block_ratio:rate5m{model=~\"$model\"})", "legendFormat": "refused", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.1}, {"color": "red", "value": 0.2}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area", "textMode": "auto"}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "End-to-end p95",
+      "description": "Request arrival at LiteLLM through completion of all post-call processing.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "targets": [{"refId": "A", "expr": "max(litellm:e2e_seconds:p95{requested_model=~\"$model\"})", "legendFormat": "p95", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1.5}, {"color": "red", "value": 3}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area", "textMode": "auto"}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "End-to-end latency percentiles",
+      "description": "Keep requested_model in every quantile; merging model histograms produces a percentile that describes neither model.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "targets": [
+        {"refId": "A", "expr": "litellm:e2e_seconds:p50{requested_model=~\"$model\"}", "legendFormat": "{{requested_model}} p50"},
+        {"refId": "B", "expr": "litellm:e2e_seconds:p95{requested_model=~\"$model\"}", "legendFormat": "{{requested_model}} p95"},
+        {"refId": "C", "expr": "litellm:e2e_seconds:p99{requested_model=~\"$model\"}", "legendFormat": "{{requested_model}} p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Latency decomposition p95",
+      "description": "Gateway total contains every layer. Guardrail processing explicitly excludes the vLLM call; upstream is the guarded vLLM call.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "targets": [
+        {"refId": "A", "expr": "litellm:e2e_seconds:p95{requested_model=~\"$model\"}", "legendFormat": "LiteLLM E2E {{requested_model}}"},
+        {"refId": "B", "expr": "litellm:overhead_seconds:p95", "legendFormat": "LiteLLM overhead {{model_group}}"},
+        {"refId": "C", "expr": "guardrail:processing_seconds:p95{model=~\"$model\"}", "legendFormat": "guardrail only {{model}}"},
+        {"refId": "D", "expr": "guardrail:upstream_seconds:p95{model=~\"$model\"}", "legendFormat": "vLLM upstream {{model}}"},
+        {"refId": "E", "expr": "litellm:queue_seconds:p95{requested_model=~\"$model\"}", "legendFormat": "LiteLLM queue {{requested_model}}"},
+        {"refId": "F", "expr": "litellm:ttft_seconds:p95{requested_model=~\"$model\"}", "legendFormat": "upstream TTFT {{requested_model}}"},
+        {"refId": "G", "expr": "litellm:deployment_seconds_per_output_token:p95", "legendFormat": "seconds/output token {{litellm_model_name}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Guardrail decisions — what was blocked, redacted or dropped",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Request outcomes by terminal stage",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "targets": [{"refId": "A", "expr": "sum by (outcome, stage) (rate(guardrail_requests_total{model=~\"$model\"}[5m]))", "legendFormat": "{{outcome}} / {{stage}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Guardrail stage latency p95",
+      "description": "Use this panel to distinguish retrieval, policy, injection scanning, prompt construction and answer checks.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "targets": [{"refId": "A", "expr": "guardrail:stage_seconds:p95", "legendFormat": "{{stage}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 4}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Safety signals",
+      "description": "Counts only bounded metadata; no prompt text or PII values enter metric labels.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
+      "targets": [
+        {"refId": "A", "expr": "sum by (direction, kind, action) (rate(guardrail_pii_findings_total[5m]))", "legendFormat": "PII {{direction}} / {{kind}} / {{action}}"},
+        {"refId": "B", "expr": "sum by (source, action) (rate(guardrail_injection_detections_total[5m]))", "legendFormat": "injection {{source}} / {{action}}"},
+        {"refId": "C", "expr": "sum by (kind) (rate(guardrail_citations_total[5m]))", "legendFormat": "citation {{kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Grounding quality",
+      "description": "Lexical overlap is a screening signal, not a factuality verdict. Read it with the explicit grounding verdict counters.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (le, verdict) (rate(guardrail_grounding_overlap_ratio_bucket[5m])))", "legendFormat": "overlap p50 / {{verdict}}"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le, verdict) (rate(guardrail_grounding_overlap_ratio_bucket[5m])))", "legendFormat": "overlap p95 / {{verdict}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "min": 0, "max": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"]}, "tooltip": {"mode": "multi", "sort": "asc"}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Retrieval context and document drops",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, model) (rate(guardrail_documents_retrieved_bucket{model=~\"$model\"}[5m])))", "legendFormat": "context docs p95 {{model}}"},
+        {"refId": "B", "expr": "sum by (reason) (rate(guardrail_documents_dropped_total[5m]))", "legendFormat": "dropped / {{reason}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Dependencies and usage — routing, Aurora, tokens and spend",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Concurrency and deployment errors",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "targets": [
+        {"refId": "A", "expr": "litellm_in_flight_requests", "legendFormat": "LiteLLM in flight"},
+        {"refId": "B", "expr": "guardrail_in_flight_requests", "legendFormat": "guardrail in flight"},
+        {"refId": "C", "expr": "litellm:deployment_error_ratio:rate2m{requested_model=~\"$model\"}", "legendFormat": "deployment error ratio {{requested_model}}"},
+        {"refId": "D", "expr": "litellm_deployment_state", "legendFormat": "deployment state {{litellm_model_name}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Aurora/PostgreSQL health",
+      "description": "Emitted by LiteLLM prometheus_system callback when DATABASE_URL-backed operations occur.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "targets": [
+        {"refId": "A", "expr": "litellm:postgres_seconds:p95", "legendFormat": "PostgreSQL p95"},
+        {"refId": "B", "expr": "litellm:postgres_error_ratio:rate5m", "legendFormat": "PostgreSQL error ratio"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Input and output tokens / s",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 39},
+      "targets": [
+        {"refId": "A", "expr": "litellm:input_tokens:rate1m{requested_model=~\"$model\"}", "legendFormat": "input {{requested_model}}"},
+        {"refId": "B", "expr": "litellm:output_tokens:rate1m{requested_model=~\"$model\"}", "legendFormat": "output {{requested_model}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "cps", "decimals": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "LiteLLM spend / 1,000 tokens",
+      "description": "This is meaningful only after internal model prices are configured in LiteLLM; infrastructure cost remains a separate benchmark calculation.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
+      "targets": [{"refId": "A", "expr": "1000 * sum by (model) (rate(litellm_spend_metric_total[1h])) / clamp_min(sum by (model) (rate(litellm_total_tokens_metric_total[1h])), 1)", "legendFormat": "{{model}}"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 6}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Traffic by LiteLLM team",
+      "description": "Use bounded LiteLLM teams as the agent/DA identity. Do not promote arbitrary end_user or request IDs to dashboard dimensions.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 47},
+      "targets": [{"refId": "A", "expr": "sum by (team, requested_model) (rate(litellm_proxy_total_requests_metric_total{requested_model=~\"$model\"}[5m]))", "legendFormat": "{{team}} / {{requested_model}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 3}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Token consumption by LiteLLM team",
+      "description": "Per-team usage is the stable attribution dimension for pilot agents and cost allocation.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 47},
+      "targets": [{"refId": "A", "expr": "sum by (team, requested_model) (rate(litellm_total_tokens_metric_total{requested_model=~\"$model\"}[5m]))", "legendFormat": "{{team}} / {{requested_model}}"}],
+      "fieldConfig": {"defaults": {"unit": "cps", "decimals": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    }
+  ]
+}

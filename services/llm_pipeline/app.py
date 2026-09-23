@@ -48,8 +48,230 @@ _chunks_by_id = {chunk.chunk_id: chunk for chunk in _chunks}
 _index = bm25.build([(chunk.chunk_id, chunk.text) for chunk in _chunks])
 _sessions: dict[tuple[str, str], Session] = {}
 _sessions_lock = threading.Lock()
-_metrics: Counter[tuple[str, str]] = Counter()
-_metrics_lock = threading.Lock()
+
+
+def _escape_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+class Metrics:
+    """Small dependency-free Prometheus registry for the guardrail service."""
+
+    COUNTERS = {
+        "guardrail_requests_total": (
+            "Guardrail requests by outcome, terminal stage and routed model.",
+            ("outcome", "stage", "model"),
+        ),
+        "guardrail_upstream_requests_total": (
+            "Calls from the guardrail service to vLLM.",
+            ("model", "outcome"),
+        ),
+        "guardrail_pii_findings_total": (
+            "PII findings by direction, kind and action; values are never exported.",
+            ("direction", "kind", "action"),
+        ),
+        "guardrail_injection_detections_total": (
+            "Prompt-injection detections by source and action.",
+            ("source", "action"),
+        ),
+        "guardrail_documents_dropped_total": (
+            "Retrieved documents excluded from the prompt by reason.",
+            ("reason",),
+        ),
+        "guardrail_grounding_verdicts_total": (
+            "Grounding checks by verdict.",
+            ("verdict",),
+        ),
+        "guardrail_citations_total": (
+            "Citation observations by validity.",
+            ("kind",),
+        ),
+    }
+    HISTOGRAMS = {
+        "guardrail_request_duration_seconds": (
+            "End-to-end time spent in the guardrail hop, including vLLM.",
+            ("outcome", "model"),
+            (0.05, 0.1, 0.15, 0.25, 0.5, 1.0, 1.5, 3.0, 5.0, 10.0, 30.0, 120.0, 300.0),
+        ),
+        "guardrail_processing_duration_seconds": (
+            "Guardrail processing time excluding the vLLM upstream call.",
+            ("outcome", "model"),
+            (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 1.0, 3.0),
+        ),
+        "guardrail_stage_duration_seconds": (
+            "Execution time of each guardrail pipeline stage.",
+            ("stage",),
+            (0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 1.0),
+        ),
+        "guardrail_upstream_duration_seconds": (
+            "Time waiting for the routed vLLM upstream.",
+            ("model",),
+            (0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 3.0, 5.0, 10.0, 30.0, 120.0, 300.0),
+        ),
+        "guardrail_documents_retrieved": (
+            "Number of documents admitted to the prompt per request.",
+            ("model",),
+            (0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 50.0),
+        ),
+        "guardrail_grounding_overlap_ratio": (
+            "Lexical overlap between an answer and its cited evidence.",
+            ("verdict",),
+            (0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 0.9, 1.0),
+        ),
+    }
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.counters: Counter[tuple[str, tuple[str, ...]]] = Counter()
+        self.gauges: dict[tuple[str, tuple[str, ...]], float] = {}
+        self.histograms: dict[
+            tuple[str, tuple[str, ...]], tuple[list[int], float, int]
+        ] = {}
+        self.gauge_meta = {
+            "guardrail_in_flight_requests": (
+                "Completion requests currently executing in this process.", ()
+            ),
+            "guardrail_build_info": (
+                "Build, policy and corpus identity for benchmark lineage.",
+                ("version", "policy_version", "corpus_version"),
+            ),
+        }
+        self.set_gauge("guardrail_in_flight_requests", {}, 0)
+        self.set_gauge("guardrail_build_info", {
+            "version": os.getenv("GUARDRAIL_VERSION", "dev"),
+            "policy_version": os.getenv("POLICY_VERSION", "builtin-v1"),
+            "corpus_version": os.getenv("CORPUS_VERSION", "bundled"),
+        }, 1)
+        self._seed_zero_series()
+
+    @staticmethod
+    def _label_values(meta: tuple[str, tuple[str, ...]], labels: dict[str, str]) -> tuple[str, ...]:
+        return tuple(str(labels[name]) for name in meta[1])
+
+    def _seed_zero_series(self) -> None:
+        models = tuple(sorted(MODEL_ROUTES)) + ("unknown",)
+        for model in models:
+            for outcome, stage in (
+                ("allowed", "none"), ("refused", "injection"),
+                ("refused", "retrieval"), ("refused", "known_answer"),
+                ("refused", "grounding"), ("refused", "pii_egress"),
+                ("error", "request"), ("error", "upstream"),
+                ("error", "internal"),
+            ):
+                self.inc("guardrail_requests_total", {
+                    "outcome": outcome, "stage": stage, "model": model,
+                }, 0)
+            for outcome in ("success", "error"):
+                self.inc("guardrail_upstream_requests_total", {
+                    "model": model, "outcome": outcome,
+                }, 0)
+            for outcome in ("allowed", "refused", "error"):
+                self.observe("guardrail_request_duration_seconds", {
+                    "outcome": outcome, "model": model,
+                }, 0, count=False)
+                self.observe("guardrail_processing_duration_seconds", {
+                    "outcome": outcome, "model": model,
+                }, 0, count=False)
+            self.observe("guardrail_upstream_duration_seconds", {"model": model}, 0, count=False)
+            self.observe("guardrail_documents_retrieved", {"model": model}, 0, count=False)
+        for stage in (
+            "injection_user", "pii_ingress", "canonicalise", "retrieval", "policy",
+            "injection_document", "known_answer", "prompt", "grounding", "pii_egress",
+            "restore",
+        ):
+            self.observe("guardrail_stage_duration_seconds", {"stage": stage}, 0, count=False)
+        for verdict in ("ok", "flag", "block"):
+            self.inc("guardrail_grounding_verdicts_total", {"verdict": verdict}, 0)
+            self.observe("guardrail_grounding_overlap_ratio", {"verdict": verdict}, 0, count=False)
+        for kind in ("valid", "fabricated", "missing"):
+            self.inc("guardrail_citations_total", {"kind": kind}, 0)
+        for source, action in (("user", "block"), ("document", "drop")):
+            self.inc("guardrail_injection_detections_total", {
+                "source": source, "action": action,
+            }, 0)
+        for kind in ("email", "cccd", "phone", "plate", "cmnd", "tax_id", "passport"):
+            for direction, action in (("ingress", "redact"), ("egress", "block")):
+                self.inc("guardrail_pii_findings_total", {
+                    "direction": direction, "kind": kind, "action": action,
+                }, 0)
+        for reason in ("access", "stale", "injection"):
+            self.inc("guardrail_documents_dropped_total", {"reason": reason}, 0)
+
+    def inc(self, name: str, labels: dict[str, str], value: float = 1) -> None:
+        values = self._label_values(self.COUNTERS[name], labels)
+        with self.lock:
+            self.counters[(name, values)] += value
+
+    def add_gauge(self, name: str, labels: dict[str, str], value: float) -> None:
+        values = self._label_values(self.gauge_meta[name], labels)
+        with self.lock:
+            key = (name, values)
+            self.gauges[key] = self.gauges.get(key, 0) + value
+
+    def set_gauge(self, name: str, labels: dict[str, str], value: float) -> None:
+        values = self._label_values(self.gauge_meta[name], labels)
+        with self.lock:
+            self.gauges[(name, values)] = value
+
+    def observe(
+        self, name: str, labels: dict[str, str], value: float, *, count: bool = True
+    ) -> None:
+        meta = self.HISTOGRAMS[name]
+        values = self._label_values((meta[0], meta[1]), labels)
+        with self.lock:
+            key = (name, values)
+            buckets, total, observations = self.histograms.get(
+                key, ([0] * len(meta[2]), 0.0, 0)
+            )
+            if count:
+                for index, boundary in enumerate(meta[2]):
+                    if value <= boundary:
+                        buckets[index] += 1
+                total += value
+                observations += 1
+            self.histograms[key] = (buckets, total, observations)
+
+    @staticmethod
+    def _labels(names: tuple[str, ...], values: tuple[str, ...], extra: str = "") -> str:
+        pairs = [f'{name}="{_escape_label(value)}"' for name, value in zip(names, values)]
+        if extra:
+            pairs.append(extra)
+        return "{" + ",".join(pairs) + "}" if pairs else ""
+
+    def render(self) -> bytes:
+        lines: list[str] = []
+        with self.lock:
+            for name, (help_text, label_names) in self.COUNTERS.items():
+                lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} counter"))
+                for (metric, values), value in sorted(self.counters.items()):
+                    if metric == name:
+                        lines.append(f"{name}{self._labels(label_names, values)} {value:g}")
+            for name, (help_text, label_names) in self.gauge_meta.items():
+                lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} gauge"))
+                for (metric, values), value in sorted(self.gauges.items()):
+                    if metric == name:
+                        lines.append(f"{name}{self._labels(label_names, values)} {value:g}")
+            for name, (help_text, label_names, boundaries) in self.HISTOGRAMS.items():
+                lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} histogram"))
+                for (metric, values), (buckets, total, count) in sorted(self.histograms.items()):
+                    if metric != name:
+                        continue
+                    for boundary, bucket_count in zip(boundaries, buckets):
+                        le = f'le="{boundary:g}"'
+                        lines.append(
+                            f"{name}_bucket{self._labels(label_names, values, le)} "
+                            f"{bucket_count}"
+                        )
+                    lines.append(
+                        f'{name}_bucket{self._labels(label_names, values, "le=\"+Inf\"")} {count}'
+                    )
+                    labels = self._labels(label_names, values)
+                    lines.append(f"{name}_sum{labels} {total:g}")
+                    lines.append(f"{name}_count{labels} {count}")
+        return ("\n".join(lines) + "\n").encode()
+
+
+_telemetry = Metrics()
 
 
 def _session(agent: str, access_level: str) -> Session:
@@ -119,9 +341,75 @@ def _answer(response: dict[str, Any]) -> str:
     return content
 
 
-def _count(outcome: str, stage: str = "none") -> None:
-    with _metrics_lock:
-        _metrics[(outcome, stage)] += 1
+def _model_label(model: str) -> str:
+    # Never allow an arbitrary request field to create unbounded Prometheus series.
+    return model if model in MODEL_ROUTES else "unknown"
+
+
+def _count(outcome: str, stage: str, model: str) -> None:
+    _telemetry.inc("guardrail_requests_total", {
+        "outcome": outcome, "stage": stage, "model": model,
+    })
+
+
+def _observe_stage(stage: str, seconds: float) -> None:
+    _telemetry.observe("guardrail_stage_duration_seconds", {"stage": stage}, seconds)
+
+
+def _track_prepared(prepared: pipeline.PreparedRequest, model: str) -> None:
+    _telemetry.observe(
+        "guardrail_documents_retrieved", {"model": model}, len(prepared.context)
+    )
+    if prepared.denied_documents:
+        _telemetry.inc(
+            "guardrail_documents_dropped_total", {"reason": "access"},
+            prepared.denied_documents,
+        )
+    if prepared.stale_documents:
+        _telemetry.inc(
+            "guardrail_documents_dropped_total", {"reason": "stale"},
+            prepared.stale_documents,
+        )
+    if prepared.dropped_documents:
+        _telemetry.inc(
+            "guardrail_documents_dropped_total", {"reason": "injection"},
+            len(prepared.dropped_documents),
+        )
+        _telemetry.inc(
+            "guardrail_injection_detections_total",
+            {"source": "document", "action": "drop"},
+            len(prepared.dropped_documents),
+        )
+    if prepared.inbound_pii:
+        for finding in prepared.inbound_pii.findings:
+            _telemetry.inc("guardrail_pii_findings_total", {
+                "direction": "ingress", "kind": finding.kind, "action": "redact",
+            })
+
+
+def _track_final(final: pipeline.FinalAnswer) -> None:
+    report = final.report
+    _telemetry.inc("guardrail_grounding_verdicts_total", {"verdict": report.verdict})
+    _telemetry.observe(
+        "guardrail_grounding_overlap_ratio", {"verdict": report.verdict}, report.overlap
+    )
+    fabricated = set(report.fabricated)
+    valid = sum(citation not in fabricated for citation in report.cited)
+    if valid:
+        _telemetry.inc("guardrail_citations_total", {"kind": "valid"}, valid)
+    if report.fabricated:
+        _telemetry.inc(
+            "guardrail_citations_total", {"kind": "fabricated"}, len(report.fabricated)
+        )
+    missing = len(report.uncited_sentences)
+    if report.blocked and not report.cited:
+        missing += 1
+    if missing:
+        _telemetry.inc("guardrail_citations_total", {"kind": "missing"}, missing)
+    for finding in final.outbound_pii:
+        _telemetry.inc("guardrail_pii_findings_total", {
+            "direction": "egress", "kind": finding.kind, "action": "block",
+        })
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -150,15 +438,30 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "endpoint not found")
             return
         started = time.monotonic()
+        model_label = "unknown"
+        outcome = "error"
+        terminal_stage = "internal"
+        upstream_elapsed = 0.0
+        _telemetry.add_gauge("guardrail_in_flight_requests", {}, 1)
         try:
             payload = self._read_json()
             model = str(payload.get("model", ""))
+            model_label = _model_label(model)
             question = _question(payload.get("messages"))
             if not model or not question:
+                terminal_stage = "request"
                 self._error(
                     HTTPStatus.BAD_REQUEST,
                     "invalid_request",
                     "model and a user message are required",
+                )
+                return
+            if model not in MODEL_ROUTES:
+                terminal_stage = "request"
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_request",
+                    f"model is not routed by guardrail: {model}",
                 )
                 return
 
@@ -173,10 +476,18 @@ class Handler(BaseHTTPRequestHandler):
                 _chunks_by_id,
                 _session(agent, access),
                 policy=policy.Policy(access_level=access),
+                observer=_observe_stage,
             )
+            _track_prepared(prepared, model_label)
             if not prepared.ok:
                 assert prepared.refusal is not None
-                _count("refused", prepared.refusal.stage)
+                outcome = "refused"
+                terminal_stage = prepared.refusal.stage
+                if terminal_stage == "injection":
+                    _telemetry.inc(
+                        "guardrail_injection_detections_total",
+                        {"source": "user", "action": "block"},
+                    )
                 self._error(
                     HTTPStatus.BAD_REQUEST,
                     prepared.refusal.stage,
@@ -185,11 +496,26 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            upstream = _call_vllm(model, _upstream_payload(payload, prepared))
-            final = pipeline.finalise(_answer(upstream), prepared)
+            upstream_started = time.monotonic()
+            upstream_outcome = "error"
+            try:
+                upstream = _call_vllm(model, _upstream_payload(payload, prepared))
+                upstream_outcome = "success"
+            finally:
+                upstream_elapsed = time.monotonic() - upstream_started
+                _telemetry.observe(
+                    "guardrail_upstream_duration_seconds",
+                    {"model": model_label}, upstream_elapsed,
+                )
+                _telemetry.inc("guardrail_upstream_requests_total", {
+                    "model": model_label, "outcome": upstream_outcome,
+                })
+            final = pipeline.finalise(_answer(upstream), prepared, observer=_observe_stage)
+            _track_final(final)
             if not final.ok:
                 assert final.refusal is not None
-                _count("refused", final.refusal.stage)
+                outcome = "refused"
+                terminal_stage = final.refusal.stage
                 self._error(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                     final.refusal.stage,
@@ -206,16 +532,18 @@ class Handler(BaseHTTPRequestHandler):
                 "dropped_documents": prepared.dropped_documents,
                 "latency_seconds": round(time.monotonic() - started, 6),
             })
-            _count("allowed")
+            outcome = "allowed"
+            terminal_stage = "none"
             if payload.get("stream") is True:
                 self._sse(upstream, final.text, model)
             else:
                 self._json(HTTPStatus.OK, upstream)
         except json.JSONDecodeError:
+            terminal_stage = "request"
             self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "request body is not valid JSON")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(errors="replace")[:2000]
-            _count("error", "upstream")
+            terminal_stage = "upstream"
             self._error(
                 HTTPStatus.BAD_GATEWAY,
                 "upstream",
@@ -223,7 +551,7 @@ class Handler(BaseHTTPRequestHandler):
                 [body],
             )
         except (TimeoutError, urllib.error.URLError) as exc:
-            _count("error", "upstream")
+            terminal_stage = "upstream"
             reason = exc.reason if hasattr(exc, "reason") else exc
             self._error(
                 HTTPStatus.GATEWAY_TIMEOUT,
@@ -231,12 +559,25 @@ class Handler(BaseHTTPRequestHandler):
                 f"vLLM request failed: {reason}",
             )
         except (TypeError, ValueError) as exc:
-            _count("error", "request")
+            terminal_stage = "request"
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
         except Exception:
-            _count("error", "internal")
+            terminal_stage = "internal"
             traceback.print_exc()
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal", "guardrail service failed")
+        finally:
+            elapsed = time.monotonic() - started
+            _count(outcome, terminal_stage, model_label)
+            _telemetry.observe(
+                "guardrail_request_duration_seconds",
+                {"outcome": outcome, "model": model_label}, elapsed,
+            )
+            _telemetry.observe(
+                "guardrail_processing_duration_seconds",
+                {"outcome": outcome, "model": model_label},
+                max(0.0, elapsed - upstream_elapsed),
+            )
+            _telemetry.add_gauge("guardrail_in_flight_requests", {}, -1)
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -294,16 +635,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _metrics(self) -> None:
-        lines = [
-            "# HELP guardrail_requests_total Guardrail decisions by outcome and stage.",
-            "# TYPE guardrail_requests_total counter",
-        ]
-        with _metrics_lock:
-            for (outcome, stage), count in sorted(_metrics.items()):
-                lines.append(
-                    f'guardrail_requests_total{{outcome="{outcome}",stage="{stage}"}} {count}'
-                )
-        encoded = ("\n".join(lines) + "\n").encode()
+        encoded = _telemetry.render()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
         self.send_header("Content-Length", str(len(encoded)))

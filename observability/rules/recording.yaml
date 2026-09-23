@@ -2,10 +2,10 @@
 # alerts actually read. Computing a p99 from buckets on every dashboard refresh is both
 # slow and easy to get subtly different in two places.
 #
-# EVERY RULE AGGREGATES BY model_name. With two models on one card, `sum by (le)` alone
-# would merge a 7B class-A histogram with a 1.5B class-B one and produce a p99 that
-# describes neither. vLLM tags every series with model_name, so keeping that label is
-# what makes the two classes separable -- and the SLOs are per class.
+# EVERY vLLM RULE AGGREGATES BY model_name/model_class. With two models on one card,
+# `sum by (le)` alone would merge a 7B class-A histogram with a 1.5B class-B one and
+# produce a p99 that describes neither. Gateway and guardrail rules preserve their
+# equivalent requested_model/model labels for the same reason.
 #
 # METRIC NAMES ARE NOT GUARANTEED. vLLM renames series between versions, and these were
 # written against the names in the runbook, not against a live v0.29.0 engine. Run
@@ -76,6 +76,68 @@ spec:
             histogram_quantile(0.95,
               sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[2m])))
 
+        - record: litellm:e2e_seconds:p50
+          expr: |
+            histogram_quantile(0.50,
+              sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+        - record: litellm:e2e_seconds:p99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+        - record: litellm:llm_api_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, requested_model) (rate(litellm_llm_api_latency_metric_bucket[2m])))
+
+        - record: litellm:ttft_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[2m])))
+
+        - record: litellm:queue_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, requested_model) (rate(litellm_request_queue_time_seconds_bucket[2m])))
+
+        - record: litellm:overhead_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model_group) (rate(litellm_overhead_latency_metric_bucket[2m])))
+
+        - record: litellm:deployment_error_ratio:rate2m
+          expr: |
+            sum by (requested_model) (rate(litellm_deployment_failure_responses_total[2m]))
+            /
+            clamp_min(
+              sum by (requested_model) (rate(litellm_deployment_total_requests_total[2m])),
+              0.001
+            )
+
+        - record: litellm:deployment_seconds_per_output_token:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, litellm_model_name)
+                (rate(litellm_deployment_latency_per_output_token_bucket[2m])))
+
+        - record: litellm:input_tokens:rate1m
+          expr: sum by (requested_model) (rate(litellm_input_tokens_metric_total[1m]))
+
+        - record: litellm:output_tokens:rate1m
+          expr: sum by (requested_model) (rate(litellm_output_tokens_metric_total[1m]))
+
+        - record: litellm:postgres_error_ratio:rate5m
+          expr: |
+            sum(rate(litellm_postgres_failed_requests_total[5m]))
+            /
+            clamp_min(sum(rate(litellm_postgres_total_requests_total[5m])), 0.001)
+
+        - record: litellm:postgres_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(litellm_postgres_latency_bucket[5m])))
+
         # --- Theo AGENT -------------------------------------------------------
         #
         # The brief asks for a dashboard split by agent across >=7 MOC copilots, and this
@@ -121,6 +183,50 @@ spec:
         - record: agent:output_tokens:rate5m
           expr: |
             sum by (end_user) (rate(litellm_output_tokens_metric_total[5m]))
+
+    - name: guardrail.service
+      interval: 15s
+      rules:
+        - record: guardrail:request_rate:rate1m
+          expr: sum by (model, outcome) (rate(guardrail_requests_total[1m]))
+
+        - record: guardrail:block_ratio:rate5m
+          expr: |
+            sum by (model) (rate(guardrail_requests_total{outcome="refused"}[5m]))
+            /
+            clamp_min(sum by (model) (rate(guardrail_requests_total[5m])), 0.001)
+
+        - record: guardrail:error_ratio:rate5m
+          expr: |
+            sum by (model) (rate(guardrail_requests_total{outcome="error"}[5m]))
+            /
+            clamp_min(sum by (model) (rate(guardrail_requests_total[5m])), 0.001)
+
+        - record: guardrail:e2e_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model) (rate(guardrail_request_duration_seconds_bucket[5m])))
+
+        - record: guardrail:processing_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model) (rate(guardrail_processing_duration_seconds_bucket[5m])))
+
+        - record: guardrail:upstream_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, model) (rate(guardrail_upstream_duration_seconds_bucket[5m])))
+
+        - record: guardrail:stage_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, stage) (rate(guardrail_stage_duration_seconds_bucket[5m])))
+
+        - record: guardrail:upstream_error_ratio:rate5m
+          expr: |
+            sum by (model) (rate(guardrail_upstream_requests_total{outcome="error"}[5m]))
+            /
+            clamp_min(sum by (model) (rate(guardrail_upstream_requests_total[5m])), 0.001)
 
     # --- Chi phi -------------------------------------------------------------------
     #

@@ -24,6 +24,56 @@ data:
       drop_params: true
       turn_off_message_logging: true
       callbacks: ["prometheus"]
+      # Aurora is on the request path for virtual keys, budgets and spend accounting.
+      # This callback exposes its latency and failure counters without logging content.
+      service_callback: ["prometheus_system"]
+      # Per-agent acceptance rules use the end-user identity attached to virtual keys.
+      # Bound it tightly: the pilot needs >=7 agents, not an unbounded caller dimension.
+      enable_end_user_cost_tracking_prometheus_only: true
+      prometheus_end_user_metrics_max_series_per_metric: 100
+      prometheus_end_user_metrics_ttl_seconds: 3600
+      # Keep only operational dimensions. Never persist client_ip, user_agent or the raw
+      # OpenAI user field as Prometheus labels.
+      prometheus_metrics_config:
+        - group: proxy_total
+          metrics: ["litellm_proxy_total_requests_metric"]
+          include_labels: ["end_user", "requested_model", "team", "status_code", "route"]
+        - group: proxy_failures
+          metrics: ["litellm_proxy_failed_requests_metric"]
+          include_labels: ["end_user", "requested_model", "team", "exception_status", "exception_class", "route"]
+        - group: request_latency
+          metrics:
+            - "litellm_request_total_latency_metric"
+            - "litellm_llm_api_latency_metric"
+            - "litellm_llm_api_time_to_first_token_metric"
+            - "litellm_request_queue_time_seconds"
+          include_labels: ["end_user", "requested_model", "model", "team"]
+        - group: overhead
+          metrics: ["litellm_overhead_latency_metric"]
+          include_labels: ["model_group", "litellm_model_name", "api_provider"]
+        - group: deployment_requests
+          metrics:
+            - "litellm_deployment_total_requests"
+            - "litellm_deployment_success_responses"
+          include_labels: ["requested_model", "litellm_model_name", "team"]
+        - group: deployment_failures
+          metrics: ["litellm_deployment_failure_responses"]
+          include_labels: ["requested_model", "litellm_model_name", "team", "exception_status", "exception_class"]
+        - group: deployment_latency
+          metrics: ["litellm_deployment_latency_per_output_token"]
+          include_labels: ["litellm_model_name", "team"]
+        - group: deployment_state
+          metrics: ["litellm_deployment_state"]
+          include_labels: ["litellm_model_name", "api_provider"]
+        - group: tokens
+          metrics:
+            - "litellm_input_tokens_metric"
+            - "litellm_output_tokens_metric"
+            - "litellm_total_tokens_metric"
+          include_labels: ["end_user", "requested_model", "model", "team"]
+        - group: spend
+          metrics: ["litellm_spend_metric"]
+          include_labels: ["model", "team"]
       num_retries: {{ .Values.router.retries }}
       request_timeout: {{ .Values.router.timeoutSeconds }}
     router_settings:

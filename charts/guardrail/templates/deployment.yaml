@@ -46,6 +46,12 @@ spec:
               value: {{ .Values.defaultAccessLevel | quote }}
             - name: UPSTREAM_TIMEOUT_SECONDS
               value: {{ .Values.upstreamTimeoutSeconds | quote }}
+            - name: GUARDRAIL_VERSION
+              value: {{ .Values.image.tag | quote }}
+            - name: POLICY_VERSION
+              value: {{ .Values.observability.policyVersion | quote }}
+            - name: CORPUS_VERSION
+              value: {{ .Values.observability.corpusVersion | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

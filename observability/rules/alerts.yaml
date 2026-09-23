@@ -79,8 +79,26 @@ spec:
           annotations:
             summary: "LiteLLM error ratio is over 2% for {{ $labels.requested_model }}"
 
+        - alert: LiteLlmHighEndToEndLatency
+          expr: litellm:e2e_seconds:p95 > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LiteLLM end-to-end p95 is over 3s for {{ $labels.requested_model }}"
+
+        - alert: LiteLlmDeploymentDegraded
+          expr: litellm_deployment_state > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LiteLLM deployment {{ $labels.litellm_model_name }} is degraded"
+
         - alert: LiteLlmGatewayDown
-          expr: up{namespace="llm-serving", service="litellm-private"} == 0
+          expr: |
+            up{namespace="llm-serving", service="litellm-private"} == 0
+            or absent(up{namespace="llm-serving", service="litellm-private"})
           for: 1m
           labels:
             severity: critical
@@ -88,7 +106,9 @@ spec:
             summary: "Prometheus cannot scrape a LiteLLM gateway target"
 
         - alert: GuardrailServiceDown
-          expr: up{namespace="llm-serving", service="guardrail"} == 0
+          expr: |
+            up{namespace="llm-serving", service="guardrail"} == 0
+            or absent(up{namespace="llm-serving", service="guardrail"})
           for: 1m
           labels:
             severity: critical
@@ -102,6 +122,64 @@ spec:
             severity: critical
           annotations:
             summary: "The guardrail service is returning internal errors"
+
+        - alert: GuardrailHighErrorRate
+          expr: guardrail:error_ratio:rate5m > 0.02
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Guardrail error ratio is over 2% for {{ $labels.model }}"
+
+        - alert: GuardrailProcessingLatencyHigh
+          expr: guardrail:processing_seconds:p95 > 0.15
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Guardrail-only processing p95 is over its 150ms budget"
+
+        - alert: GuardrailUpstreamErrors
+          expr: guardrail:upstream_error_ratio:rate5m > 0.02
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "More than 2% of guardrail calls to vLLM fail for {{ $labels.model }}"
+
+        - alert: GuardrailBlockRateSpike
+          expr: guardrail:block_ratio:rate5m > 0.20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Guardrail refusal ratio is over 20% for {{ $labels.model }}"
+
+        - alert: GuardrailMetricsMissing
+          expr: |
+            up{namespace="llm-serving", service="guardrail"} == 1
+            unless on() guardrail_build_info
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Guardrail target is reachable but its application metrics are missing"
+
+        - alert: LiteLlmPostgresErrors
+          expr: litellm:postgres_error_ratio:rate5m > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 1% of LiteLLM PostgreSQL operations fail"
+
+        - alert: LiteLlmPostgresLatencyHigh
+          expr: litellm:postgres_seconds:p95 > 0.25
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LiteLLM PostgreSQL operation p95 is over 250ms"
 
     - name: vllm.cause
       rules:

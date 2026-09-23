@@ -16,6 +16,10 @@ models:
 defaultAccessLevel: internal-demo
 upstreamTimeoutSeconds: 300
 
+observability:
+  policyVersion: builtin-v1
+  corpusVersion: bundled
+
 resources:
   requests:
     cpu: 250m

@@ -39,6 +39,42 @@ NEEDED=(
   litellm_proxy_failed_requests_metric_total
   litellm_request_total_latency_metric_bucket
   litellm_output_tokens_metric_total
+  # Guardrail seeds bounded zero-valued series, so these must exist even when idle.
+  guardrail_requests_total
+  guardrail_request_duration_seconds_bucket
+  guardrail_processing_duration_seconds_bucket
+  guardrail_stage_duration_seconds_bucket
+  guardrail_upstream_requests_total
+  guardrail_upstream_duration_seconds_bucket
+  guardrail_documents_retrieved_bucket
+  guardrail_grounding_verdicts_total
+  guardrail_grounding_overlap_ratio_bucket
+  guardrail_pii_findings_total
+  guardrail_injection_detections_total
+  guardrail_documents_dropped_total
+  guardrail_citations_total
+  guardrail_build_info
+)
+
+# These labelled series are created only after the matching request/DB operation. Their
+# absence is reported, but does not fail an otherwise healthy idle installation.
+AFTER_TRAFFIC=(
+  litellm_llm_api_latency_metric_bucket
+  litellm_llm_api_time_to_first_token_metric_bucket
+  litellm_request_queue_time_seconds_bucket
+  litellm_overhead_latency_metric_bucket
+  litellm_deployment_total_requests_total
+  litellm_deployment_success_responses_total
+  litellm_deployment_failure_responses_total
+  litellm_deployment_latency_per_output_token_bucket
+  litellm_deployment_state
+  litellm_input_tokens_metric_total
+  litellm_total_tokens_metric_total
+  litellm_spend_metric_total
+  litellm_in_flight_requests
+  litellm_postgres_latency_bucket
+  litellm_postgres_total_requests_total
+  litellm_postgres_failed_requests_total
 )
 
 # Labels matter as much as names here: a rule that aggregates `by (end_user)` on a metric
@@ -47,7 +83,9 @@ NEEDED=(
 NEEDED_LABELS=(
   "litellm_proxy_total_requests_metric_total end_user"
   "litellm_proxy_total_requests_metric_total requested_model"
+  "litellm_proxy_total_requests_metric_total team"
   "litellm_request_total_latency_metric_bucket end_user"
+  "litellm_request_total_latency_metric_bucket team"
 )
 
 if ! curl -sf "http://$PROM/-/ready" >/dev/null 2>&1; then
@@ -68,25 +106,21 @@ for m in "${NEEDED[@]}"; do
   fi
 done
 
-echo
-if [ "$missing" -eq 0 ]; then
-  echo "all $((${#NEEDED[@]})) metrics present"
-  exit 0
-fi
+optional_missing=0
+for m in "${AFTER_TRAFFIC[@]}"; do
+  n=$(curl -sG "http://$PROM/api/v1/query" --data-urlencode "query=$m" \
+      | jq '.data.result | length' 2>/dev/null || echo 0)
+  if [ "${n:-0}" -gt 0 ]; then
+    printf '  ok       %s\n' "$m"
+  else
+    printf '  WAITING  %s (requires matching traffic/config)\n' "$m"
+    optional_missing=$((optional_missing + 1))
+  fi
+done
 
-cat >&2 <<TXT
-$missing metric(s) missing.
-
-Find what this vLLM build calls them:
-  curl -s "http://$PROM/api/v1/label/__name__/values" | jq -r '.data[]' | grep -i <keyword>
-
-Then record the correct name in docs/metric-names.md together with the vLLM image tag,
-and update observability/rules/*.yaml. Do not start measuring until this is clean --
-a missing series is indistinguishable from a healthy one on a dashboard.
-TXT
-exit 1
-
-# --- label check -------------------------------------------------------------------
+# Labels matter as much as names: aggregation by a missing label silently produces one
+# merged series. Check both the acceptance-criterion identity (end_user) and the stable
+# virtual-key grouping (team).
 echo
 echo "nhan (label) can co:"
 label_missing=0
@@ -104,4 +138,24 @@ print('yes' if any('$label' in s for s in d) else 'no')" 2>/dev/null)
     label_missing=$((label_missing + 1))
   fi
 done
-[ "$label_missing" -eq 0 ] || echo "  -> sua recording.yaml truoc khi tin bat ky so theo agent nao"
+
+echo
+if [ "$missing" -eq 0 ] && [ "$label_missing" -eq 0 ]; then
+  echo "all $((${#NEEDED[@]})) always-on metrics and required labels present"
+  if [ "$optional_missing" -gt 0 ]; then
+    echo "$optional_missing traffic-dependent metric(s) not observed yet; run: make litellm-smoke"
+  fi
+  exit 0
+fi
+
+cat >&2 <<TXT
+$missing metric(s) and $label_missing required label(s) missing.
+
+Inspect the names and labels exported by the running vLLM/LiteLLM/guardrail builds:
+  curl -s "http://$PROM/api/v1/label/__name__/values" | jq -r '.data[]' | grep -i <keyword>
+
+Then record the correct contract in docs/metric-names.md together with the relevant image
+tag and update observability/rules/*.yaml. Do not start measuring until this is clean --
+a missing series or label is indistinguishable from a healthy merged series on a dashboard.
+TXT
+exit 1

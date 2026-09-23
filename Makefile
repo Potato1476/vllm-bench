@@ -1,6 +1,11 @@
-# Overridable from the environment: `REGION=us-west-2 make plan`.
-REGION  ?= us-east-1
-CLUSTER ?= da51-lab
+# Overridable from the environment:
+# `AWS_PROFILE=vinai REGION=us-west-2 make plan`.
+AWS_PROFILE ?= default
+REGION      ?= us-east-1
+CLUSTER     ?= da51-lab
+
+# Both the AWS CLI and Terraform AWS provider inherit this profile in every recipe.
+export AWS_PROFILE
 
 # Three tiers with separate state. core owns the VPC/artifacts, data owns persistent
 # Aurora, and cluster owns disposable EKS compute. `lab-down` can therefore remove the
@@ -370,6 +375,7 @@ monitoring-up: ## Install GPU Operator (DCGM only) + kube-prometheus-stack + rul
 	helm upgrade --install kps prometheus-community/kube-prometheus-stack \
 		--version $(CHART_KPS) -n monitoring --create-namespace \
 		-f k8s/monitoring/kps-values.yaml --wait --timeout 15m
+	kubectl apply -f k8s/monitoring/servicemonitor-dcgm.yaml
 	kubectl apply -f k8s/monitoring/servicemonitor-vllm.yaml
 	@kubectl create namespace llm-serving --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	kubectl apply -f k8s/monitoring/servicemonitor-litellm.yaml

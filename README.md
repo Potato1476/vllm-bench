@@ -450,6 +450,8 @@ alert không bao giờ kích hoạt. Trên dashboard nó trông y hệt "hệ th
 Các rule trong `observability/rules/` viết theo tên trong Runbook, **chưa** đối chiếu với
 engine v0.29.0 đang chạy. Chạy `make audit-metrics` một lần sau khi vLLM lên, sửa mọi
 dòng `MISSING`, ghi tên đúng vào `docs/metric-names.md` kèm tag image — rồi mới đo.
+Các metric LiteLLM mang label chỉ xuất hiện sau request đầu tiên; chạy `make litellm-smoke`
+trước audit đầy đủ. Script báo `WAITING` thay vì làm fail cụm đang idle.
 
 ### Dashboard ba lớp
 
@@ -484,6 +486,24 @@ của datasource đổi theo; hard-code là dashboard trắng trơn ở phiên t
 Sửa dashboard trong UI để khám phá thì được, nhưng phải export ngược về
 `observability/dashboards/` — nếu không nó chết cùng cụm.
 
+### Dashboard gateway và guardrail
+
+`observability/dashboards/gateway-guardrail.json` đi theo luồng request từ trên xuống:
+Catalog tên, labels, ý nghĩa và PromQL của toàn bộ metric nằm tại
+[`docs/metric-names.md`](docs/metric-names.md).
+
+| Hàng | Nội dung |
+|---|---|
+| Caller SLI | LiteLLM req/s, error ratio, refusal ratio và E2E p50/p95/p99 |
+| Guardrail decisions | latency từng stage, PII, injection, grounding, citation và document drop |
+| Dependencies and usage | in-flight, route/deployment, Aurora, input/output token và spend/1.000 token |
+
+Guardrail xuất riêng `request_duration` (gồm vLLM), `upstream_duration` và
+`processing_duration` (không gồm vLLM). Vì vậy một đỉnh E2E có thể được quy đúng cho
+gateway, guardrail CPU/retrieval hay inference thay vì suy đoán từ một đường tổng.
+Mọi label đều là tập hữu hạn; prompt, response, PII value và `request_id` không đi vào
+Prometheus.
+
 ### Ngân sách CPU của node tooling
 
 Một `m7i.large` — **2 vCPU**, khoảng 1930m khả dụng:
@@ -511,7 +531,7 @@ và khoảng trống rơi đúng vào dữ liệu dùng để giải thích kế
 
 | Runbook | Repo này | Vì sao |
 |---|---|---|
-| Tự viết `servicemonitor-dcgm.yaml` | Dùng ServiceMonitor của chart | Service của DCGM do operator tạo lúc chạy, tên port không đọc được từ repo; đặt sai tên port thì target im lặng không xuất hiện |
+| ServiceMonitor DCGM do chart tự tạo | Dùng `k8s/monitoring/servicemonitor-dcgm.yaml` | GPU Operator có thể được cài trước khi CRD ServiceMonitor tồn tại; object viết tay được apply sau kube-prometheus-stack và dùng đúng port từ Service thực tế |
 | `retention: 30d`, PV 100Gi | `7d`, PV 20Gi | cụm sống ~10 giờ mỗi phiên; chuỗi thời gian đã xuất ra S3 |
 | `adminPassword` viết thẳng trong values | Secret sinh ngẫu nhiên | không để mật khẩu trong git |
 | `alertmanager.config` chỉ có `inhibit_rules` | Chép đủ default + thêm 1 rule | ghi đè key này thay thế **toàn bộ** block, mất hết default |
