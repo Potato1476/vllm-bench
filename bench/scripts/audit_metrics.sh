@@ -30,6 +30,24 @@ NEEDED=(
   DCGM_FI_DEV_POWER_USAGE
   DCGM_FI_DEV_GPU_TEMP
   DCGM_FI_PROF_PIPE_TENSOR_ACTIVE
+  DCGM_FI_PROF_DRAM_ACTIVE
+  # gateway layer -- the only place a per-agent or error-rate number can come from,
+  # because vLLM sees one undifferentiated stream and exports no failure counter.
+  # These names come from LiteLLM's documentation, not from a running proxy, which is
+  # exactly the situation that produced four wrong vLLM names in week 1.
+  litellm_proxy_total_requests_metric_total
+  litellm_proxy_failed_requests_metric_total
+  litellm_request_total_latency_metric_bucket
+  litellm_output_tokens_metric_total
+)
+
+# Labels matter as much as names here: a rule that aggregates `by (end_user)` on a metric
+# that has no end_user label returns one merged series instead of one per agent, silently,
+# and the dashboard shows a single line that looks plausible.
+NEEDED_LABELS=(
+  "litellm_proxy_total_requests_metric_total end_user"
+  "litellm_proxy_total_requests_metric_total requested_model"
+  "litellm_request_total_latency_metric_bucket end_user"
 )
 
 if ! curl -sf "http://$PROM/-/ready" >/dev/null 2>&1; then
@@ -67,3 +85,23 @@ and update observability/rules/*.yaml. Do not start measuring until this is clea
 a missing series is indistinguishable from a healthy one on a dashboard.
 TXT
 exit 1
+
+# --- label check -------------------------------------------------------------------
+echo
+echo "nhan (label) can co:"
+label_missing=0
+for entry in "${NEEDED_LABELS[@]}"; do
+  metric=${entry%% *}; label=${entry##* }
+  got=$(curl -sG "http://$PROM/api/v1/series" --data-urlencode "match[]=$metric" \
+        | python3 -c "import sys,json
+try: d=json.load(sys.stdin)['data']
+except Exception: d=[]
+print('yes' if any('$label' in s for s in d) else 'no')" 2>/dev/null)
+  if [ "$got" = "yes" ]; then
+    printf '  OK      %s{%s}\n' "$metric" "$label"
+  else
+    printf '  MISSING %s{%s}\n' "$metric" "$label"
+    label_missing=$((label_missing + 1))
+  fi
+done
+[ "$label_missing" -eq 0 ] || echo "  -> sua recording.yaml truoc khi tin bat ky so theo agent nao"
