@@ -17,7 +17,7 @@ Một nền serving LLM nội bộ dùng chung cho ≥7 agent copilot MOC, có g
 | p95 < 3s ở 50 req/s | đo được p95; **chưa chạm 50 req/s** (đỉnh 1,98) |
 | Uptime ≥ 99,5%, pilot 2 tuần | **chưa có gì** — cần probe ngoài cụm |
 | Chi phí/1k token giảm ≥30% so với API ngoài | **chưa có metric nào** |
-| Chặn ≥95% bộ test prompt injection / PII leak | guardrail đã có; **bộ test chưa đủ** (7 mẫu) |
+| Chặn ≥95% bộ test prompt injection / PII leak | **81,2% trên nửa giữ lại** của bộ 298 mẫu — chưa đạt |
 | Dashboard latency/chi phí/token **theo agent** | chưa có nhãn `agent` — cần gateway |
 
 Đọc bảng này trước khi bắt tay vào bất cứ việc gì: bốn trên năm dòng còn trống.
@@ -120,10 +120,18 @@ Ingress mở cổng 30080 chỉ cho IP của người chạy lệnh; thêm ngư�
 Toàn bộ chạy trên CPU, không tải model, không cần AWS:
 
 ```bash
-make guardrails-test     # 26 kiểm tra hành vi
-make rag-eval            # đo truy hồi trên 144 truy vấn vàng
-make rag-eval-nopolicy   # cho thấy lớp metadata đáng giá bao nhiêu
-make rag-data            # kéo corpus từ s3://.../datasets/v1/
+make guardrails-test        # 30 kiểm tra hành vi
+make rag-eval               # đo truy hồi trên 144 truy vấn vàng
+make rag-eval-nopolicy      # cho thấy lớp metadata đáng giá bao nhiêu
+make attacks-score FOLD=B   # chấm guardrail trên nửa bộ test GIỮ LẠI
+make rag-data               # kéo corpus từ s3://.../datasets/v1/
+
+Cần torch (một lần: `make dense-env`):
+
+```bash
+make dense-build         # mã hoá corpus, ~42s trên MPS
+make dense-ablation      # lexical vs dense vs gộp, tách theo loại truy vấn
+```
 ```
 
 Nhánh **dense chưa có ai hiện thực**. `rag/retrieve.py` đã định nghĩa interface
@@ -228,7 +236,9 @@ từ hạ tầng AWS, mà IP đó không nằm trong `publicAccessCidrs`. Dùng 
 | Hạ tầng, serving, giám sát, bộ đo | xong |
 | RAG + guardrail (BM25, PII, injection, grounding, cache) | xong, chạy CPU |
 | Dataset tổng hợp (warehouse + corpus truy hồi) | Minh, xong |
-| Nhánh dense + rerank | **chưa ai làm** |
+| Nhánh dense (BM25 + embedding, RRF) | xong |
+| Bộ test tấn công 298 mẫu, chia hai nửa | xong |
+| Rerank | **chưa ai làm** |
 | Gateway LiteLLM (nhãn agent, đếm lỗi, định tuyến) | **chưa ai làm** |
 | Probe uptime ngoài cụm (Lambda) | Minh, chưa làm |
 | Panel chi phí/1k token | chưa ai làm |

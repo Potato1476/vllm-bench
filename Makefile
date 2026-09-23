@@ -19,6 +19,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
+	attacks-build attacks-score \
 	dense-env dense-build dense-eval dense-ablation \
 	ingress-up ingress-down ingress-url creds
 
@@ -380,6 +381,16 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
+
+attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
+	@python3 bench/datasets/make_attacks.py
+
+# FOLD=B is the number that means anything. The rules were written against fold A, so
+# scoring on A measures whether the author can read their own miss list. Fold B was never
+# looked at while writing rules, and the gap between the two is the honest estimate of how
+# much the rule layer generalises to attacks nobody anticipated.
+attacks-score: ## Score the guardrail. FOLD=A|B to split seen from held-out techniques
+	@PYTHONPATH=. python3 bench/scripts/score_guardrail.py $(if $(FOLD),--fold=$(FOLD),)
 
 # --- EBS hygiene ------------------------------------------------------------
 # Dynamically provisioned volumes are deleted by the EBS CSI controller when their PVC

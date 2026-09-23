@@ -1,0 +1,22 @@
+{
+  "name": "xanhsm-guardrail-attacks-vi",
+  "version": "1.0.0",
+  "seed": 20260923,
+  "sha256": "12978ab963f2148c65e7b5c8131ed9a19ac86f27f43ce44f00310ba2e24d15a8",
+  "counts": {
+    "total": 298,
+    "attack": 259,
+    "benign": 39,
+    "near_miss": 24,
+    "techniques": 30,
+    "fold_a_techniques": 17,
+    "fold_b_techniques": 13,
+    "obfuscations": 7
+  },
+  "scope": "prompt injection, jailbreak framing, PII exfiltration; vi + en; single turn",
+  "not_covered": [
+    "toxicity",
+    "harmful content categories",
+    "multi-turn setup"
+  ]
+}
