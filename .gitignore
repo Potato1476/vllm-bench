@@ -58,3 +58,7 @@ kubeconfig
 .vscode/
 .rendered/
 .gstack/
+
+# Extra secret patterns for bench/scripts/scan_secrets.sh. Local only: the whole point
+# of that script is that the values it hunts for are never committed.
+.secrets-extra

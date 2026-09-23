@@ -122,6 +122,54 @@ trừ tuần 6 — nó xoá luôn bucket.
       TRẢ VỀ NGƯỜI DÙNG
 ```
 
+### 3.0 Sơ đồ luồng
+
+![Luồng một request](diagrams/request_flow.png)
+
+Dựng lại bằng `make diagrams` (nguồn: `docs/diagrams/request_flow.py`, dùng `diagrams` +
+Graphviz). Nó bổ sung cho sơ đồ hạ tầng chứ không thay thế: sơ đồ hạ tầng trả lời *cái gì
+chạy ở đâu*, sơ đồ này trả lời *theo thứ tự nào* — và thứ tự mới là chỗ tính đúng nằm.
+
+### 3.0b Năm quy tắc của semantic cache ở gateway
+
+Cache câu trả lời ở gateway (Redis) **khác hẳn** prefix cache KV bên trong vLLM. Nó bỏ qua
+cả truy hồi lẫn GPU, nên nó cũng bỏ qua mọi thứ bảo vệ nằm trên đường đó. Năm quy tắc dưới
+đây là điều kiện để nó không thành lỗ hổng.
+
+**1. Chuẩn hoá trước khi dựng key.** `"Cho tôi biết: X"` và `"X"` là cùng một câu hỏi. Lấy
+key trên văn bản thô thì chúng là hai entry và tỉ lệ trúng sụp. Đo được: chuẩn hoá trước
+đưa tỉ lệ cặp diễn đạt lấy ra cùng tập chunk từ 18,5% lên 100%.
+
+**2. Key phải chứa `access_level`.** Câu trả lời trong cache được tính từ tài liệu mà
+người gọi đầu tiên được phép đọc. Phục vụ nó cho người ít quyền hơn là rò chính những tài
+liệu đó qua bản tóm tắt. Cùng lập luận với `cache_salt` của vLLM, chỉ ở tầng trên — và
+Redis không tự làm giúp.
+
+**3. Che PII trước khi chạm cache**, không phải trước khi gọi model. Che muộn thì giá trị
+gốc vẫn nằm trong cache key, trong log và trong trace.
+
+**4. Request có PII thì KHÔNG cache.** Đây là hệ quả ngược của quy tắc 3 và là chỗ dễ sai
+nhất:
+
+```
+A hỏi  "tra cứu chuyến của 0912345678"  →  "tra cứu chuyến của [PHONE_1]"
+B hỏi  "tra cứu chuyến của 0987654321"  →  "tra cứu chuyến của [PHONE_1]"   ← TRÙNG KEY
+```
+
+B nhận câu trả lời tính từ dữ liệu của A, rồi bước 12 thay `[PHONE_1]` bằng số của B —
+**rò dữ liệu đến tay B khoác chính thông tin của B, và không chỗ nào trông sai cả.** Đưa
+giá trị đã che vào key thì hết trùng, nhưng lại nhét dữ liệu định danh trở vào key, đúng
+thứ việc che sinh ra để tránh. Câu hỏi về một người cụ thể có câu trả lời về người đó —
+nó không phải kết quả dùng chung, nên không cache.
+
+**5. Cache hit không được đi vòng qua guardrail đầu ra.** Giải bằng bất biến chứ không
+bằng kiểm lại: **chỉ lưu câu trả lời đã qua bước 10 và 11**, nên một lần trúng an toàn nhờ
+thứ đã được cho vào. Kiểm lại mỗi lần trúng thì vứt đi phần lớn độ trễ mà cache được mua về.
+
+**Còn một điểm chưa xử lý:** câu trả lời trong cache được tính từ corpus tại thời điểm T.
+Khi một tài liệu chuyển sang `deprecated`, mọi entry dựa trên nó trở thành sai mà không ai
+biết. Cần TTL, hoặc xoá cache theo `document_id` mỗi khi corpus đổi trạng thái. Chưa làm.
+
 ### 3.1 Prompt được dựng như thế nào, và cache nằm ở đâu
 
 vLLM băm KV cache theo **chuỗi block**: mỗi block gồm hash của block cha cộng token id

@@ -20,7 +20,8 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
 	attacks-build attacks-score defenses-dryrun defenses-eval spotlight-cost \
-	dense-env dense-build dense-eval dense-ablation \
+	secrets-scan \
+	dense-env dense-build dense-eval dense-ablation diagrams \
 	ingress-up ingress-down ingress-url creds
 
 help: ## Show this help
@@ -400,6 +401,14 @@ defenses-dryrun: ## Exercise the L2/L3 harness with no GPU
 defenses-eval: ## Measure spotlighting + known-answer detection against the running engine
 	@PYTHONPATH=. python3 bench/scripts/eval_defenses.py \
 		--base-url $(or $(BASE_URL),http://localhost:8000/v1) --n $(or $(N),50)
+
+secrets-scan: ## Check staged changes for anything that must not reach a public repo
+	@./bench/scripts/scan_secrets.sh
+
+diagrams: ## Re-render docs/diagrams/*.py (needs dense-env + Graphviz)
+	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+	@command -v dot >/dev/null || { echo "needs Graphviz: brew install graphviz"; exit 1; }
+	@for f in docs/diagrams/*.py; do echo "  $$f"; $(EMBED_PY) "$$f"; done
 
 spotlight-cost: ## Token cost of datamarking, per marker choice (needs dense-env)
 	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
