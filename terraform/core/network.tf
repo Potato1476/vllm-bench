@@ -23,8 +23,8 @@ module "vpc" {
 
   public_subnets = ["10.0.0.0/20", "10.0.16.0/20"]
 
-  # Declared but unused in the lab. They exist so the production topology in the design
-  # document can be reached by changing two lines rather than re-addressing the VPC.
+  # Aurora uses these isolated subnets. EKS nodes remain in public subnets in the lab
+  # because there is no NAT gateway for image pulls and package traffic.
   private_subnets = ["10.0.32.0/20", "10.0.48.0/20"]
 
   # ---------------------------------------------------------------------------

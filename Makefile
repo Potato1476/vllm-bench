@@ -2,20 +2,23 @@
 REGION  ?= us-east-1
 CLUSTER ?= da51-lab
 
-# Two tiers with separate state. core holds the VPC, buckets, registry and budget alarms
-# and is applied once in week 1; cluster holds everything that bills by the hour and is
-# created and destroyed every working session. Keeping them apart is what makes ~163
-# cluster-hours cost ~16 USD instead of ~101.
+# Three tiers with separate state. core owns the VPC/artifacts, data owns persistent
+# Aurora, and cluster owns disposable EKS compute. `lab-down` can therefore remove the
+# expensive serving cluster without deleting LiteLLM identity and usage state.
 CORE_DIR    ?= terraform/core
+DATA_DIR    ?= terraform/data
 CLUSTER_DIR ?= terraform/cluster
 
 TFC := terraform -chdir=$(CORE_DIR)
+TFD := terraform -chdir=$(DATA_DIR)
 TF  := terraform -chdir=$(CLUSTER_DIR)
 
 .DEFAULT_GOAL := help
 .PHONY: help init fmt validate lint plan kubeconfig hooks \
-	core-plan core-up core-down lab-up lab-down gpu gpu-l40s cost fix-cidr \
+	core-plan core-up core-down data-plan data-up lab-up lab-down gpu gpu-l40s cost fix-cidr \
 	vllm-up vllm-diff vllm-down smoke \
+	guardrail-image guardrail-up guardrail-diff guardrail-down \
+	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -28,8 +31,9 @@ help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-init: ## terraform init on both tiers
+init: ## terraform init on core, data and cluster tiers
 	$(TFC) init
+	$(TFD) init
 	$(TF) init
 
 core-plan: ## Show pending changes to the long-lived tier
@@ -43,6 +47,15 @@ core-down: ## Destroy the long-lived tier. Week 6 only -- this deletes the artif
 	@printf 'every benchmark run). Type DESTROY-CORE to continue: '; \
 		read -r ans; [ "$$ans" = "DESTROY-CORE" ] || { echo "aborted"; exit 1; }
 	$(TFC) destroy
+
+data-plan: ## Show pending Aurora changes (stateful tier)
+	$(TFD) plan
+
+data-up: ## Create/update the persistent Aurora PostgreSQL writer + reader
+	$(TFD) apply
+	@echo
+	@echo "Aurora is ready. Its password is managed by RDS in Secrets Manager."
+	@echo "Next: make lab-up && make kubeconfig && make litellm-up"
 
 lab-up: ## Start a working session: create the cluster tier, GPU still at 0
 	$(TF) apply -var cluster_name=$(CLUSTER)
@@ -120,13 +133,15 @@ gpu-l40s: ## Scale the L40S comparison node group: make gpu-l40s n=0|1
 fmt: ## Rewrite Terraform files to canonical format
 	terraform fmt -recursive terraform/
 
-validate: ## Validate both tiers without touching the backend
+validate: ## Validate all three tiers without touching the backend
 	$(TFC) init -backend=false -upgrade=false >/dev/null && $(TFC) validate
+	$(TFD) init -backend=false -upgrade=false >/dev/null && $(TFD) validate
 	$(TF)  init -backend=false -upgrade=false >/dev/null && $(TF)  validate
 
-lint: ## tflint over both tiers
+lint: ## tflint over all three tiers
 	tflint --init --config=$(CURDIR)/.tflint.hcl
 	tflint --chdir=$(CORE_DIR) --config=$(CURDIR)/.tflint.hcl
+	tflint --chdir=$(DATA_DIR) --config=$(CURDIR)/.tflint.hcl
 	tflint --chdir=$(CLUSTER_DIR) --config=$(CURDIR)/.tflint.hcl
 
 plan: ## Show the pending change set for the cluster tier
@@ -233,6 +248,102 @@ vllm-down: ## Remove the vLLM release but keep the cluster
 	-helm uninstall vllm -n inference
 	-kubectl delete namespace inference --ignore-not-found
 
+# --- Guardrail serving hop -------------------------------------------------
+# The image contains the same pipeline exercised by `make guardrails-test`. LiteLLM
+# talks to this OpenAI-compatible service, which prepares the RAG prompt, calls vLLM,
+# and releases the answer only after the output checks pass.
+# Hash the actual build inputs, including uncommitted files. Tagging only with HEAD would
+# put changed source under an old immutable ECR tag and make the next push fail.
+GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag guardrail_service \
+	data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl \
+	-type f ! -path '*/__pycache__/*' ! -name '*.pyc' \
+	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
+
+guardrail-image: ## Build and push the guardrail service image to the core ECR repository
+	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null); \
+	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
+	reg=$${repo%%/*}; \
+	aws ecr get-login-password --region $(REGION) \
+		| docker login --username AWS --password-stdin "$$reg"; \
+	docker build --platform linux/amd64 -f guardrail_service/Dockerfile \
+		-t "$$repo:$(GUARDRAIL_TAG)" .; \
+	docker push "$$repo:$(GUARDRAIL_TAG)"; \
+	echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"
+
+guardrail-up: ## Install/upgrade the OpenAI-compatible guardrail service
+	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null); \
+	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
+	helm upgrade --install guardrail charts/guardrail \
+		-n llm-serving --create-namespace \
+		--set image.repository="$$repo" --set image.tag="$(GUARDRAIL_TAG)" \
+		--wait --timeout 5m
+
+guardrail-diff: ## Render guardrail manifests without applying them
+	helm template guardrail charts/guardrail -n llm-serving \
+		--set image.repository=PLACEHOLDER --set image.tag=$(GUARDRAIL_TAG)
+
+guardrail-down: ## Remove the guardrail release but keep the namespace
+	-helm uninstall guardrail -n llm-serving
+
+# --- LiteLLM gateway --------------------------------------------------------
+# Master/salt keys stay in a Kubernetes Secret and never pass through Helm values or
+# git. DATABASE_URL can override the Aurora URL resolved from the data-tier outputs.
+litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL override)
+	@kubectl create namespace llm-serving --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@master=$$(kubectl -n llm-serving get secret litellm-secrets \
+		-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d || true); \
+	salt=$$(kubectl -n llm-serving get secret litellm-secrets \
+		-o jsonpath='{.data.LITELLM_SALT_KEY}' 2>/dev/null | base64 -d || true); \
+	[ -n "$$master" ] || master="sk-$$(openssl rand -hex 24)"; \
+	[ -n "$$salt" ] || salt="sk-$$(openssl rand -hex 24)"; \
+	db="$${DATABASE_URL:-}"; \
+	if [ -z "$$db" ]; then \
+		endpoint=$$($(TFD) output -raw aurora_writer_endpoint 2>/dev/null \
+			| grep -E '^[A-Za-z0-9.-]+$$' || true); \
+		port=$$($(TFD) output -raw aurora_port 2>/dev/null | grep -E '^[0-9]+$$' || true); \
+		name=$$($(TFD) output -raw database_name 2>/dev/null \
+			| grep -E '^[A-Za-z][A-Za-z0-9_]*$$' || true); \
+		secret_arn=$$($(TFD) output -raw master_user_secret_arn 2>/dev/null \
+			| grep '^arn:aws:secretsmanager:' || true); \
+		if [ -n "$$endpoint" ] && [ -n "$$port" ] && [ -n "$$name" ] && [ -n "$$secret_arn" ]; then \
+			payload=$$(aws secretsmanager get-secret-value --region $(REGION) \
+				--secret-id "$$secret_arn" --query SecretString --output text); \
+			user=$$(printf '%s' "$$payload" | jq -r '.username'); \
+			pass=$$(printf '%s' "$$payload" | jq -r '.password'); \
+			user_uri=$$(jq -rn --arg v "$$user" '$$v|@uri'); \
+			pass_uri=$$(jq -rn --arg v "$$pass" '$$v|@uri'); \
+			db="postgresql://$$user_uri:$$pass_uri@$$endpoint:$$port/$$name?sslmode=require"; \
+		fi; \
+	fi; \
+	[ -n "$$db" ] || { \
+		echo "DATABASE_URL unavailable -- run 'make data-up' or export DATABASE_URL"; exit 1; \
+	}; \
+	set -- --from-literal=LITELLM_MASTER_KEY="$$master" \
+		--from-literal=LITELLM_SALT_KEY="$$salt"; \
+	set -- "$$@" --from-literal=DATABASE_URL="$$db"; \
+	kubectl -n llm-serving create secret generic litellm-secrets "$$@" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "LiteLLM secret is ready (existing master/salt keys were preserved)."
+
+litellm-up: litellm-secret guardrail-up ## Install guardrail + LiteLLM. MODE=shared|solo-a|solo-b
+	helm upgrade --install litellm charts/litellm \
+		-n llm-serving --create-namespace --set mode=$(MODE) \
+		--wait --timeout 5m
+	@echo
+	@echo "LiteLLM routes mode=$(MODE) through guardrail:8080 to the matching vLLM service."
+	@echo "Run 'make litellm-smoke' after the matching vLLM deployment is ready."
+
+litellm-diff: ## Render LiteLLM without applying it. MODE=shared|solo-a|solo-b
+	helm template litellm charts/litellm -n llm-serving --set mode=$(MODE)
+
+litellm-down: ## Remove LiteLLM and its in-cluster secrets
+	-helm uninstall litellm -n llm-serving
+	-kubectl delete namespace llm-serving --ignore-not-found
+
+litellm-smoke: ## Verify auth, model routing, completion and streaming via LiteLLM
+	@MODEL=$(if $(filter solo-b,$(MODE)),qwen2.5-1.5b,qwen2.5-7b) \
+		./bench/scripts/smoke_litellm.sh
+
 # --- Monitoring stack -------------------------------------------------------
 CHART_GPU_OPERATOR ?= v26.7.0
 CHART_KPS          ?= 91.4.1
@@ -260,6 +371,9 @@ monitoring-up: ## Install GPU Operator (DCGM only) + kube-prometheus-stack + rul
 		--version $(CHART_KPS) -n monitoring --create-namespace \
 		-f k8s/monitoring/kps-values.yaml --wait --timeout 15m
 	kubectl apply -f k8s/monitoring/servicemonitor-vllm.yaml
+	@kubectl create namespace llm-serving --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	kubectl apply -f k8s/monitoring/servicemonitor-litellm.yaml
+	kubectl apply -f k8s/monitoring/servicemonitor-guardrail.yaml
 	kubectl apply -f observability/rules/
 	@$(MAKE) --no-print-directory dashboards
 	@echo
@@ -285,12 +399,14 @@ dashboards: ## Load observability/dashboards/*.json into Grafana via ConfigMap
 audit-metrics: ## Confirm every metric the rules depend on exists by name
 	./bench/scripts/audit_metrics.sh
 
-pf: ## Port-forward Prometheus 9090, Grafana 3000, vLLM 8000
+pf: ## Port-forward Prometheus 9090, Grafana 3000, LiteLLM 4000, guardrail 8080, vLLM 8000
 	@kubectl -n monitoring port-forward svc/kps-kube-prometheus-stack-prometheus 9090:9090 >/dev/null 2>&1 &
 	@kubectl -n monitoring port-forward svc/kps-grafana 3000:80 >/dev/null 2>&1 &
+	-@kubectl -n llm-serving port-forward svc/litellm-private 4000:4000 >/dev/null 2>&1 &
+	-@kubectl -n llm-serving port-forward svc/guardrail 8080:8080 >/dev/null 2>&1 &
 	@kubectl -n inference port-forward svc/vllm-a 8000:8000 >/dev/null 2>&1 &
 	-@kubectl -n inference port-forward svc/vllm-b 8001:8000 >/dev/null 2>&1 &
-	@sleep 3; echo "prometheus :9090   grafana :3000   vllm class A :8000   class B :8001"
+	@sleep 3; echo "prometheus :9090   grafana :3000   LiteLLM :4000   guardrail :8080   vLLM A :8000   vLLM B :8001"
 	@echo "stop with: pkill -f 'kubectl.*port-forward'"
 
 # --- Shared ingress ---------------------------------------------------------
@@ -312,9 +428,10 @@ ingress-url: ## Reprint the published URLs
 		echo "  Grafana       http://grafana.$$ip.nip.io:30080"; \
 		echo "  Prometheus    http://prometheus.$$ip.nip.io:30080"; \
 		echo "  Alertmanager  http://alertmanager.$$ip.nip.io:30080"; \
+		echo "  LiteLLM       http://llm.$$ip.nip.io:30080/v1/models"; \
 		echo "  vLLM          http://vllm.$$ip.nip.io:30080/v1/models"; \
 		echo; \
-		echo "  /etc/hosts:  $$ip  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab vllm.da51.lab"; \
+		echo "  /etc/hosts:  $$ip  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab vllm.da51.lab"; \
 		echo; \
 		cur=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
 		sg=$$(aws ec2 describe-security-groups --region $(REGION) \
@@ -337,6 +454,9 @@ creds: ## Print the lab passwords
 	@printf '  Ingress auth  admin / %s\n' \
 		"$$(kubectl -n monitoring get secret ingress-basic-auth \
 			-o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo '(none yet)')"
+	@printf '  LiteLLM key   %s\n' \
+		"$$(kubectl -n llm-serving get secret litellm-secrets \
+			-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d || echo '(none yet)')"
 
 # --- Guardrails + RAG -------------------------------------------------------
 # Everything here runs on CPU with no cluster and no model download, so it stays
@@ -382,6 +502,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
+	@PYTHONPATH=. python3 -m unittest tests.test_guardrail_service
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py
@@ -405,10 +526,9 @@ defenses-eval: ## Measure spotlighting + known-answer detection against the runn
 secrets-scan: ## Check staged changes for anything that must not reach a public repo
 	@./bench/scripts/scan_secrets.sh
 
-diagrams: ## Re-render docs/diagrams/*.py (needs dense-env + Graphviz)
-	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
+diagrams: ## Re-render docs/diagrams/*.py (needs Graphviz)
 	@command -v dot >/dev/null || { echo "needs Graphviz: brew install graphviz"; exit 1; }
-	@for f in docs/diagrams/*.py; do echo "  $$f"; $(EMBED_PY) "$$f"; done
+	@for f in docs/diagrams/*.py; do echo "  $$f"; python3 "$$f"; done
 
 spotlight-cost: ## Token cost of datamarking, per marker choice (needs dense-env)
 	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
@@ -420,6 +540,7 @@ spotlight-cost: ## Token cost of datamarking, per marker choice (needs dense-env
 # ever deleting the PVCs, so the volumes survive as detached, billable orphans. At two
 # volumes a session and three sessions a week that is real money for nothing.
 cleanup-volumes: ## Delete workload PVCs so the CSI driver releases their EBS volumes
+	-kubectl delete namespace llm-serving --ignore-not-found --timeout=2m
 	-kubectl delete namespace inference --ignore-not-found --timeout=5m
 	-helm uninstall kps -n monitoring 2>/dev/null
 	-kubectl -n monitoring delete pvc --all --timeout=5m

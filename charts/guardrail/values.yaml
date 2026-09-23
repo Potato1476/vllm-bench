@@ -1,0 +1,33 @@
+replicaCount: 1
+
+image:
+  # Supplied by `make guardrail-up` from terraform/core output.
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+models:
+  qwen2.5-7b: http://vllm-a.inference.svc.cluster.local:8000/v1
+  qwen2.5-1.5b: http://vllm-b.inference.svc.cluster.local:8000/v1
+
+defaultAccessLevel: internal-demo
+upstreamTimeoutSeconds: 300
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector:
+  workload: tooling
+
+tolerations: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

@@ -88,3 +88,28 @@ resource "aws_ecr_lifecycle_policy" "bench_runner" {
     }]
   })
 }
+
+# The guardrail image packages the exact Python pipeline and retrieval corpus committed
+# in this repository. Keeping it beside the runner in ECR makes the running policy
+# traceable to an immutable image tag rather than copying source into a live pod.
+resource "aws_ecr_repository" "guardrail" {
+  name                 = "${var.project}/guardrail"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "guardrail" {
+  repository = aws_ecr_repository.guardrail.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "keep the 5 most recent images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 5 }
+      action       = { type = "expire" }
+    }]
+  })
+}

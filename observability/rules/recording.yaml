@@ -47,13 +47,31 @@ spec:
         - record: vllm:output_tokens:rate1m
           expr: sum by (model_name, model_class) (rate(vllm:generation_tokens_total[1m]))
 
-        # NO error-ratio rule. vLLM v0.29 exports no failure counter at all -- there is
-        # no vllm:request_failure_total, only vllm:request_success_total. An error rate
-        # therefore cannot be computed from engine metrics.
-        #
-        # That is arguably where it belongs anyway: the SLO in the plan is "5xx and
-        # timeouts", which is a gateway-level view. A request the engine never received
-        # is still a failure to the caller, and only LiteLLM can see it. Add the rule
-        # here once the gateway exposes its own counters.
+        # vLLM v0.29 has no failure counter, so caller-facing error ratio is recorded
+        # from LiteLLM in the gateway group below. A request rejected before the engine
+        # must still count as a failure.
         - record: vllm:request_rate:rate1m
           expr: sum by (model_name, model_class) (rate(vllm:request_success_total[1m]))
+
+    # Gateway-level SLI includes authentication, policy and upstream failures that the
+    # engine cannot see. Keep requested_model so one bad route does not poison the other.
+    - name: litellm.gateway
+      interval: 15s
+      rules:
+        - record: litellm:request_rate:rate1m
+          expr: |
+            sum by (requested_model) (rate(litellm_proxy_total_requests_metric_total[1m]))
+
+        - record: litellm:error_ratio:rate2m
+          expr: |
+            sum by (requested_model) (rate(litellm_proxy_failed_requests_metric_total[2m]))
+            /
+            clamp_min(
+              sum by (requested_model) (rate(litellm_proxy_total_requests_metric_total[2m])),
+              0.001
+            )
+
+        - record: litellm:e2e_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, requested_model) (rate(litellm_request_total_latency_metric_bucket[2m])))

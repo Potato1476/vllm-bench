@@ -20,9 +20,6 @@ spec:
         # Both conditions together on purpose: errors alone can be a bad client, and slow
         # alone can be a deliberate overload test. Together they mean the service is
         # failing the people using it.
-        # Latency only, for now. The error term that belongs here needs a failure
-        # counter, and vLLM v0.29 exports none -- see recording.yaml. Add
-        # `and <gateway error ratio> > 0.02` once LiteLLM is in place.
         - alert: VllmSloBurnFastClassA
           expr: vllm:ttft_seconds:p95{model_class="a"} > 0.8
           for: 2m
@@ -71,6 +68,40 @@ spec:
             request_class: a
           annotations:
             summary: "Class A inter-token latency p99 over the 60ms objective -- the stream stutters"
+
+        # LiteLLM sees the failures that never reach vLLM: rejected keys, quota, routing,
+        # timeouts and upstream 5xx. This is the caller-facing error SLI.
+        - alert: LiteLlmHighErrorRate
+          expr: litellm:error_ratio:rate2m > 0.02
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LiteLLM error ratio is over 2% for {{ $labels.requested_model }}"
+
+        - alert: LiteLlmGatewayDown
+          expr: up{namespace="llm-serving", service="litellm-private"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus cannot scrape a LiteLLM gateway target"
+
+        - alert: GuardrailServiceDown
+          expr: up{namespace="llm-serving", service="guardrail"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus cannot scrape the guardrail serving hop"
+
+        - alert: GuardrailInternalErrors
+          expr: sum(rate(guardrail_requests_total{outcome="error",stage="internal"}[5m])) > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The guardrail service is returning internal errors"
 
     - name: vllm.cause
       rules:

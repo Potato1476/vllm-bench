@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring up the shared ingress: one NGINX controller on a NodePort of the tooling node,
-# four hostnames, and the security group rules that decide who may reach it.
+# five hostnames, and the security group rules that decide who may reach it.
 # Idempotent -- safe to re-run after an IP change, which is the usual reason to.
 set -euo pipefail
 
@@ -43,10 +43,9 @@ IP=$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')
 #     readable by anyone on the path. Treat it as a speed bump, not a secret.
 #   - Grafana keeps its own login and anonymous access stays off, so a stranger who
 #     finds it gets a login form.
-#   - The vLLM endpoint is the expensive one: an open OpenAI-compatible API is found by
-#     scanners within hours and every request is GPU time billed to this project. It is
-#     therefore pinned to CLIENT_CIDR at the NGINX layer even when PUBLIC=1 -- see the
-#     whitelist-source-range annotation in ingress.tpl.yaml.
+#   - LiteLLM and vLLM are the expensive endpoints: an open OpenAI-compatible API is
+#     found by scanners within hours and every request is GPU time billed to this
+#     project. Both stay pinned to CLIENT_CIDR even when PUBLIC=1.
 CLIENT_CIDR="$IP/32"
 if [ "${PUBLIC:-0}" = "1" ]; then
   RANGES="0.0.0.0/0"
@@ -54,6 +53,7 @@ if [ "${PUBLIC:-0}" = "1" ]; then
   echo "  Grafana       -- co trang dang nhap rieng"
   echo "  Prometheus    -- basic auth (mat khau di qua mang dang cleartext tren HTTP)"
   echo "  Alertmanager  -- basic auth"
+  echo "  LiteLLM       -- VAN khoa ve $CLIENT_CIDR + Bearer key"
   echo "  vLLM          -- VAN khoa ve $CLIENT_CIDR o tang nginx, khong theo cong khai"
 else
   RANGES="$CLIENT_CIDR"
@@ -64,7 +64,8 @@ else
 fi
 
 # --- basic auth ------------------------------------------------------------------
-# One credential shared by Prometheus, Alertmanager and vLLM. Generated once and kept
+# One credential shared by Prometheus, Alertmanager and vLLM. LiteLLM uses its own
+# Bearer key because basic auth would consume the Authorization header. Generated once and kept
 # in the Secret so re-running this script does not silently change the password under
 # a browser that has already saved it.
 if kubectl -n monitoring get secret ingress-basic-auth >/dev/null 2>&1; then
@@ -151,17 +152,20 @@ cat <<EOF
   Dang nhap
     Grafana              admin / (mat khau rieng -- make creds)
     Ba dich vu con lai   admin / $PW
+    LiteLLM              Bearer key (make creds)
 
   Grafana       http://grafana.$NODEIP.nip.io:$PORT
   Prometheus    http://prometheus.$NODEIP.nip.io:$PORT
   Alertmanager  http://alertmanager.$NODEIP.nip.io:$PORT
+  LiteLLM       http://llm.$NODEIP.nip.io:$PORT/v1/models
   vLLM          http://vllm.$NODEIP.nip.io:$PORT/v1/models
 
   Neu mang chan nip.io, them dong nay vao /etc/hosts roi dung ten .da51.lab:$PORT
 
-    $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab vllm.da51.lab
+    $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab vllm.da51.lab
 
   Ai vao duoc: $RANGES
+  LiteLLM: chi $CLIENT_CIDR + Bearer key (xem bang 'make creds')
   vLLM rieng: chi $CLIENT_CIDR (khoa o tang nginx)
 
   Dia chi nay thuoc ve node. No doi khi node bi thay -- tuc la sau moi lan lab-up,

@@ -1,0 +1,62 @@
+# Keep this in step with charts/vllm/values.yaml. In solo modes the gateway only
+# advertises the model that is actually running, so /v1/models never lies to clients.
+mode: shared
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/berriai/litellm
+  # Pinned: a moving tag makes rollback and benchmark lineage impossible to reproduce.
+  tag: v1.90.2
+  pullPolicy: IfNotPresent
+
+existingSecret:
+  name: litellm-secrets
+  # Optional keys read through envFrom when present:
+  #   DATABASE_URL - enables virtual keys, budgets and spend tracking in PostgreSQL
+  #   LITELLM_SALT_KEY - encrypts credentials stored in PostgreSQL; never rotate it
+
+models:
+  a:
+    publicName: qwen2.5-7b
+    upstreamModel: qwen2.5-7b
+    # LiteLLM must not bypass the pre/post-generation pipeline. The guardrail service
+    # selects the matching vLLM backend after retrieval and input screening.
+    apiBase: http://guardrail.llm-serving.svc.cluster.local:8080/v1
+  b:
+    publicName: qwen2.5-1.5b
+    upstreamModel: qwen2.5-1.5b
+    apiBase: http://guardrail.llm-serving.svc.cluster.local:8080/v1
+
+router:
+  strategy: simple-shuffle
+  retries: 1
+  timeoutSeconds: 300
+
+service:
+  # Lab traffic arrives through ingress-nginx. ClusterIP also avoids colliding with the
+  # controller's HTTPS NodePort 30443. A production values file may switch this service
+  # to NodePort when an internal NLB targets LiteLLM directly.
+  type: ClusterIP
+  port: 4000
+  nodePort: 30443
+  externalTrafficPolicy: Cluster
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector:
+  workload: tooling
+
+tolerations: []
+
+podDisruptionBudget:
+  # Kept for the future Redis-backed HA profile. This phase deliberately runs one pod.
+  enabled: false
+  minAvailable: 1
+
+topologySpreadConstraints: []

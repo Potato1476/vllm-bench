@@ -1,0 +1,32 @@
+{{- include "litellm.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: litellm
+data:
+  config.yaml: |
+    model_list:
+      {{- range $key := splitList " " (include "litellm.activeModels" .) }}
+      {{- $m := index $.Values.models $key }}
+      - model_name: {{ $m.publicName | quote }}
+        litellm_params:
+          # vLLM exposes an OpenAI-compatible API and does not require an upstream key.
+          model: {{ printf "openai/%s" $m.upstreamModel | quote }}
+          api_base: {{ $m.apiBase | quote }}
+          api_key: "none"
+      {{- end }}
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+    litellm_settings:
+      drop_params: true
+      turn_off_message_logging: true
+      callbacks: ["prometheus"]
+      num_retries: {{ .Values.router.retries }}
+      request_timeout: {{ .Values.router.timeoutSeconds }}
+    router_settings:
+      routing_strategy: {{ .Values.router.strategy | quote }}
+      num_retries: {{ .Values.router.retries }}
+      timeout: {{ .Values.router.timeoutSeconds }}

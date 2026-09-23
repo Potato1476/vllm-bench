@@ -1,0 +1,21 @@
+# LiteLLM protects /metrics with the same key as the API. Keep this ServiceMonitor in
+# llm-serving so Prometheus Operator can read the referenced Secret in its namespace.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: litellm
+  namespace: llm-serving
+spec:
+  selector:
+    matchLabels:
+      app: litellm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 5s
+      scrapeTimeout: 4s
+      authorization:
+        type: Bearer
+        credentials:
+          name: litellm-secrets
+          key: LITELLM_MASTER_KEY

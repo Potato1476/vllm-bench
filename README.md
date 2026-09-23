@@ -8,8 +8,9 @@ và chi phí trên mỗi 1 triệu token là bao nhiêu. Repo này chứa hạ t
 Kubernetes, bộ tạo tải và cấu hình quan sát của dự án.
 
 Đây là môi trường **lab** của đề tài DA#51 (LLM Serving & Guardrails cho copilot MOC):
-Terraform hai tầng, serving vLLM, tầng giám sát, và bộ đo. Phần gateway và guardrail nằm
-ngoài repo này.
+Terraform ba tầng, Aurora PostgreSQL, LiteLLM gateway, serving vLLM, tầng giám sát và
+bộ đo. Phần
+guardrail chạy thành một OpenAI-compatible service riêng giữa LiteLLM và vLLM.
 
 ## Yêu cầu công cụ
 
@@ -66,6 +67,7 @@ Sau đó copy tfvars mẫu:
 
 ```bash
 cp terraform/core/terraform.tfvars.example    terraform/core/terraform.tfvars
+cp terraform/data/terraform.tfvars.example    terraform/data/terraform.tfvars
 cp terraform/cluster/terraform.tfvars.example terraform/cluster/terraform.tfvars
 ```
 
@@ -79,6 +81,8 @@ make validate     # init -backend=false rồi validate — không chạm AWS
 make lint         # tflint
 make init         # init thật, kết nối backend S3 (sau khi đã bootstrap)
 make core-up      # tầng core: VPC, bucket, ECR, budget — chạy MỘT LẦN ở tuần 1
+make data-plan    # chỉ xem thay đổi Aurora, không tạo tài nguyên
+make data-up      # tầng data: Aurora PostgreSQL writer + reader — chỉ chạy khi đã duyệt plan
 make lab-up       # tầng cluster: EKS + node group — mỗi đầu phiên
 make kubeconfig   # trỏ kubectl vào cụm
 ```
@@ -98,7 +102,10 @@ make gpu n=1       # kéo node group inference lên 1 node
 make gpu n=0     # thu về 0 — chạy cuối mỗi ngày
 ```
 
-`REGION` và `CLUSTER` đọc từ môi trường, có mặc định trong `Makefile`:
+`REGION` và `CLUSTER` đọc từ môi trường, có mặc định trong `Makefile`. AWS CLI và
+Terraform sử dụng profile từ môi trường hoặc cấu hình AWS mặc định của máy; Makefile
+không hard-code tên profile hay account ID.
+
 Không target nào dùng `-auto-approve`. `make lab-down` bắt gõ `yes` sau khi đọc
 checklist; `make core-down` bắt gõ `DESTROY-CORE` vì nó xoá cả bucket artifacts.
 
@@ -109,6 +116,10 @@ checklist; `make core-down` bắt gõ `DESTROY-CORE` vì nó xoá cả bucket ar
 | `region` | core | `us-east-1` | Giá GPU thấp nhất, capacity G dễ có nhất. |
 | `budget_emails` | core | **không có** | Nhận cảnh báo 50/100/150/180 USD. Rỗng thì `apply` bị từ chối. |
 | `budget_limit_usd` | core | `200` | Trần ngân sách tháng. |
+| `instance_class` | data | `db.t4g.medium` | Kích thước writer/reader Aurora PostgreSQL. |
+| `instance_count` | data | `2` | Một writer và một failover reader; đặt `1` chỉ cho lab không HA. |
+| `backup_retention_days` | data | `7` | Số ngày giữ automated backup. |
+| `deletion_protection` | data | `true` | Chặn xoá nhầm database stateful. |
 | `cluster_name` | cluster | `da51-lab` | Tên cụm EKS. |
 | `k8s_version` | cluster | `1.31` | Phải còn **standard support**: extended support đội phí cụm từ 0,10 lên 0,60 USD/giờ. |
 | `allowed_cidrs` | cluster | **không có** | Danh sách /32 được gọi API endpoint. Cố ý không có mặc định. |
@@ -119,7 +130,9 @@ checklist; `make core-down` bắt gõ `DESTROY-CORE` vì nó xoá cả bucket ar
 | `gpu_l40s_desired` | cluster | `0` | Chỉ lên 1 trong phiên so sánh 4 giờ ở tuần 2. |
 | `gpu_vcpu_quota` | cluster | `16` | Quota vCPU họ G. `plan` bị chặn nếu cấu hình vượt. |
 
-Output đáng chú ý: `kubeconfig_command` (lệnh `aws eks update-kubeconfig` đã điền sẵn),
+Output đáng chú ý của data tier: `aurora_writer_endpoint`, `aurora_reader_endpoint` và
+`master_user_secret_arn`. Password do RDS sinh/rotate trong Secrets Manager, không nằm
+trong tfvars hay Terraform state. Output cluster gồm `kubeconfig_command`,
 `bench_runner_role_arn` (gắn vào annotation của service account `benchmark:bench-runner`),
 `vllm_role_arn` (gắn vào `inference:vllm`), và `artifacts_bucket_name`.
 
@@ -179,7 +192,8 @@ is already running for the session.
 
 Cụm EKS là thứ dùng xong thì bỏ. Ngân sách 200 USD không đủ để nó chạy liên tục 5 tuần,
 nên mô hình vận hành là **3 phiên mỗi tuần, mỗi phiên khoảng 10 giờ**, hết phiên huỷ sạch
-cụm và node. Chỉ S3, ECR và Secrets Manager sống qua các phiên.
+cụm và node. S3, ECR, Aurora và Secrets Manager sống qua các phiên. Aurora vẫn tính phí
+khi EKS đã bị huỷ; theo dõi bằng `make cost` và chỉ giữ nó khi cần bảo toàn key/quota.
 
 **Đầu phiên:**
 
@@ -265,6 +279,38 @@ tải bù từ HuggingFace — một lần tải bù là một phép đo dùng m
 | Tải weights từ HuggingFace + HF token | Sync từ S3, không cần token | nhanh hơn, và mỗi phiên dùng đúng một bộ byte |
 | PVC `hf-cache` 50Gi | emptyDir trên NVMe | NVMe có sẵn 250 GB miễn phí, nhanh hơn, không ghim AZ |
 | `limits.cpu: "3"` | không đặt CPU limit | node đã taint, limit không cô lập gì mà chỉ gây CFS throttling làm TTFT đo được cao hơn thật |
+
+## Triển khai LiteLLM gateway
+
+Tài liệu chi tiết về các thay đổi, Aurora và cách đọc/sử dụng Makefile nằm tại
+[`docs/litellm-aurora-implementation.md`](docs/litellm-aurora-implementation.md).
+
+Gateway dùng cùng `MODE` với chart vLLM và lắng nghe cổng `4000`. Profile lab dùng
+`ClusterIP` sau ingress-nginx; production có thể override sang NodePort `30443` cho
+contract NLB trong sơ đồ. API yêu cầu Bearer key; master key và salt được sinh vào
+Secret trong cluster, không đi qua Git hoặc Helm values.
+
+```bash
+make guardrail-image            # build/push pipeline đã test vào ECR (sau core apply)
+make litellm-up                 # cài guardrail + LiteLLM, MODE=shared mặc định
+make litellm-smoke              # auth + route + completion + streaming end-to-end
+make creds                      # xem lại master key của lab
+make litellm-diff MODE=solo-b   # render an toàn, không chạm cluster
+```
+
+Aurora PostgreSQL cung cấp virtual key, quota và spend tracking. `make litellm-up` lấy
+credential từ data tier; `DATABASE_URL` chỉ là đường override khi cần. Target giữ nguyên
+master/salt key đang có khi chạy lại nên không vô tình rotate key:
+
+```bash
+make data-up
+make litellm-up
+```
+
+Luồng lab là LiteLLM → guardrail service → vLLM. Guardrail chạy `prepare` trước khi sinh
+và `finalise` trước khi phát câu trả lời; request streaming vì vậy được buffer cho đến khi
+output checks pass. Redis và response cache tạm thời nằm ngoài phạm vi; chart cố ý từ chối
+`replicaCount > 1` để quota/router state không bị chia tách giữa các pod.
 
 ## Bộ đo
 

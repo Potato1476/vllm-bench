@@ -9,7 +9,7 @@ output "public_subnet_ids" {
 }
 
 output "private_subnet_ids" {
-  description = "Declared but unused in the lab; kept for the production topology."
+  description = "Isolated private subnets used by the persistent Aurora data tier."
   value       = module.vpc.private_subnets
 }
 
@@ -26,6 +26,11 @@ output "artifacts_bucket_arn" {
 output "ecr_bench_runner_url" {
   description = "Repository the bench runner image is pushed to."
   value       = aws_ecr_repository.bench_runner.repository_url
+}
+
+output "ecr_guardrail_url" {
+  description = "Repository containing the OpenAI-compatible guardrail service image."
+  value       = aws_ecr_repository.guardrail.repository_url
 }
 
 output "region" {

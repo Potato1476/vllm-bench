@@ -1,0 +1,18 @@
+# The guardrail image is built from the repository root because it packages modules from
+# several top-level directories. Send only its runtime files; Terraform provider caches
+# alone are hundreds of MB and must never become Docker build context.
+**
+!guardrails/
+!guardrails/**
+!prompt/
+!prompt/**
+!rag/
+!rag/**
+!guardrail_service/
+!guardrail_service/**
+!data/
+!data/xanhsm_retrieval_mock/
+!data/xanhsm_retrieval_mock/corpus/
+!data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl
+**/__pycache__/
+**/*.pyc

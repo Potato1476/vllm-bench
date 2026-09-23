@@ -6,22 +6,13 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.60"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.14"
-    }
   }
 
-  # Applied at the start of a working session and destroyed at the end. Persistent
-  # Aurora lives in the separate data state, so cluster teardown cannot erase gateway
-  # identities, quotas or usage history.
+  # Aurora survives the disposable EKS cluster. Keeping it in a third state prevents
+  # `make lab-down` from deleting keys, quotas and usage history with the compute tier.
   backend "s3" {
     bucket       = "vllm-bench-tfstate-mlops-lab"
-    key          = "cluster/terraform.tfstate"
+    key          = "data/terraform.tfstate"
     region       = "us-east-1"
     use_lockfile = true
     encrypt      = true
@@ -35,7 +26,7 @@ provider "aws" {
     tags = {
       project   = var.project_tag
       owner     = var.owner
-      layer     = "cluster"
+      layer     = "data"
       ManagedBy = "terraform"
     }
   }

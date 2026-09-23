@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardrail
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: guardrail
+spec:
+  type: ClusterIP
+  selector:
+    app: guardrail
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

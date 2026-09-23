@@ -20,6 +20,7 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 say "xoa Ingress"
 kubectl delete ingress -n monitoring grafana prometheus alertmanager --ignore-not-found
+kubectl delete ingress -n llm-serving litellm --ignore-not-found
 kubectl delete ingress -n inference vllm-a --ignore-not-found
 
 # Revoke before the node goes away: once the instance is gone its private DNS name no

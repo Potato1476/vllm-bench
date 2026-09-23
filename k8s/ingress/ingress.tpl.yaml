@@ -93,6 +93,34 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: litellm
+  namespace: llm-serving
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # LiteLLM has its own Bearer authentication. Adding NGINX basic auth here would
+    # consume the same Authorization header and prevent the API key reaching LiteLLM.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm.%%IP%%.nip.io
+      http: &litellm
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: litellm-private
+                port:
+                  name: http
+    - host: llm.da51.lab
+      http: *litellm
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: vllm-a
   namespace: inference
   annotations:
@@ -106,7 +134,7 @@ metadata:
     # This whitelist is what keeps `make ingress-up PUBLIC=1` from publishing the GPU
     # along with the dashboards. The security group opens port 30080 to everyone in that
     # mode, so the restriction has to live here, at the only layer that can still tell
-    # the four hostnames apart. It works because the Service uses
+    # the five hostnames apart. It works because the Service uses
     # externalTrafficPolicy: Local -- with Cluster, kube-proxy would SNAT every packet
     # and NGINX would see a node address for all callers, matching nobody.
     nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"

@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars only when overriding the safe defaults.
+
+project     = "vllm-bench"
+project_tag = "da51"
+owner       = "bao"
+
+# Architecture profile: one writer and one failover reader across the two DB subnets.
+instance_class = "db.t4g.medium"
+instance_count = 2
+
+backup_retention_days = 7
+deletion_protection   = true
+skip_final_snapshot   = false
