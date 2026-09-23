@@ -18,6 +18,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	vllm-up vllm-diff vllm-down smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
+	rag-data rag-eval rag-eval-nopolicy guardrails-test \
 	ingress-up ingress-down ingress-url creds
 
 help: ## Show this help
@@ -222,6 +223,9 @@ vllm-diff: ## Render the chart without applying it. MODE=shared|solo-a|solo-b
 	helm template vllm charts/vllm -n inference \
 		--set mode=$(MODE) --set artifactsBucket="$$bkt" --set roleArn="$$arn"
 
+smoke: ## Seven checks that separate "cluster broken" from "measurement bad". CLASS=a|b
+	@CLASS=$(or $(CLASS),a) ./bench/scripts/smoke.sh
+
 vllm-down: ## Remove the vLLM release but keep the cluster
 	-helm uninstall vllm -n inference
 	-kubectl delete namespace inference --ignore-not-found
@@ -330,6 +334,30 @@ creds: ## Print the lab passwords
 	@printf '  Ingress auth  admin / %s\n' \
 		"$$(kubectl -n monitoring get secret ingress-basic-auth \
 			-o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo '(none yet)')"
+
+# --- Guardrails + RAG -------------------------------------------------------
+# Everything here runs on CPU with no cluster and no model download, so it stays
+# measurable on a laptop and inside CI. The dense half of retrieval is an interface,
+# implemented where the GPU already is; see rag/retrieve.py for why.
+RAG_DATA ?= data
+
+rag-data: ## Pull the retrieval corpus and warehouse from S3 into data/
+	@bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null \
+		| grep -Ex '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]'); \
+		[ -n "$$bkt" ] || { echo "no artifacts bucket -- is core applied?"; exit 1; }; \
+		for d in xanhsm_retrieval_mock xanhsm_mock_warehouse; do \
+			echo "s3://$$bkt/datasets/v1/$$d -> $(RAG_DATA)/$$d"; \
+			aws s3 sync "s3://$$bkt/datasets/v1/$$d" "$(RAG_DATA)/$$d" --only-show-errors; \
+		done
+
+rag-eval: ## Measure retrieval on the 144 gold queries
+	@PYTHONPATH=. python3 -m rag.run_eval
+
+rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is worth
+	@PYTHONPATH=. python3 -m rag.run_eval --no-policy
+
+guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
+	@PYTHONPATH=. python3 -m tests.test_guardrails
 
 # --- EBS hygiene ------------------------------------------------------------
 # Dynamically provisioned volumes are deleted by the EBS CSI controller when their PVC
