@@ -57,11 +57,40 @@ trừ tuần 6 — nó xoá luôn bucket.
 
 ## 3. Một request đi qua những gì
 
-![Luồng một request](diagrams/request_flow.png)
+**Có hai sơ đồ, và chúng cố ý khác nhau.**
 
-Dựng lại bằng `make diagrams`. Nguồn: `docs/diagrams/request_flow.py` (`diagrams` +
-Graphviz). Sơ đồ này bổ sung cho sơ đồ hạ tầng: sơ đồ kia trả lời *cái gì chạy ở đâu*,
-sơ đồ này trả lời *theo thứ tự nào* — và thứ tự mới là chỗ tính đúng nằm.
+### Đang chạy thật
+
+![Luồng đang triển khai](diagrams/request_flow.png)
+
+`docs/diagrams/request_flow.py` — vẽ đúng những gì hiện chạy trên EKS: ingress-nginx →
+namespace `llm-serving` (LiteLLM + guardrail) → namespace `inference` (vLLM) → đường về.
+Mười bước, đánh số 1–10.
+
+Nó **cố ý không có** Redis, dense lúc phục vụ, và known-answer — vì cả ba chưa nối vào
+serving. Đây là sơ đồ để đọc khi đang gỡ lỗi *"vừa rồi chuyện gì xảy ra"*.
+
+### Kiến trúc mục tiêu
+
+![Luồng mục tiêu](diagrams/request_flow_target.png)
+
+`docs/diagrams/request_flow_target.py` — thêm semantic cache, dense, known-answer, và
+đánh số lại thành 13 bước. Đây là sơ đồ để đọc khi quyết định *"xây gì tiếp"*.
+
+Giữ hai file tách biệt là có chủ ý. Một hình gánh cả hai vai sẽ sai về một trong hai, và
+người đọc không có cách nào biết là vai nào.
+
+**Khác nhau ở đâu:**
+
+| | Đang chạy | Mục tiêu |
+|---|---|---|
+| Truy hồi | BM25 | BM25 + dense, gộp RRF |
+| Semantic cache | không có | Redis, nối vào pod guardrail |
+| Known-answer | tắt | tuỳ chọn, bước 8b |
+| Số bước | 10 | 13 |
+
+Phần còn lại của mục 3 mô tả **kiến trúc mục tiêu**, vì đó là thứ các quyết định thiết kế
+hướng tới. Bước nào chưa triển khai đều được đánh dấu.
 
 ### 3.0 Đọc sơ đồ
 
@@ -136,13 +165,13 @@ cặp diễn đạt lấy ra cùng tập chunk từ 18,5% lên 100%.
 không phải trước model**: che muộn thì giá trị gốc vẫn nằm trong truy vấn tìm kiếm, trong
 log và trong trace — ba bản sao ngoài model mà không ai coi là vấn đề của LLM.
 
-**5 · Cache key và điểm rẽ nhánh.** `hash(câu đã chuẩn hoá + agent + access_level)`. Nếu
+**5 · Cache key và điểm rẽ nhánh.** *(mục tiêu — chưa triển khai)* `hash(câu đã chuẩn hoá + agent + access_level)`. Nếu
 bước 4 tìm thấy PII thì **bỏ qua cache hoàn toàn** (lý do ở §3.0c).
 
 **POD 2 — chỉ khi CACHE MISS**
 
-**6 · Truy hồi.** BM25 trên unigram+bigram âm tiết, cộng dense trên vector dựng sẵn, gộp
-bằng RRF k=60 → 15 ứng viên.
+**6 · Truy hồi.** BM25 trên unigram+bigram âm tiết *(đang chạy)*, cộng dense trên vector
+dựng sẵn gộp bằng RRF k=60 *(mục tiêu)* → 15 ứng viên.
 
 **7 · Policy metadata.** Quyền: `access_level` không đủ → **bỏ hẳn, chỉ đếm**. Hiệu lực:
 `status ≠ active` → **giữ lại và gắn lời nhắc** vào system prompt.
@@ -151,7 +180,7 @@ bằng RRF k=60 → 15 ứng viên.
 giữ phần còn lại** — một tài liệu nhiễm không được phép giết mọi câu hỏi chạm tới nó.
 Đặt sau bước 7 vì quét 50 ứng viên để bảo vệ 5 cái sống sót là gấp 10 lần việc cần làm.
 
-**8b · Known-answer detection — tuỳ chọn, mặc định tắt.** Chèn một khoá 7 ký tự kèm chỉ
+**8b · Known-answer detection — tuỳ chọn, mặc định tắt, chưa nối vào serving.** Chèn một khoá 7 ký tự kèm chỉ
 dẫn *"lặp lại khoá này và bỏ qua văn bản bên dưới"*. Nếu model **không** trả về khoá thì
 dữ liệu đã làm nó chệch hướng → từ chối. Nó **không nhìn vào văn bản**, nên bắt được tấn
 công bằng bất kỳ ngôn ngữ nào mà luật không có mẫu. Giá: **một lần sinh thêm**, prefill

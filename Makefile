@@ -526,9 +526,18 @@ defenses-eval: ## Measure spotlighting + known-answer detection against the runn
 secrets-scan: ## Check staged changes for anything that must not reach a public repo
 	@./bench/scripts/scan_secrets.sh
 
-diagrams: ## Re-render docs/diagrams/*.py (needs Graphviz)
+# Picks whichever interpreter actually has `diagrams` installed. It lives in the system
+# python on one machine and in .venv-embed on another, and hard-coding either one breaks
+# the target for whoever is using the other.
+diagrams: ## Re-render docs/diagrams/*.py (needs Graphviz + the diagrams package)
 	@command -v dot >/dev/null || { echo "needs Graphviz: brew install graphviz"; exit 1; }
-	@for f in docs/diagrams/*.py; do echo "  $$f"; python3 "$$f"; done
+	@py=""; \
+		for cand in python3 $(EMBED_PY); do \
+			if "$$cand" -c "import diagrams" 2>/dev/null; then py="$$cand"; break; fi; \
+		done; \
+		[ -n "$$py" ] || { echo "no python has 'diagrams': pip install diagrams"; exit 1; }; \
+		echo "  dung $$py"; \
+		for f in docs/diagrams/*.py; do echo "  $$f"; "$$py" "$$f" || exit 1; done
 
 spotlight-cost: ## Token cost of datamarking, per marker choice (needs dense-env)
 	@test -x $(EMBED_PY) || { echo "run 'make dense-env' first"; exit 1; }
