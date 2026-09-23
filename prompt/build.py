@@ -46,7 +46,8 @@ import hashlib
 import secrets
 from dataclasses import dataclass, field
 
-from guardrails.injection import spotlight_rule, wrap_untrusted
+from guardrails import spotlight
+from guardrails.spotlight import Mode
 from rag.corpus import Chunk
 from rag.text_vi import normalise
 
@@ -70,6 +71,13 @@ class Session:
 
     agent: str
     access_level: str
+    # Hines et al. recommend at least datamarking and explicitly advise against relying
+    # on delimiting alone. See guardrails/spotlight.py for the measured token cost.
+    mode: Mode = Mode.DATAMARK
+    # The marking token. Chosen from the corpus at startup (spotlight.choose_marker) so
+    # it cannot collide with real text; falls back to a random Private Use Area
+    # codepoint, which costs 1.75x tokens.
+    marker: str = "^"
     nonce: str = field(default_factory=lambda: secrets.token_hex(4))
 
     @property
@@ -110,17 +118,21 @@ def build(
 ) -> BuiltPrompt:
     """Assemble the two messages. `advisory` carries the currency note from rag.policy."""
     # Stable region, in ascending order of how often it changes.
-    parts = [_BASE_RULES, spotlight_rule(session.nonce)]
+    parts = [_BASE_RULES, spotlight.system_rule(session.mode, session.marker)]
     if advisory:
         # Placed after the fixed rules so its presence or absence only invalidates the
         # cache from this point on, not from the top.
         parts.append(advisory)
 
+    # The transformation goes on the chunk text only. The document id stays outside the
+    # marked region: it is the citation handle, the model has to reproduce it verbatim,
+    # and datamarking it would make every citation unmatchable.
     ordered = sorted(chunks, key=lambda c: (c.document_id, c.chunk_id))
-    body = [
-        f"[{c.document_id}]\n{wrap_untrusted(normalise(c.text), session.nonce)}"
-        for c in ordered
-    ]
+    body = []
+    for c in ordered:
+        sp = spotlight.apply(normalise(c.text), session.mode, session.marker)
+        body.append(f"[{c.document_id}]\n"
+                    + spotlight.fence(sp.marked, session.mode, session.marker))
 
     system = "\n\n".join(parts + ["## Dữ liệu tham khảo", "\n\n".join(body)])
     return BuiltPrompt(

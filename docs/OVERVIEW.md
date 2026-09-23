@@ -50,36 +50,162 @@ trừ tuần 6 — nó xoá luôn bucket.
 
 ## 3. Một request đi qua những gì
 
+Đây là luồng đầy đủ, theo đúng thứ tự mã chạy. Mã nguồn: `guardrails/pipeline.py`.
+
 ```
-câu hỏi người dùng
-  │
-  │  guardrails/pipeline.py  — 10 bước, thứ tự là thiết kế
-  │
-  ├─ 1  injection.inspect(source="user")     chặn thì dừng luôn
-  ├─ 2  pii_vi.redact                        che TRƯỚC khi truy hồi và TRƯỚC khi ghi log
-  ├─ 3  canonical.canonicalise               cắt cụm dẫn nhập, tách dấu hiệu phạm vi
-  ├─ 4  retrieve.hybrid                      BM25 (+ dense khi có)
-  ├─ 5  policy.apply                         quyền: bỏ hẳn. hiệu lực: giữ lại + báo
-  ├─ 6  injection.inspect(source="document") bỏ chunk bị nhiễm, giữ phần còn lại
-  ├─ 7  prompt.build                         prefix ổn định + hàng rào + cache_salt
-  │
-  │  vLLM sinh câu trả lời
-  │
-  ├─ 8  grounding.check                      trích dẫn bịa → chặn
-  ├─ 9  pii_vi.scan(outbound)                số định danh lọt ra → chặn
-  └─ 10 khôi phục placeholder                chỉ trả lại giá trị do chính người đó nhập
+   NGƯỜI DÙNG GÕ CÂU HỎI
+            │
+┌───────────┴─────────────────────────────────────────── TRƯỚC KHI SINH ────┐
+│                                                                            │
+│  ①  CHẶN INJECTION TRỰC TIẾP          guardrails/injection.py              │
+│      gấp né tránh (zero-width, fullwidth, giãn chữ, KHÔNG DẤU)             │
+│      rồi so 10 luật HIGH + 6 luật MEDIUM, cả bản có dấu lẫn không dấu      │
+│      → BLOCK thì dừng tại đây, không có gì phía dưới chạy                  │
+│                                                                            │
+│  ②  CHE PII                            guardrails/pii_vi.py                │
+│      CCCD (kiểm mã tỉnh), điện thoại, biển số, email, MST, CMND            │
+│      "0912345678" → "[PHONE_1]", ánh xạ giữ lại để khôi phục ở bước ⑩      │
+│      ĐẶT TRƯỚC TRUY HỒI: nếu che sau, giá trị gốc vẫn nằm trong truy vấn   │
+│      tìm kiếm, trong log và trong trace                                    │
+│                                                                            │
+│  ③  CHUẨN HOÁ CÂU HỎI                  prompt/canonical.py                 │
+│      NFC · cắt cụm dẫn nhập · tách dấu hiệu phạm vi                        │
+│      "Cho tôi biết: X"          → "X"                                      │
+│      "Theo định nghĩa hiện hành, X" → "X"        (khung, bỏ)               │
+│      "Theo định nghĩa CŨ, X"    → "X" + scope=historical  (giữ, chuyển ⑤)  │
+│      ĐÂY LÀ CHỖ CACHE ĐƯỢC QUYẾT ĐỊNH: cùng câu hỏi → cùng chuỗi → cùng    │
+│      tập chunk → cùng prefix                                               │
+│                                                                            │
+│  ④  TRUY HỒI                           rag/retrieve.py                     │
+│      ┌─ BM25 trên unigram+bigram âm tiết      rag/bm25.py                  │
+│      └─ dense, cosine trên vector dựng sẵn    rag/dense.py                 │
+│         gộp bằng RRF, k=60 → 15 ứng viên                                   │
+│                                                                            │
+│  ⑤  POLICY METADATA                    rag/policy.py                       │
+│      quyền  : access_level không đủ → BỎ HẲN, chỉ đếm, không nêu tên       │
+│      hiệu lực: status ≠ active → GIỮ LẠI + gắn lời nhắc vào system prompt  │
+│      (scope=historical từ ③ sẽ mở khoá tài liệu deprecated)                │
+│      → còn 5 chunk                                                         │
+│                                                                            │
+│  ⑥  CHẶN INJECTION GIÁN TIẾP           injection.inspect(source=document)  │
+│      cùng bộ luật, NHƯNG mức độ nâng lên: câu ra lệnh cho trợ lý là        │
+│      bình thường từ người dùng, là tấn công khi nằm trong tài liệu         │
+│      → bỏ chunk nhiễm, GIỮ phần còn lại (không giết cả request)            │
+│      ĐẶT SAU ⑤: quét 50 ứng viên để bảo vệ 5 cái là gấp 10 lần việc cần    │
+│                                                                            │
+│  ⑥b KNOWN-ANSWER DETECTION (tuỳ chọn)  guardrails/known_answer.py          │
+│      Liu et al. USENIX Sec 2024. Chèn khoá 7 ký tự + "lặp lại khoá này và  │
+│      bỏ qua văn bản dưới", nếu model KHÔNG trả về khoá → dữ liệu đã làm nó │
+│      chệch hướng → từ chối. Bắt được tấn công không có từ khoá nào nhận ra │
+│      GIÁ: một lần sinh thêm, prefill lại toàn bộ ngữ cảnh                  │
+│                                                                            │
+│  ⑦  DỰNG PROMPT                        prompt/build.py                     │
+│      sắp xếp cho prefix cache + datamarking + cache_salt (xem mục 3.1)     │
+└────────────────────────────────────────────────────────────────────────────┘
+            │
+      vLLM SINH CÂU TRẢ LỜI
+            │
+┌───────────┴─────────────────────────────────────────── SAU KHI SINH ──────┐
+│  ⑧  KIỂM CĂN CỨ                        guardrails/grounding.py            │
+│      trích dẫn [MÃ] không có trong ngữ cảnh → BLOCK  (chính xác tuyệt đối) │
+│      không trích dẫn gì mà vẫn khẳng định → BLOCK                          │
+│      lời từ chối thuần → cho qua, không cần nguồn                          │
+│      trùng từ vựng với nguồn thấp → FLAG (chỉ là sàng lọc, không phán xử)  │
+│                                                                            │
+│  ⑨  QUÉT PII ĐẦU RA                    pii_vi.scan                        │
+│      số định danh trong câu trả lời → BLOCK, bất kể nó từ đâu ra           │
+│                                                                            │
+│  ⑩  KHÔI PHỤC PLACEHOLDER                                                  │
+│      "[PHONE_1]" → "0912345678", CHỈ những giá trị chính người này đã nhập │
+└────────────────────────────────────────────────────────────────────────────┘
+            │
+      TRẢ VỀ NGƯỜI DÙNG
 ```
 
-Hai chỗ đặt sai thứ tự là lỗi phổ biến, nên nói trước:
+### 3.1 Prompt được dựng như thế nào, và cache nằm ở đâu
 
-**Che PII đứng TRƯỚC truy hồi.** Nếu chỉ che trên đường gửi vào model thì giá trị gốc vẫn
-nằm trong truy vấn tìm kiếm, trong log request và trong trace — ba bản sao nằm ngoài model
-mà không ai coi là vấn đề của LLM.
+vLLM băm KV cache theo **chuỗi block**: mỗi block gồm hash của block cha cộng token id
+trong block, và **chỉ block đầy mới được cache** (mặc định 16 token). Hệ quả duy nhất cần
+nhớ: **hai request dùng chung phần tính toán đúng bằng đoạn token trùng nhau tính từ vị
+trí 0.** Một token khác ở vị trí 3 là vứt toàn bộ phía sau.
 
-**Quét injection trên tài liệu đứng SAU policy.** Quét 50 ứng viên để bảo vệ 5 cái sống
-sót là lãng phí gấp 10 lần.
+Nên prompt được xếp theo thứ tự **ít đổi nhất lên trước**:
 
----
+```
+┌─ system ──────────────────────────────────────────────────────┐
+│ Luật cơ bản                        giống hệt mọi request      │  ← cache
+│ Luật spotlight + ký tự đánh dấu    cố định theo phiên         │  ← cache
+│ Lời nhắc tài liệu hết hiệu lực     chỉ khi ⑤ giữ lại gì đó    │  ← cache
+│ ## Dữ liệu tham khảo                                           │
+│ [METRIC-REV-001]                   ← MÃ NẰM NGOÀI vùng đánh dấu│
+│ Gross^Booking^Value^và^doanh^thu…  ← nội dung đã datamark      │
+│ [METRIC-TRIP-001]                  sắp theo document_id,       │
+│ Định^nghĩa^chuyến^hoàn^thành…      KHÔNG theo điểm số          │
+└────────────────────────────────────────────────────────────────┘
+┌─ user ─────────────────────────────────────────────────────────┐
+│ Câu hỏi đã chuẩn hoá               luôn khác → đặt cuối cùng   │
+└────────────────────────────────────────────────────────────────┘
+cache_salt = sha256("<agent>|<access_level>")[:16]
+```
+
+**Vì sao sắp chunk theo `document_id` chứ không theo điểm.** Hai cách diễn đạt của cùng
+một câu hỏi thường lấy ra cùng tập chunk nhưng khác thứ tự. Sắp theo điểm thì prefix vỡ
+ngay ở chunk đầu; sắp theo id thì hai prompt giống nhau đến tận câu hỏi. Đo được: **+0,9%**
+— nhỏ, vì chỉ 18,5% cặp lấy ra cùng tập. Bước ③ mới là đòn bẩy thật, kéo con số đó lên
+100% trên bộ eval.
+
+**Vì sao mã tài liệu nằm ngoài vùng đánh dấu.** Model phải nhắc lại `[METRIC-REV-001]`
+nguyên văn để bước ⑧ đối chiếu được. Datamark nó thành `[METRIC-REV-001]` có dấu chen vào
+là không trích dẫn nào khớp được nữa.
+
+**`cache_salt` là kiểm soát bảo mật, không phải nút tinh chỉnh.** vLLM trộn salt vào hash
+của block đầu tiên, nên chỉ request cùng salt mới dùng lại KV của nhau. Hai người khác
+quyền truy cập **không bao giờ** chia sẻ KV suy ra từ tài liệu chỉ một người được đọc.
+Salt sinh từ `agent|access_level`, không từ id người dùng — salt theo người dùng an toàn
+tương đương nhưng giết sạch cache.
+
+### 3.2 Datamarking: nó là gì và tốn bao nhiêu
+
+Mọi khoảng trắng trong dữ liệu truy hồi bị thay bằng một ký tự đánh dấu, và system prompt
+nói cho model biết điều đó có nghĩa gì. Lấy từ Hines et al. (arXiv:2403.14720), biến thể
+**datamarking** — bài báo nói rõ **không nên** chỉ dùng delimiting.
+
+```
+gốc      Gross Booking Value và doanh thu thuần
+đánh dấu Gross^Booking^Value^và^doanh^thu^thuần
+```
+
+Ý tưởng: tín hiệu xuất xứ xuất hiện **liên tục** trong văn bản, không chỉ ở hai đầu, nên
+model khó nhầm dữ liệu thành chỉ dẫn hơn. Bài báo đo được ASR giảm từ >50% xuống <2%.
+
+Chi phí, đo bằng chính tokenizer của engine trên corpus này:
+
+| marker | token | tỉ lệ | va chạm |
+|---|---|---|---|
+| U+E000 (bài báo khuyến nghị) | 522.425 | **1,75x** | 0 |
+| `^` (đang dùng) | 377.361 | **1,26x** | 0 |
+| `|` | 381.528 | 1,28x | 2.880 |
+
+Số **ký tự** gần như không đổi, nên ai đo ký tự sẽ kết luận datamarking miễn phí. Chi phí
+nằm hoàn toàn ở tokenisation: U+E000 ngoài từ điển BPE nên rơi xuống byte-level. Với ngữ
+cảnh 5 chunk: **1.964 → 3.273 token**. Trên card mà nút thắt là băng thông bộ nhớ, đó là
+thời gian prefill và KV cache mà batch không dùng được.
+
+`^` được chọn tự động vì nó rẻ hơn và **không xuất hiện lần nào** trong corpus này —
+kiểm tại thời điểm dựng index, không phải giả định. Corpus tương lai có mã nguồn hay LaTeX
+thì nó tự rơi về U+E000.
+
+### 3.3 Ở đâu thì dừng, và dừng kiểu gì
+
+| Chặng | Phản ứng | Vì sao |
+|---|---|---|
+| ① injection người dùng | từ chối cả request | không có gì đáng cứu |
+| ⑤ quyền | bỏ im lặng, chỉ đếm | nêu tên đã là rò rỉ |
+| ⑤ hiệu lực | giữ lại **và nói ra** | người dùng cần biết định nghĩa đã đổi |
+| ⑥ injection tài liệu | bỏ chunk, giữ phần còn lại | một tài liệu nhiễm không được giết mọi câu hỏi chạm tới nó |
+| ⑥b known-answer | từ chối cả request | kiểm trên ngữ cảnh gộp, không biết chunk nào |
+| ⑧ trích dẫn bịa | chặn câu trả lời | |
+| ⑨ PII đầu ra | chặn câu trả lời | |
 
 ## 4. Vòng đời một phiên làm việc
 

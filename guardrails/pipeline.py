@@ -8,7 +8,9 @@
       4  retrieve.hybrid                      lexical (+ dense when available)
       5  policy.apply                         access: drop. currency: withhold + advise
       6  injection.inspect(source="document") BLOCK a poisoned chunk, keep the rest
-      7  prompt.build                         stable prefix, spotlight fence, cache salt
+      6b known_answer.check                   optional, costs one generation; catches what
+                                              no pattern can, see the module docstring
+      7  prompt.build                         stable prefix, datamarking, cache salt
       |
     generate
       |
@@ -41,7 +43,7 @@ from prompt.canonical import CanonicalQuery, canonicalise
 from rag import bm25, policy as pol, retrieve
 from rag.corpus import Chunk
 
-from . import grounding, injection, pii_vi
+from . import grounding, injection, known_answer, pii_vi
 
 
 @dataclass
@@ -75,6 +77,7 @@ def prepare(
     policy: pol.Policy | None = None,
     dense: retrieve.DenseRanker | None = None,
     classifier: injection.InjectionClassifier | None = None,
+    detector: known_answer.Completion | None = None,
     top_k: int = 5,
 ) -> PreparedRequest:
     # 1 -- direct injection
@@ -118,6 +121,23 @@ def prepare(
         return PreparedRequest(
             prompt=None, canonical=canon, dropped_documents=dropped,
             refusal=Refusal("retrieval", "không tìm thấy tài liệu phù hợp còn hiệu lực"))
+
+    # 6b -- known-answer detection, opt-in because it costs a full extra prefill.
+    #
+    # Refuses the whole request rather than dropping a chunk: this check runs over the
+    # concatenated context and reports only that SOMETHING in it diverted the model, so
+    # there is no chunk to drop. Localising it costs one generation per chunk, which at
+    # five chunks is five extra prefills to arrive at the same refusal.
+    if detector is not None:
+        for d in known_answer.check_chunks(
+                [(c.document_id, c.text) for c in context], detector):
+            if d.compromised:
+                return PreparedRequest(
+                    prompt=None, canonical=canon, context=context,
+                    dropped_documents=dropped,
+                    refusal=Refusal("known_answer",
+                                    "dữ liệu truy hồi làm mô hình đi chệch chỉ dẫn",
+                                    [d.scope]))
 
     # 7 -- assemble
     advisory = pol.currency_advisory(result)
