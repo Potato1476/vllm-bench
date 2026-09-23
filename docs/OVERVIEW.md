@@ -57,165 +57,118 @@ trừ tuần 6 — nó xoá luôn bucket.
 
 ## 3. Một request đi qua những gì
 
-**Có hai sơ đồ, và chúng cố ý khác nhau.**
+![Luồng một request](diagrams/request_flow.png)
 
-### Đang chạy thật
+Dựng lại bằng `make diagrams`. Nguồn: `docs/diagrams/request_flow.py`.
 
-![Luồng đang triển khai](diagrams/request_flow.png)
+Sơ đồ vẽ **đúng những gì đang chạy trên EKS**, và đánh số trùng khớp với các mốc trong
+`guardrails/pipeline.py` — nên đọc sơ đồ rồi mở thẳng mã ra đối chiếu được. Ba thứ **cố ý
+không có** vì chưa nối vào serving: semantic cache ở Redis, dense lúc phục vụ, và
+known-answer detection.
 
-`docs/diagrams/request_flow.py` — vẽ đúng những gì hiện chạy trên EKS: ingress-nginx →
-namespace `llm-serving` (LiteLLM + guardrail) → namespace `inference` (vLLM) → đường về.
-Mười bước, đánh số 1–10.
+### 3.0 Ba pod, và pod nào sở hữu cái gì
 
-Nó **cố ý không có** Redis, dense lúc phục vụ, và known-answer — vì cả ba chưa nối vào
-serving. Đây là sơ đồ để đọc khi đang gỡ lỗi *"vừa rồi chuyện gì xảy ra"*.
-
-### Kiến trúc mục tiêu
-
-![Luồng mục tiêu](diagrams/request_flow_target.png)
-
-`docs/diagrams/request_flow_target.py` — thêm semantic cache, dense, known-answer, và
-đánh số lại thành 13 bước. Đây là sơ đồ để đọc khi quyết định *"xây gì tiếp"*.
-
-Giữ hai file tách biệt là có chủ ý. Một hình gánh cả hai vai sẽ sai về một trong hai, và
-người đọc không có cách nào biết là vai nào.
-
-**Khác nhau ở đâu:**
-
-| | Đang chạy | Mục tiêu |
+| Pod / namespace | Sở hữu | Nguyên tắc |
 |---|---|---|
-| Truy hồi | BM25 | BM25 + dense, gộp RRF |
-| Semantic cache | không có | Redis, nối vào pod guardrail |
-| Known-answer | tắt | tuỳ chọn, bước 8b |
-| Số bước | 10 | 13 |
+| `ingress-nginx` | TLS, định tuyến theo host, lọc theo IP | Không chạm nội dung |
+| `llm-serving` — LiteLLM | API key, quota, router, nhãn agent | Không chạm nội dung |
+| `llm-serving` — Guardrail | Bước 1–7 và 8–10, cộng truy hồi | **Mọi bước đọc nội dung đều ở đây** |
+| `inference` — vLLM | Sinh văn bản | Chỉ sinh, không quyết định gì |
 
-Phần còn lại của mục 3 mô tả **kiến trúc mục tiêu**, vì đó là thứ các quyết định thiết kế
-hướng tới. Bước nào chưa triển khai đều được đánh dấu.
+Ranh giới là *"ai được đọc nội dung câu hỏi"*. LiteLLM định tuyến theo metadata — khoá
+API, quota, model đích — và không cần biết người dùng hỏi gì. Mọi bước cần đọc nội dung
+nằm trong pod guardrail, nên chỉ có **một nơi để audit và một codebase để sửa** khi thêm
+luật.
 
-### 3.0 Đọc sơ đồ
+**Truy hồi cũng ở pod guardrail.** Lý do là bước 6: quét injection trên tài liệu phải đọc
+chính các chunk vừa truy hồi. Tách hai bước luôn chạy cùng nhau nghĩa là chuyển 5 chunk ×
+~900 ký tự qua mạng hai lần mỗi request.
 
-**Bốn màu cạnh, mỗi màu một ý nghĩa:**
+### 3.0a Mười bước
 
-| | |
-|---|---|
-| **Xanh đậm, liền** | Đường tới hạn khi **CACHE MISS** — request phải đi hết |
-| **Xanh lá, đứt** | Đường tắt khi **CACHE HIT** — nhảy từ bước 5 thẳng tới 13 |
-| **Đỏ, đậm** | Từ chối. Request chết tại đó, không gì phía sau chạy |
-| **Xám, chấm** | Ngoài đường tới hạn: tra cứu phụ, ghi lưu trữ, telemetry |
+**Trước khi sinh**
 
-**Người gọi được vẽ hai lần** — `(gửi)` bên trái, `(nhận)` bên phải. Một node duy nhất sẽ
-kéo mọi cạnh đường về vắt ngang đồ thị và biến luồng trái-phải thành mớ rối. Đây là quy
-ước vẽ, không phải hai hệ thống khác nhau.
+**1 · Chặn injection, nguồn = người dùng.** Gấp né tránh (zero-width, fullwidth, giãn chữ,
+**không dấu**) rồi so 10 luật HIGH + 6 luật MEDIUM ở cả dạng có dấu và không dấu. **BLOCK
+thì dừng hẳn** — không truy hồi, không GPU.
 
-### 3.0a Ba pod, và pod nào sở hữu cái gì
-
-| Pod | Sở hữu | Nguyên tắc |
-|---|---|---|
-| **POD 1** LiteLLM Gateway (CPU) | API key, quota, định tuyến, nhãn agent, retry | **Không chạm nội dung** |
-| **POD 2** Guardrail (CPU) | Bước 2–9 và 11–13, cộng truy hồi | **Mọi bước đọc nội dung đều ở đây** |
-| **POD 3** vLLM (GPU) | Bước 10 | Chỉ sinh văn bản |
-
-Ranh giới là *"ai được đọc nội dung câu hỏi"*. Gateway định tuyến theo metadata — khoá
-API, quota, model đích. Nó không cần biết người dùng hỏi gì. Mọi bước cần đọc nội dung
-đều nằm trong POD 2, nên chỉ có một nơi để audit và một codebase để sửa khi thêm luật.
-
-**Redis nối vào POD 2, không phải gateway** — và đây là chỗ sơ đồ hạ tầng cần sửa.
-
-Cache key chỉ đúng khi dựng từ câu hỏi **đã chuẩn hoá** và **đã che PII**. Cả hai việc đó
-nằm trong POD 2. Nếu gateway tra cache trước khi gọi guardrail thì:
-
-```
-1. key dựng trên văn bản thô   → "Cho tôi biết: X" và "X" thành hai entry
-2. PII chưa che nằm trong key  → dữ liệu định danh vào Redis và vào log
-3. prompt độc hại được tra cứu → có thể trả về trước khi bị chặn
-```
-
-Chuyển Redis sang POD 2 là sửa cả ba, và luồng vẫn thẳng đúng như mũi tên trong sơ đồ hạ
-tầng: gateway → guardrail → vLLM.
-
-**Phương án khác**, ghi lại cho đủ: giữ Redis ở gateway và dùng cache có sẵn của LiteLLM —
-nhưng khi đó chuẩn hoá và che PII buộc phải chuyển vào gateway luôn. Nó chạy được, và nó
-chia logic an toàn ra hai service. Hai nơi cho cùng một kiểm soát bảo mật là tình huống mà
-bản được sửa không bao giờ là bản đang chạy.
-
-**Truy hồi nằm trong POD 2** — sơ đồ hạ tầng hiện chưa có thành phần này. Lý do đặt ở đây
-là bước 8: quét injection trên tài liệu phải đọc chính các chunk vừa truy hồi. Tách truy
-hồi khỏi bộ quét đọc đầu ra của nó nghĩa là chuyển 5 chunk × ~900 ký tự qua mạng hai lần
-mỗi request, để chia đôi hai bước luôn chạy cùng nhau.
-
-### 3.0b Mười ba bước
-
-**POD 1 — gateway**
-
-**1 · Auth + quota.** Đối chiếu khoá API với Aurora, trừ quota, và **gắn nhãn `agent`** —
-nhãn này là thứ làm dashboard tách được theo agent như đề bài yêu cầu. Đây là nơi duy nhất
-biết ai đang gọi.
-
-**POD 2 — guardrail, chiều vào**
-
-**2 · Chuẩn hoá câu hỏi.** NFC, cắt cụm dẫn nhập (`"Cho tôi biết: "`), tách dấu hiệu phạm
-vi. **Đặt trước bước 5 vì nó quyết định cache key.** Đo được: chuẩn hoá trước đưa tỉ lệ
-cặp diễn đạt lấy ra cùng tập chunk từ 18,5% lên 100%.
-
-**3 · Chặn injection, nguồn = người dùng.** Gấp né tránh (zero-width, fullwidth, giãn chữ,
-**không dấu**) rồi so 10 luật HIGH + 6 luật MEDIUM ở cả hai dạng có dấu và không dấu.
-**BLOCK thì dừng hẳn** — không truy hồi, không cache, không GPU.
-
-**4 · Che PII.** `0912345678` → `[PHONE_1]`, giữ ánh xạ cho bước 13. **Đặt trước truy hồi,
+**2 · Che PII.** `0912345678` → `[PHONE_1]`, giữ ánh xạ cho bước 10. **Đặt trước truy hồi,
 không phải trước model**: che muộn thì giá trị gốc vẫn nằm trong truy vấn tìm kiếm, trong
 log và trong trace — ba bản sao ngoài model mà không ai coi là vấn đề của LLM.
 
-**5 · Cache key và điểm rẽ nhánh.** *(mục tiêu — chưa triển khai)* `hash(câu đã chuẩn hoá + agent + access_level)`. Nếu
-bước 4 tìm thấy PII thì **bỏ qua cache hoàn toàn** (lý do ở §3.0c).
+**3 · Chuẩn hoá câu hỏi.** NFC, cắt cụm dẫn nhập (`"Cho tôi biết: "`), tách dấu hiệu phạm
+vi. Chạy **trên văn bản đã che** để câu hỏi đưa vào truy hồi và câu hỏi đưa vào model là
+một. Đo được: chuẩn hoá trước đưa tỉ lệ cặp diễn đạt lấy ra cùng tập chunk từ 18,5% lên
+100%.
 
-**POD 2 — chỉ khi CACHE MISS**
+Một chi tiết cố ý: `"theo định nghĩa hiện hành"` bị cắt như khung, nhưng `"theo định nghĩa
+CŨ"` được **giữ lại thành dấu hiệu phạm vi** và chuyển xuống bước 5 để mở khoá tài liệu
+`deprecated`. Câu hỏi về lịch sử là câu hỏi hợp lệ.
 
-**6 · Truy hồi.** BM25 trên unigram+bigram âm tiết *(đang chạy)*, cộng dense trên vector
-dựng sẵn gộp bằng RRF k=60 *(mục tiêu)* → 15 ứng viên.
+**4 · Truy hồi.** BM25 trên unigram + bigram âm tiết. *(Nhánh dense đã có mã và đã đo
+offline — xem §6 — nhưng chưa nối vào serving.)*
 
-**7 · Policy metadata.** Quyền: `access_level` không đủ → **bỏ hẳn, chỉ đếm**. Hiệu lực:
+**5 · Policy metadata.** Quyền: `access_level` không đủ → **bỏ hẳn, chỉ đếm**. Hiệu lực:
 `status ≠ active` → **giữ lại và gắn lời nhắc** vào system prompt.
 
-**8 · Chặn injection, nguồn = tài liệu.** Cùng bộ luật, mức độ nâng lên. **Bỏ chunk nhiễm,
+**6 · Chặn injection, nguồn = tài liệu.** Cùng bộ luật, mức độ nâng lên: câu ra lệnh cho
+trợ lý là bình thường từ người dùng, là tấn công khi nằm trong tài liệu. **Bỏ chunk nhiễm,
 giữ phần còn lại** — một tài liệu nhiễm không được phép giết mọi câu hỏi chạm tới nó.
-Đặt sau bước 7 vì quét 50 ứng viên để bảo vệ 5 cái sống sót là gấp 10 lần việc cần làm.
 
-**8b · Known-answer detection — tuỳ chọn, mặc định tắt, chưa nối vào serving.** Chèn một khoá 7 ký tự kèm chỉ
-dẫn *"lặp lại khoá này và bỏ qua văn bản bên dưới"*. Nếu model **không** trả về khoá thì
-dữ liệu đã làm nó chệch hướng → từ chối. Nó **không nhìn vào văn bản**, nên bắt được tấn
-công bằng bất kỳ ngôn ngữ nào mà luật không có mẫu. Giá: **một lần sinh thêm**, prefill
-lại toàn bộ ngữ cảnh, và không dùng chung prefix cache với request chính. Chi tiết:
+Đặt **sau** bước 5 vì quét 50 ứng viên để bảo vệ 5 cái sống sót là gấp 10 lần việc cần làm.
+
+**6b · Known-answer detection — có mã, mặc định tắt, chưa nối vào serving.** Chèn khoá 7
+ký tự kèm chỉ dẫn *"lặp lại khoá này và bỏ qua văn bản bên dưới"*; model không trả về khoá
+nghĩa là dữ liệu đã làm nó chệch hướng. Nó **không nhìn vào văn bản** nên bắt được tấn công
+bằng bất kỳ ngôn ngữ nào mà luật không có mẫu. Giá: **một lần sinh thêm**, prefill lại toàn
+bộ ngữ cảnh, và không dùng chung prefix cache với request chính. Chi tiết:
 [`GUARDRAILS.md`](GUARDRAILS.md) §3.3.
 
-**9 · Dựng prompt.** Prefix ổn định lên trước, datamarking cho nội dung chunk, `cache_salt`
+**7 · Dựng prompt.** Prefix ổn định lên trước, datamarking cho nội dung chunk, `cache_salt`
 theo `agent|access_level`. Chi tiết ở §3.1 và §3.2.
 
-**POD 3 — GPU**
+**vLLM sinh câu trả lời** — prefix cache KV nằm **bên trong** engine này.
 
-**10 · Sinh câu trả lời.** Prefix cache KV nằm **bên trong** engine này. Nó **khác hẳn**
-Redis: Redis lưu câu trả lời hoàn chỉnh và một lần trúng bỏ qua cả truy hồi lẫn GPU;
-prefix cache lưu khối KV và chỉ giúp request đã tới được đây.
+**Sau khi sinh**
 
-**POD 2 — chiều về**
+**8 · Kiểm căn cứ.** Trích dẫn `[MÃ]` không có trong ngữ cảnh → **chặn, chính xác tuyệt
+đối**. Khẳng định không kèm nguồn → chặn. Lời từ chối thuần → cho qua, không cần nguồn.
 
-**11 · Kiểm căn cứ.** Trích dẫn `[MÃ]` không có trong ngữ cảnh → **chặn, chính xác tuyệt
-đối**. Khẳng định không kèm nguồn → chặn. Lời từ chối thuần → cho qua.
+**9 · Quét PII đầu ra.** Số định danh trong câu trả lời → chặn, bất kể nó từ đâu ra.
 
-**12 · Quét PII đầu ra.** Số định danh trong câu trả lời → chặn, bất kể nó từ đâu ra.
+**10 · Khôi phục placeholder.** `[PHONE_1]` → `0912345678`, **chỉ những giá trị chính
+người này đã nhập**.
 
-**13 · Khôi phục placeholder.** `[PHONE_1]` → `0912345678`, **chỉ những giá trị chính
-người này đã nhập**. Đường CACHE HIT nhảy thẳng vào đây — vì khôi phục là việc riêng của
-từng request, không nằm trong thứ được cache.
+### 3.0b Ở đâu thì dừng, và dừng kiểu gì
 
-### 3.0c Năm quy tắc của semantic cache
+| Bước | Phản ứng | Vì sao |
+|---|---|---|
+| 1 · injection người dùng | từ chối cả request | không có gì đáng cứu |
+| 5 · quyền | bỏ im lặng, chỉ đếm | nêu tên đã là rò rỉ về việc cái gì tồn tại |
+| 5 · hiệu lực | giữ lại **và nói ra** | người dùng cần biết định nghĩa đã đổi |
+| 6 · injection tài liệu | bỏ chunk, giữ phần còn lại | một tài liệu nhiễm không được giết mọi câu hỏi chạm tới nó |
+| 6b · known-answer | từ chối cả request | kiểm trên ngữ cảnh gộp nên không biết chunk nào |
+| 8 · trích dẫn bịa | chặn câu trả lời | |
+| 9 · PII đầu ra | chặn câu trả lời | |
 
-**1. Chuẩn hoá trước khi dựng key** (bước 2 trước bước 5).
+### 3.0c Semantic cache — chưa có, và năm quy tắc phải theo khi thêm
+
+Sơ đồ không có Redis vì nó chưa được nối. Khi thêm, đây là năm điều kiện để nó không
+thành lỗ hổng. Ghi lại ở đây vì bốn trong năm chỉ lộ ra khi đã vẽ xong luồng.
+
+**Cache câu trả lời khác hẳn prefix cache KV.** Redis lưu **câu trả lời hoàn chỉnh** và
+một lần trúng bỏ qua cả truy hồi lẫn GPU; prefix cache lưu **khối KV** bên trong vLLM và
+chỉ giúp request đã tới được đó.
+
+**1. Chuẩn hoá trước khi dựng key.** `"Cho tôi biết: X"` và `"X"` là cùng một câu hỏi.
+Trong thứ tự hiện tại, bước 3 đã đứng trước chỗ cache sẽ nằm, nên điều kiện này có sẵn.
 
 **2. Key phải chứa `access_level`.** Câu trả lời trong cache được tính từ tài liệu mà
 người gọi đầu tiên được phép đọc. Phục vụ nó cho người ít quyền hơn là rò chính những tài
-liệu đó qua bản tóm tắt. Cùng lập luận với `cache_salt` của vLLM, chỉ ở tầng trên.
+liệu đó qua bản tóm tắt. Cùng lập luận với `cache_salt` của vLLM, chỉ ở tầng trên — và
+Redis không tự làm giúp.
 
-**3. Che PII trước khi chạm cache** (bước 4 trước bước 5).
+**3. Che PII trước khi chạm cache.** Bước 2 đã đứng trước, nên cũng có sẵn.
 
 **4. Request có PII thì KHÔNG cache.** Hệ quả ngược của quy tắc 3, và là chỗ dễ sai nhất:
 
@@ -224,31 +177,18 @@ A hỏi  "tra cứu chuyến của 0912345678"  →  "tra cứu chuyến của [
 B hỏi  "tra cứu chuyến của 0987654321"  →  "tra cứu chuyến của [PHONE_1]"   ← TRÙNG KEY
 ```
 
-B nhận câu trả lời tính từ dữ liệu của A, rồi bước 13 thay `[PHONE_1]` bằng số của B — rò
+B nhận câu trả lời tính từ dữ liệu của A, rồi bước 10 thay `[PHONE_1]` bằng số của B — rò
 dữ liệu **đến tay B khoác chính thông tin của B**, và không chỗ nào trông sai. Đưa giá trị
 đã che vào key thì hết trùng, nhưng lại nhét dữ liệu định danh trở vào key, đúng thứ việc
 che sinh ra để tránh.
 
-**5. Cache hit không được đi vòng qua bước 11–12.** Giải bằng **bất biến** chứ không bằng
-kiểm lại: cạnh ghi vào Redis xuất phát từ **bước 12**, không phải bước 10 — nên chỉ câu
-trả lời đã qua kiểm mới vào được cache, và một lần trúng an toàn nhờ thứ đã được cho vào.
-Kiểm lại mỗi lần trúng thì vứt đi phần lớn độ trễ mà cache được mua về.
+**5. Cache hit không được đi vòng qua bước 8–9.** Giải bằng **bất biến** chứ không bằng
+kiểm lại: chỉ ghi vào Redis **sau bước 9**, nên một lần trúng an toàn nhờ thứ đã được cho
+vào. Kiểm lại mỗi lần trúng thì vứt đi phần lớn độ trễ mà cache được mua về.
 
-**Chưa xử lý:** câu trả lời trong cache tính từ corpus tại thời điểm T. Khi một tài liệu
-chuyển `deprecated`, mọi entry dựa trên nó thành sai mà không ai biết. Cần TTL hoặc xoá
-theo `document_id`.
-
-### 3.0d Ở đâu thì dừng, và dừng kiểu gì
-
-| Bước | Phản ứng | Vì sao |
-|---|---|---|
-| 3 · injection người dùng | từ chối cả request | không có gì đáng cứu |
-| 7 · quyền | bỏ im lặng, chỉ đếm | nêu tên đã là rò rỉ về việc cái gì tồn tại |
-| 7 · hiệu lực | giữ lại **và nói ra** | người dùng cần biết định nghĩa đã đổi |
-| 8 · injection tài liệu | bỏ chunk, giữ phần còn lại | một tài liệu nhiễm không được giết mọi câu hỏi chạm tới nó |
-| 8b · known-answer | từ chối cả request | kiểm trên ngữ cảnh gộp nên không biết chunk nào; localise tốn 1 lần sinh mỗi chunk để tới cùng một kết luận |
-| 11 · trích dẫn bịa | chặn câu trả lời | |
-| 12 · PII đầu ra | chặn câu trả lời | |
+**Còn một điểm chưa có lời giải:** câu trả lời trong cache tính từ corpus tại thời điểm T.
+Khi một tài liệu chuyển `deprecated`, mọi entry dựa trên nó thành sai mà không ai biết.
+Cần TTL hoặc xoá theo `document_id`.
 
 ### 3.1 Prompt được dựng như thế nào, và cache nằm ở đâu
 
@@ -263,7 +203,7 @@ Nên prompt được xếp theo thứ tự **ít đổi nhất lên trước**:
 ┌─ system ──────────────────────────────────────────────────────┐
 │ Luật cơ bản                        giống hệt mọi request      │  ← cache
 │ Luật spotlight + ký tự đánh dấu    cố định theo phiên         │  ← cache
-│ Lời nhắc tài liệu hết hiệu lực     chỉ khi bước 7 giữ lại gì đó    │  ← cache
+│ Lời nhắc tài liệu hết hiệu lực     chỉ khi bước 5 giữ lại gì đó    │  ← cache
 │ ## Dữ liệu tham khảo                                           │
 │ [METRIC-REV-001]                   ← MÃ NẰM NGOÀI vùng đánh dấu│
 │ Gross^Booking^Value^và^doanh^thu…  ← nội dung đã datamark      │
@@ -283,7 +223,7 @@ ngay ở chunk đầu; sắp theo id thì hai prompt giống nhau đến tận c
 100% trên bộ eval.
 
 **Vì sao mã tài liệu nằm ngoài vùng đánh dấu.** Model phải nhắc lại `[METRIC-REV-001]`
-nguyên văn để bước 11 đối chiếu được. Datamark nó thành `[METRIC-REV-001]` có dấu chen vào
+nguyên văn để bước 8 đối chiếu được. Datamark nó thành `[METRIC-REV-001]` có dấu chen vào
 là không trích dẫn nào khớp được nữa.
 
 **`cache_salt` là kiểm soát bảo mật, không phải nút tinh chỉnh.** vLLM trộn salt vào hash

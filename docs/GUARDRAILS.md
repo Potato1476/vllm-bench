@@ -52,29 +52,28 @@ còn đứng vững khi lớp phát hiện trượt.
 
 ## 2b. Guardrail chạy ở pod nào
 
-Kiến trúc mục tiêu tách LiteLLM và guardrail thành **hai pod riêng**:
+LiteLLM và guardrail là **hai pod riêng**, cùng namespace `llm-serving`:
 
 ```
-POD 1  LiteLLM Gateway   API key · quota · router · nhãn agent
-POD 2  Guardrail         mọi bước đọc nội dung
-POD 3  vLLM              chỉ sinh văn bản
+llm-serving  LiteLLM     API key · quota · router · nhãn agent
+llm-serving  Guardrail   mọi bước đọc nội dung, cộng truy hồi
+inference    vLLM        chỉ sinh văn bản
 ```
 
-Ranh giới là *"ai được đọc nội dung câu hỏi"*. Gateway định tuyến theo metadata và không
-cần biết người dùng hỏi gì. Toàn bộ `guardrails/` cộng với truy hồi nằm trong POD 2, nên
-chỉ có **một nơi để audit và một codebase để sửa** khi thêm luật.
+Ranh giới là *"ai được đọc nội dung câu hỏi"*. LiteLLM định tuyến theo metadata và không
+cần biết người dùng hỏi gì. Toàn bộ `guardrails/` cộng với truy hồi nằm trong pod
+guardrail, nên chỉ có **một nơi để audit và một codebase để sửa** khi thêm luật.
 
-**Hệ quả với cache, và đây là chỗ sơ đồ hạ tầng cần sửa.** Sơ đồ nối Redis vào *gateway*.
-Nhưng cache key chỉ đúng khi dựng từ câu hỏi **đã chuẩn hoá** và **đã che PII** — cả hai
-đều nằm trong POD 2. Gateway tra cache trước khi gọi guardrail sẽ: lấy key trên văn bản
+**Truy hồi ở cùng pod với guardrail** vì bước quét injection trên tài liệu phải đọc chính
+các chunk vừa truy hồi. Tách hai bước luôn chạy cùng nhau nghĩa là chuyển 5 chunk × ~900
+ký tự qua mạng hai lần mỗi request.
+
+**Khi thêm semantic cache — chưa có — nó phải nối vào pod guardrail, không phải LiteLLM.**
+Cache key chỉ đúng khi dựng từ câu hỏi đã chuẩn hoá và đã che PII, mà cả hai bước đó nằm
+trong pod guardrail. Tra cache ở LiteLLM trước khi gọi guardrail sẽ lấy key trên văn bản
 thô (hai cách diễn đạt thành hai entry), đưa PII chưa che vào Redis và vào log, và có thể
-trả về câu trả lời cho prompt mà guardrail sẽ chặn.
-
-Redis phải nối vào **POD 2**. Luồng vẫn thẳng đúng như mũi tên trong sơ đồ hạ tầng.
-
-**Truy hồi cũng ở POD 2**, vì bước quét injection trên tài liệu phải đọc chính các chunk
-vừa truy hồi. Tách hai bước luôn chạy cùng nhau nghĩa là chuyển 5 chunk × ~900 ký tự qua
-mạng hai lần mỗi request.
+trả về câu trả lời cho prompt mà guardrail sẽ chặn. Năm quy tắc đầy đủ:
+[`OVERVIEW.md` §3.0c](OVERVIEW.md#30c-semantic-cache--chưa-có-và-năm-quy-tắc-phải-theo-khi-thêm).
 
 Chi tiết từng bước và sơ đồ: [`OVERVIEW.md` §3](OVERVIEW.md#3-một-request-đi-qua-những-gì).
 
