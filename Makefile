@@ -31,7 +31,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	secrets-scan \
 	dense-env dense-build dense-eval dense-ablation diagrams \
 	ingress-up ingress-down ingress-url creds \
-	embeddings-up embeddings-down tracing-up tracing-down trace tracing-check
+	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -434,6 +434,13 @@ audit-metrics: ## Confirm every metric the rules depend on exists by name
 # --- Tracing ----------------------------------------------------------------
 # Metrics say the p95 moved; a trace says which of the ten guardrail stages moved it, on
 # which request. Tempo is read inside Grafana, so this adds no hostname and no password.
+availability: ## Bao cao availability tu ket qua probe. PROBES=<thu muc hoac tep>
+# Doc nhieu phien cung luc: moi phien lam viec la mot mau, va 14 phien phu duoc 14 ngay
+# lich ma mot lan chay lien tuc 2 tuan khong phu duoc -- no chi phu mot lan trien khai.
+	@test -n "$(PROBES)" || { echo "usage: make availability PROBES=runs/probe/"; exit 1; }
+	@PYTHONPATH=. python3 bench/scripts/availability.py $(PROBES) \
+		$(if $(TARGET),--target $(TARGET),) $(if $(ALL_HOURS),--all-hours,)
+
 embeddings-up: ## Install text-embeddings-inference, the query half of hybrid retrieval
 	kubectl apply -f k8s/embeddings/tei.yaml
 	@echo "first start downloads a ~2.2 GB model; readiness allows ten minutes."
@@ -581,7 +588,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
 	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_tracing \
-		tests.test_dense_serving
+		tests.test_dense_serving tests.test_availability
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py

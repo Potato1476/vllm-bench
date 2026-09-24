@@ -24,7 +24,7 @@ Một nền serving LLM nội bộ dùng chung cho ≥7 agent copilot MOC, có g
 | Tiêu chí | Trạng thái |
 |---|---|
 | p95 < 3s ở 50 req/s | **chưa chạm 50 req/s** (đỉnh 1,98). Xem §1a — ở độ dài trả lời thật, AWQ đạt 3s còn FP16 thì không |
-| Uptime ≥ 99,5%, pilot 2 tuần | **chưa có gì**, và mâu thuẫn ngân sách: 2 tuần liên tục kèm GPU tốn ~338 USD, vượt cả 200 |
+| Uptime ≥ 99,5%, pilot 2 tuần | bộ đo đã xong (§1b); 2 tuần **liên tục** không nằm trong ngân sách, nhưng cũng không cần |
 | Chi phí/1k token giảm ≥30% so với API ngoài | rule đã có (`platform:cost_usd_per_1k_output_tokens`); hiện **đắt gấp 3** vì thiếu tải |
 | Chặn ≥95% bộ test prompt injection / PII leak | **100% trên 294 mẫu tấn công**, chặn nhầm 0% trên 49 câu hỏi thật — **đạt** |
 | Dashboard latency/chi phí/token **theo agent** | chưa có nhãn `agent` — cần Aurora + virtual key |
@@ -70,6 +70,57 @@ Ba thay đổi đi kèm phát hiện này:
 Vẫn nên hỏi mentor để xác nhận, nhưng giờ câu hỏi đã có số liệu làm nền chứ không còn bỏ
 ngỏ: *"đáp án tham chiếu của bọn em dài 32–54 token; câu trả lời MOC thật có cùng cỡ đó
 không?"*
+
+### 1b. Chứng minh availability mà không cần chạy 2 tuần liên tục
+
+Chạy cả stack 2 tuần liên tục tốn **~338 USD** trên ngân sách 200 — nên pilot như câu chữ
+là bất khả thi. Điều đó hoá ra không quan trọng, vì tiêu chí này **gộp ba tuyên bố** có
+chi phí chứng minh chênh nhau hàng nghìn lần:
+
+| Tuyên bố | Cái gì chứng minh nó | Chi phí |
+|---|---|---|
+| Tỉ lệ request thành công ở mức tải X | **chính bài test tải** | phút |
+| Thời gian phục hồi sau sự cố (MTTR) | **gây ra** sự cố, đừng chờ nó | phút |
+| Hỏng chỉ xuất hiện theo thời gian | cần lịch — nhưng **lấy mẫu được** | ~28 giờ GPU |
+
+**Số học.** Với 0 lỗi, cận dưới một phía 95% là `0,05^(1/n)`. Để vượt 99,5% cần **n = 598**:
+
+```
+598 probe -> 12 giay o 50 req/s   |   1 phien 2 gio o 1 req/s -> chan duoc 99,96%
+```
+
+Tức một phiên làm việc bình thường đã đủ bằng chứng cho tuyên bố "ở mức tải này". Hai tuần
+liên tục gần như **không mua thêm gì** cho nó.
+
+**Lấy mẫu theo lịch thay vì chạy liên tục.** 14 phiên hằng ngày phủ 14 ngày lịch với
+~28 giờ GPU (~28 USD). Và chúng phủ **14 lần triển khai**, trong khi một lần chạy liên tục
+chỉ phủ đúng một — mà triển khai mới là nơi sự cố thật hay xảy ra. Dự án vốn đã bật/tắt cụm
+mỗi ngày, nên chi phí biên gần như **bằng không**: chỉ cần ghi lại.
+
+**Công cụ:** `bench/scripts/availability.py`, chạy qua `make availability PROBES=<thư mục>`.
+
+Ba thứ nó từ chối làm, vì cả ba đều là cách thổi phồng con số:
+
+1. **Báo số mà không kèm khoảng tin.** 200 probe sạch vẫn tương thích với availability thật
+   98,5%. Phán quyết đọc theo **cận dưới một phía**, không bao giờ theo điểm ước lượng.
+2. **Âm thầm loại probe ngoài giờ.** Cửa sổ dịch vụ là **08:00–18:00 T2–T6** — cụm bị huỷ
+   mỗi tối và analyst MOC làm giờ hành chính. Nhưng cửa sổ cũng là cách dễ nhất để làm một
+   sự cố biến mất, nên số bị loại **được in ra kèm số lỗi trong đó**.
+3. **Tính thời gian không ai quan sát.** Hai probe thành công cách nhau 3 giờ chứng kiến hai
+   thời điểm, không phải 3 giờ uptime. Khoảng lớn hơn `--max-gap` bị loại khỏi mẫu số.
+
+Nó cũng tách **availability theo request** khỏi **availability theo thời gian** — hai cái
+chỉ trùng nhau khi lỗi rải đều; một đợt hỏng tập trung làm chúng tách ra, và đó mới là ca
+đáng quan tâm. 60 probe hỏng trong một lần restart là **một sự cố**, không phải 60 sự kiện.
+
+Điểm quan trọng nhất nó bắt được: **con số gộp ĐẠT không có nghĩa mọi mức tải đều ĐẠT.**
+Chạy thử trên dữ liệu mô phỏng, tổng thể 99,61% (đạt) nhưng riêng 10 req/s chỉ 98,84%
+(trượt). Tiêu chí nói về hành vi **ở mức tải**, nên mức yếu nhất mới là câu trả lời.
+
+**Cái nó không nói được**, và tài liệu in ra dòng này ở cuối mỗi báo cáo: nó không nói gì
+về hỏng hóc chỉ xuất hiện sau nhiều tuần chạy liên tục — rò bộ nhớ, hết hạn chứng chỉ, xoay
+node. Dự án **đã từng bị** LiteLLM OOMKill ở giới hạn 1Gi. Những thứ đó phải đo riêng, và
+đo được bằng cách ngoại suy tốc độ tăng RSS chứ không cần chờ nó xảy ra.
 
 ---
 
