@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "tokenizer": "/tmp/qwen7b",
+  "tokenizer": "Qwen/Qwen2.5-7B-Instruct",
   "n_per_profile": 2000,
   "datasets": [
     {
@@ -41,6 +41,19 @@
       "output_tokens": 800,
       "sha256": "dfabea9e644f9d552a13f9f65618cbbac574d23c9dc3984585c40f30f3fdcf2d",
       "why": "medium prompt, long answer -- the longest time in flight"
+    },
+    {
+      "file": "moc-v1.jsonl",
+      "profile": "moc",
+      "n": 2000,
+      "target_prompt_tokens": 4000,
+      "actual_prompt_tokens_mean": 4000.0,
+      "actual_prompt_tokens_min": 3999,
+      "actual_prompt_tokens_max": 4000,
+      "drift_from_target": 0.0,
+      "output_tokens": 48,
+      "sha256": "ee154b7e572a3c123257ed93d6d0cb383ca7e3f03539f9d4f5f552967cb2b781",
+      "why": "the real MOC shape -- long RAG prompt, answer measured from the 144 gold answers (p50 32, p90 44)"
     }
   ],
   "note": "regenerating with the same --version and --model reproduces these checksums"

@@ -9,6 +9,22 @@ resource "aws_budgets_budget" "lab" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
+  # Without this block the budget reports zero and never fires.
+  #
+  # AWS defaults include_credit to true, so promotional credits are subtracted before the
+  # spend is compared against the limit. This account runs on credits, and the effect was
+  # measured rather than predicted: the console's own default budget read 17.56 USD for
+  # the same month in which this one read 0.00. A budget that stays at zero until the
+  # credits are exhausted gives no warning while the 200 USD is being consumed -- it only
+  # starts counting once there is nothing left to ration.
+  #
+  # The 200 USD here IS the credit allocation, so gross usage is the thing to track.
+  cost_types {
+    include_credit   = false
+    include_refund   = false
+    include_discount = true
+  }
+
   dynamic "notification" {
     # Expressed as dollar thresholds, not percentages, so the alert points do not move
     # if the ceiling is ever renegotiated.

@@ -26,6 +26,10 @@ venv/
 # from S3 beside the corpus it was built from -- the model id is recorded next to the
 # vectors so a mismatched pair fails loudly instead of returning plausible nonsense.
 data/index/
+# ...but keep the directory itself, so the guardrail image can COPY it whether or
+# not the index has been built. Without a tracked file here the Docker build fails
+# on a clean clone, which is every CI run.
+!data/index/.gitkeep
 .ruff_cache/
 .pytest_cache/
 

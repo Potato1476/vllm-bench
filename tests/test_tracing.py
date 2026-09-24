@@ -180,7 +180,16 @@ class EndToEndTraceTest(unittest.TestCase):
             finally:
                 exc.close()
 
-    def _spans(self, expected: int = 1) -> list[dict]:
+    def _spans(self, trace_id: str | None = None, expected: int = 1) -> list[dict]:
+        """Wait for this request's spans to arrive, ignoring any other request's.
+
+        Filtering by trace id rather than clearing the collector in setUp, because export
+        is asynchronous: a span from the previous test can land after setUp has run, and
+        the test then asserts over a set containing a trace it never sent. That is how
+        this suite first failed -- intermittently, and only once the tests were slow
+        enough for the orders to overlap.
+        """
+        spans: list[dict] = []
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             with _FakeCollector.lock:
@@ -190,6 +199,7 @@ class EndToEndTraceTest(unittest.TestCase):
                     for resource in payload["resourceSpans"]
                     for scope in resource["scopeSpans"]
                     for span in scope["spans"]
+                    if trace_id is None or span["traceId"] == trace_id
                 ]
             if len(spans) >= expected:
                 return spans
@@ -204,8 +214,7 @@ class EndToEndTraceTest(unittest.TestCase):
         self.assertRegex(headers["X-Trace-Id"], r"^[0-9a-f]{32}$")
         self.assertEqual(body["guardrail"]["trace_id"], headers["X-Trace-Id"])
 
-        spans = self._spans(expected=8)
-        self.assertEqual({span["traceId"] for span in spans}, {headers["X-Trace-Id"]})
+        spans = self._spans(headers["X-Trace-Id"], expected=8)
 
         names = {span["name"] for span in spans}
         # The ten stages of the pipeline plus the engine call: this is the waterfall the
@@ -241,7 +250,7 @@ class EndToEndTraceTest(unittest.TestCase):
         # returned on the error response too.
         self.assertRegex(headers["X-Trace-Id"], r"^[0-9a-f]{32}$")
 
-        spans = self._spans(expected=2)
+        spans = self._spans(headers["X-Trace-Id"], expected=2)
         failed = [s for s in spans if s.get("status", {}).get("code") == tracing.STATUS_ERROR]
         names = {span["name"] for span in failed}
         # The refusal says "injection"; the observer timed it as "injection_user". If the
@@ -259,10 +268,7 @@ class EndToEndTraceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         # One trace across LiteLLM, guardrail and engine -- not three unrelated ones.
         self.assertEqual(headers["X-Trace-Id"], "4bf92f3577b34da6a3ce929d0e0e4736")
-        spans = self._spans(expected=8)
-        self.assertEqual(
-            {span["traceId"] for span in spans}, {"4bf92f3577b34da6a3ce929d0e0e4736"}
-        )
+        spans = self._spans("4bf92f3577b34da6a3ce929d0e0e4736", expected=8)
         root = next(s for s in spans if s["name"] == "POST /v1/chat/completions")
         self.assertEqual(root["parentSpanId"], "00f067aa0ba902b7")
 

@@ -17,6 +17,7 @@ class _FakeVllm(BaseHTTPRequestHandler):
     # Recorded so tests/test_tracing.py can check the trace context really reaches the
     # engine, rather than only checking that the guardrail meant to send it.
     last_traceparent: str | None = None
+    last_max_tokens: int | None = None
 
     def do_POST(self) -> None:  # noqa: N802
         type(self).calls += 1
@@ -26,6 +27,7 @@ class _FakeVllm(BaseHTTPRequestHandler):
         assert payload["stream"] is False
         assert payload["cache_salt"]
         assert payload["messages"][0]["role"] == "system"
+        type(self).last_max_tokens = payload.get("max_tokens")
         body = json.dumps({
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -107,6 +109,45 @@ class GuardrailServiceTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["error"]["code"], "injection")
         self.assertEqual(_FakeVllm.calls, before)
+
+    def test_an_unbounded_request_gets_a_length_cap(self) -> None:
+        # Answer length is the only term in the p95 budget the platform controls, so a
+        # request that names no limit must not be allowed to generate indefinitely.
+        _FakeVllm.last_max_tokens = None
+        status, _ = self._post_raw({
+            "model": "qwen2.5-7b",
+            "messages": [{"role": "user", "content": "Chuyến hoàn thành là gì?"}],
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(_FakeVllm.last_max_tokens, app.DEFAULT_MAX_TOKENS)
+
+    def test_a_caller_that_named_a_budget_keeps_it(self) -> None:
+        # The bench runner holds output length fixed on purpose; overriding it would
+        # silently change what every measurement means.
+        _FakeVllm.last_max_tokens = None
+        status, _ = self._post_raw({
+            "model": "qwen2.5-7b",
+            "messages": [{"role": "user", "content": "Chuyến hoàn thành là gì?"}],
+            "max_tokens": 777,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(_FakeVllm.last_max_tokens, 777)
+
+    def _post_raw(self, payload: dict) -> tuple[int, dict]:
+        request = urllib.request.Request(
+            f"{self.base}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read())
+            finally:
+                exc.close()
 
     def test_stream_is_emitted_after_the_safe_answer_is_complete(self) -> None:
         request = urllib.request.Request(

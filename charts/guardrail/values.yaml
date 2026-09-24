@@ -20,6 +20,21 @@ observability:
   policyVersion: builtin-v1
   corpusVersion: bundled
 
+# Hybrid retrieval. Off unless an embeddings service exists to embed the query.
+#
+# Measured on the 144 gold queries: lexical 0.570 nDCG@10, dense 0.606, fused 0.650 -- and
+# 20 queries return nothing relevant at all under lexical alone against 4 under dense.
+# Those complete misses are the reason to bother; the ranking gain is the smaller half.
+#
+# indexPath points inside the image, where the Dockerfile copies data/index/ if it was
+# built. endpoint is a text-embeddings-inference service -- see k8s/embeddings/tei.yaml.
+# With either missing the service starts normally and retrieves lexically.
+dense:
+  enabled: false
+  indexPath: /app/data/index/dense-vi
+  endpoint: http://tei.llm-serving.svc.cluster.local/
+  timeoutSeconds: 2.0
+
 tracing:
   # On by default. The exporter runs on a background thread and drops spans rather than
   # blocking a request, so a Tempo that is absent or restarting costs serving nothing --

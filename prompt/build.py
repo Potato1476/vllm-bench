@@ -101,11 +101,30 @@ class BuiltPrompt:
         return tokens // BLOCK_TOKENS
 
 
+# The brevity sentence is a latency control, not a style preference.
+#
+# Answer length is the only term in the p95 budget that the platform chooses. TTFT is
+# roughly 0.24s and each output token costs an inter-token latency, so a 3s objective buys
+# about 37 tokens on FP16 and about 79 on AWQ -- and nothing about adding GPUs changes
+# that, because more cards raise throughput, not decode speed.
+#
+# The length asked for here is measured, not invented: the 144 reference answers in
+# data/xanhsm_retrieval_mock/eval/retrieval_eval.jsonl run to 32 tokens at the median, 44
+# at p90 and 54 at the longest. That is what a correct answer to this corpus actually
+# costs -- the source documents are only 127-223 tokens themselves, and a good answer
+# states the conditions asked about rather than restating the document.
+#
+# Without this sentence the model is free to write an essay, and the SLO is lost to
+# verbosity that nobody asked for. It lives in _BASE_RULES, which is the stable prefix
+# shared by every request from an agent, so it is prefilled once and cached rather than
+# paid per request.
 _BASE_RULES = (
     "Bạn là trợ lý phân tích dữ liệu vận hành của Xanh SM. "
     "Chỉ trả lời dựa trên các tài liệu được cung cấp trong phần dữ liệu tham khảo. "
     "Nếu tài liệu không đủ căn cứ, hãy nói rõ là không đủ thông tin, không suy đoán. "
-    "Mỗi khẳng định phải kèm mã tài liệu nguồn theo dạng [MÃ_TÀI_LIỆU]."
+    "Mỗi khẳng định phải kèm mã tài liệu nguồn theo dạng [MÃ_TÀI_LIỆU]. "
+    "Trả lời ngắn gọn, thường 1-3 câu: nêu đúng điều kiện, con số hoặc định nghĩa được "
+    "hỏi kèm mã nguồn, không chép lại toàn bộ tài liệu và không thêm phần mở đầu."
 )
 
 

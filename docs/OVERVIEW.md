@@ -9,7 +9,7 @@ Tài liệu chi tiết cho từng mảng:
 
 | | |
 |---|---|
-| [`GUARDRAILS.md`](GUARDRAILS.md) | Mô hình mối đe doạ, ba lớp phòng thủ, bộ test 298 mẫu chia hai nửa, và số đo trên nửa giữ lại |
+| [`GUARDRAILS.md`](GUARDRAILS.md) | Mô hình mối đe doạ, ba lớp phòng thủ, bộ test 343 mẫu chia hai nửa, và số đo trên nửa giữ lại |
 | [`TRACING.md`](TRACING.md) | Xem một request cụ thể đi qua 10 stage: Tempo, span model, và vì sao span không chứa nội dung |
 | [`metric-names.md`](metric-names.md) | Từng metric của LiteLLM và guardrail: type, label, ý nghĩa |
 | [`diagrams/request_flow.png`](diagrams/request_flow.png) | Sơ đồ luồng một request, cả nhánh cache HIT lẫn MISS |
@@ -23,13 +23,53 @@ Một nền serving LLM nội bộ dùng chung cho ≥7 agent copilot MOC, có g
 
 | Tiêu chí | Trạng thái |
 |---|---|
-| p95 < 3s ở 50 req/s | đo được p95; **chưa chạm 50 req/s** (đỉnh 1,98) |
-| Uptime ≥ 99,5%, pilot 2 tuần | **chưa có gì** — cần probe ngoài cụm |
-| Chi phí/1k token giảm ≥30% so với API ngoài | **chưa có metric nào** |
-| Chặn ≥95% bộ test prompt injection / PII leak | **81,2% trên nửa giữ lại** của bộ 298 mẫu — chưa đạt |
-| Dashboard latency/chi phí/token **theo agent** | chưa có nhãn `agent` — cần gateway |
+| p95 < 3s ở 50 req/s | **chưa chạm 50 req/s** (đỉnh 1,98). Xem §1a — ở độ dài trả lời thật, AWQ đạt 3s còn FP16 thì không |
+| Uptime ≥ 99,5%, pilot 2 tuần | **chưa có gì**, và mâu thuẫn ngân sách: 2 tuần liên tục kèm GPU tốn ~338 USD, vượt cả 200 |
+| Chi phí/1k token giảm ≥30% so với API ngoài | rule đã có (`platform:cost_usd_per_1k_output_tokens`); hiện **đắt gấp 3** vì thiếu tải |
+| Chặn ≥95% bộ test prompt injection / PII leak | **100% trên 294 mẫu tấn công**, chặn nhầm 0% trên 49 câu hỏi thật — **đạt** |
+| Dashboard latency/chi phí/token **theo agent** | chưa có nhãn `agent` — cần Aurora + virtual key |
 
-Đọc bảng này trước khi bắt tay vào bất cứ việc gì: bốn trên năm dòng còn trống.
+### 1a. Câu trả lời dài bao nhiêu — và vì sao nó quyết định SLO
+
+Đây là biến quan trọng nhất mà dự án từng bỏ trống, vì **độ dài câu trả lời là số hạng duy
+nhất trong ngân sách p95 mà nền tảng tự chọn**. TTFT cố định, tốc độ decode cố định; thêm
+GPU làm tăng thông lượng chứ không làm giảm ITL.
+
+Đo trên 144 câu trả lời vàng trong `data/xanhsm_retrieval_mock/eval/retrieval_eval.jsonl`
+— chính là đáp án tham chiếu viết cho corpus này:
+
+```
+p50 = 32 token     p90 = 44 token     max = 54 token
+vi du: "Chỉ tính trip COMPLETED, có completed_at, distance > 0,2 km và không phải test/fraud."
+```
+
+Hợp lý, vì tài liệu nguồn chỉ dài 127–223 token và câu trả lời đúng là **nêu điều kiện
+được hỏi**, không chép lại tài liệu.
+
+Hệ quả, với TTFT 0,24s:
+
+| Độ dài | FP16 (ITL 0,075s) | AWQ (ITL ~0,035s) |
+|---|---|---|
+| p50 = 32 | 2,64s ✅ | 1,36s ✅ |
+| p90 = 44 | 3,54s ❌ | 1,78s ✅ |
+| max = 54 | 4,29s ❌ | 2,13s ✅ |
+
+**Ở độ dài thật, AWQ đạt mục tiêu 3s còn FP16 thì không.** Trước đây con số này trông vô
+vọng chỉ vì hồ sơ tải giả định 250–300 token — nặng gấp 6–9 lần công việc thật.
+
+Ba thay đổi đi kèm phát hiện này:
+
+1. `prompt/build.py` nay **yêu cầu trả lời ngắn gọn 1–3 câu**. Nằm trong stable prefix nên
+   gần như miễn phí về cache. Thiếu nó thì model tự do viết dài và SLO mất vì lan man.
+2. `DEFAULT_MAX_TOKENS=192` trong guardrail — chặn cứng khi client không tự đặt. Đặt rộng
+   so với nhu cầu vì đây là lưới chống sinh vô hạn, không phải công cụ ép ngắn; cắt sát
+   quá sẽ chặt cụt trích dẫn, mà trích dẫn cụt là lỗi grounding.
+3. Hồ sơ benchmark **`moc`** (4000 vào / 48 ra) phản ánh hình dạng thật. **Thêm chứ không
+   thay** `rag`, vì thay sẽ âm thầm đổi ý nghĩa của mọi phép đo cũ.
+
+Vẫn nên hỏi mentor để xác nhận, nhưng giờ câu hỏi đã có số liệu làm nền chứ không còn bỏ
+ngỏ: *"đáp án tham chiếu của bọn em dài 32–54 token; câu trả lời MOC thật có cùng cỡ đó
+không?"*
 
 ---
 
@@ -64,9 +104,9 @@ trừ tuần 6 — nó xoá luôn bucket.
 Dựng lại bằng `make diagrams`. Nguồn: `docs/diagrams/request_flow.py`.
 
 Sơ đồ vẽ **đúng những gì đang chạy trên EKS**, và đánh số trùng khớp với các mốc trong
-`guardrails/pipeline.py` — nên đọc sơ đồ rồi mở thẳng mã ra đối chiếu được. Ba thứ **cố ý
-không có** vì chưa nối vào serving: semantic cache ở Redis, dense lúc phục vụ, và
-known-answer detection.
+`guardrails/pipeline.py` — nên đọc sơ đồ rồi mở thẳng mã ra đối chiếu được. Hai thứ **cố ý không có** vì chưa nối vào serving: semantic cache ở Redis và
+known-answer detection. Dense **đã nối** vào `app.py` nhưng cần dựng TEI mới bật được
+(`make embeddings-up`); thiếu nó thì truy hồi lùi về BM25.
 
 ### 3.0 Ba pod, và pod nào sở hữu cái gì
 
@@ -107,8 +147,10 @@ Một chi tiết cố ý: `"theo định nghĩa hiện hành"` bị cắt như k
 CŨ"` được **giữ lại thành dấu hiệu phạm vi** và chuyển xuống bước 5 để mở khoá tài liệu
 `deprecated`. Câu hỏi về lịch sử là câu hỏi hợp lệ.
 
-**4 · Truy hồi.** BM25 trên unigram + bigram âm tiết. *(Nhánh dense đã có mã và đã đo
-offline — xem §6 — nhưng chưa nối vào serving.)*
+**4 · Truy hồi.** BM25 trên unigram + bigram âm tiết, hợp nhất với dense bằng RRF **khi
+có dịch vụ embedding**. Đường dense đã nối sẵn trong `app.py`: đặt `DENSE_INDEX_PATH` và
+`DENSE_ENDPOINT` là bật, thiếu một trong hai thì lặng lẽ lùi về thuần BM25 — một embedder
+chết phải làm câu trả lời kém đi, không được làm hỏng request.
 
 **5 · Policy metadata.** Quyền: `access_level` không đủ → **bỏ hẳn, chỉ đếm**. Hiệu lực:
 `status ≠ active` → **giữ lại và gắn lời nhắc** vào system prompt.
@@ -458,14 +500,14 @@ từ hạ tầng AWS, mà IP đó không nằm trong `publicAccessCidrs`. Dùng 
 | Hạ tầng, serving, giám sát, bộ đo | xong |
 | RAG + guardrail (BM25, PII, injection, grounding, cache) | xong, chạy CPU |
 | Dataset tổng hợp (warehouse + corpus truy hồi) | Minh, xong |
-| Nhánh dense (BM25 + embedding, RRF) | xong |
-| Bộ test tấn công 298 mẫu, chia hai nửa | xong |
+| Nhánh dense (BM25 + embedding, RRF) | xong; **đã nối vào serving**, cần dựng TEI mới bật được |
+| Bộ test tấn công 343 mẫu, chia hai nửa | xong — **100%** chặn, 0% chặn nhầm |
 | Trọng số AWQ 4-bit + `mode: shared` | trọng số đã lên S3, chart đã chuyển, **chưa đo** |
 | Trace request (Tempo, span theo từng stage) | xong |
 | Rerank | **chưa ai làm** |
 | Gateway LiteLLM (nhãn agent, đếm lỗi, định tuyến) | **chưa ai làm** |
 | Probe uptime ngoài cụm (Lambda) | Minh, chưa làm |
-| Panel chi phí/1k token | chưa ai làm |
+| Panel chi phí/1k token | rule đã có, thiếu tải để có số |
 | Bộ test tấn công ~200 mẫu tiếng Việt | chưa ai làm |
 
 Thứ tự đề nghị: **dense + rerank** trước (nó mở khoá hai nhóm truy vấn đang hỏng), rồi

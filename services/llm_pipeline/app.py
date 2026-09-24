@@ -35,6 +35,17 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 UPSTREAM_TIMEOUT = float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "300"))
 DEFAULT_ACCESS_LEVEL = os.getenv("DEFAULT_ACCESS_LEVEL", "internal-demo")
+# Applied only when the caller named no limit of its own. A request without max_tokens
+# generates until the model decides to stop, which on a 3s p95 objective is a promise the
+# platform cannot keep: decode speed is fixed, so length is the only term it controls.
+#
+# 192 is deliberately generous against the measured need -- the 144 reference answers for
+# this corpus are 32 tokens at the median and 54 at the longest -- because this is a
+# backstop against a runaway generation, not the mechanism for keeping answers short.
+# That job belongs to the brevity rule in prompt/build.py, which shapes the answer rather
+# than truncating it. A cap set near the expected length would cut correct answers off
+# mid-citation, and a truncated citation is a grounding failure.
+DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "192"))
 CORPUS_PATH = os.getenv("CORPUS_PATH", str(DEFAULT_CORPUS))
 MODEL_ROUTES = json.loads(os.getenv(
     "MODEL_ROUTES_JSON",
@@ -44,11 +55,65 @@ MODEL_ROUTES = json.loads(os.getenv(
     }),
 ))
 
+# Dense retrieval, off unless both halves are present.
+#
+# Measured on the 144 gold queries: lexical alone scores 0.570 nDCG@10, dense 0.606, the
+# two fused by RRF 0.650 -- and more to the point, lexical alone returns nothing relevant
+# at all for 20 queries against dense's 4. Those complete misses are questions the
+# platform simply cannot answer, which is a different kind of failure from ranking badly.
+#
+# Two things have to be true to turn it on, and they fail independently:
+#   DENSE_INDEX_PATH   the precomputed corpus vectors, built offline by `make dense-build`
+#                      on a machine with torch. Baked into the image or mounted.
+#   DENSE_ENDPOINT     a text-embeddings-inference service, because the QUERY has to be
+#                      embedded per request and this image has no model in it. See
+#                      k8s/embeddings/tei.yaml.
+#
+# Absent either, retrieval stays lexical and the service starts normally. A missing
+# embedding service must degrade the answer, never refuse the request.
+DENSE_INDEX_PATH = os.getenv("DENSE_INDEX_PATH", "").strip()
+DENSE_ENDPOINT = os.getenv("DENSE_ENDPOINT", "").strip()
+DENSE_TIMEOUT = float(os.getenv("DENSE_TIMEOUT_SECONDS", "2.0"))
+
 _tracer = tracing.from_environment()
 
 _chunks = load_chunks(CORPUS_PATH)
 _chunks_by_id = {chunk.chunk_id: chunk for chunk in _chunks}
 _index = bm25.build([(chunk.chunk_id, chunk.text) for chunk in _chunks])
+
+
+def _load_dense() -> Any:
+    """Build the dense ranker, or return None and say why on stdout.
+
+    Imported inside the function on purpose: rag.dense needs numpy, and the offline
+    harnesses and this service's lexical-only deployment must both keep working in an
+    image that does not carry it.
+    """
+    if not (DENSE_INDEX_PATH and DENSE_ENDPOINT):
+        missing = [n for n, v in (("DENSE_INDEX_PATH", DENSE_INDEX_PATH),
+                                  ("DENSE_ENDPOINT", DENSE_ENDPOINT)) if not v]
+        print(f"dense retrieval off ({', '.join(missing)} unset); lexical only", flush=True)
+        return None
+    try:
+        from rag import dense as dense_mod
+
+        index = dense_mod.DenseIndex.load(DENSE_INDEX_PATH)
+        # DenseIndex.load refuses vectors built by a different model. Letting that through
+        # would not raise anything later -- search would return ten confident, wrong
+        # neighbours -- so the check belongs at startup, where it is visible.
+        ranker = dense_mod.DenseRankerAdapter(
+            index, dense_mod.HttpBackend(DENSE_ENDPOINT, timeout=DENSE_TIMEOUT)
+        )
+        print(f"dense retrieval on: {len(index.ids)} vectors, endpoint {DENSE_ENDPOINT}",
+              flush=True)
+        return ranker
+    except Exception as exc:  # noqa: BLE001 -- startup must not depend on this
+        print(f"dense retrieval unavailable ({type(exc).__name__}: {exc}); "
+              f"falling back to lexical", flush=True)
+        return None
+
+
+_dense = _load_dense()
 _sessions: dict[tuple[str, str], Session] = {}
 _sessions_lock = threading.Lock()
 
@@ -315,6 +380,10 @@ def _upstream_payload(
         {"role": "user", "content": prepared.prompt.user},
     ]
     forwarded["cache_salt"] = prepared.prompt.cache_salt
+    # setdefault, not assignment: a caller that asked for a specific budget keeps it,
+    # including the bench runner, whose whole purpose is to hold output length fixed.
+    if DEFAULT_MAX_TOKENS > 0 and not forwarded.get("max_tokens"):
+        forwarded["max_tokens"] = DEFAULT_MAX_TOKENS
     # LiteLLM-only metadata is not part of vLLM's OpenAI request schema.
     forwarded.pop("metadata", None)
     return forwarded
@@ -464,6 +533,10 @@ def _trace_prepared(
     span.update({
         "guardrail.agent": agent,
         "guardrail.model": model,
+        # Which retrieval produced this context. Lexical and hybrid answer the same
+        # question differently often enough that a trace without this is ambiguous, and
+        # dense can switch itself off at startup without anyone noticing.
+        "rag.retrieval_mode": "hybrid" if _dense is not None else "lexical",
         "rag.documents.retrieved": len(prepared.context),
         "rag.documents.denied": prepared.denied_documents,
         "rag.documents.stale": prepared.stale_documents,
@@ -608,6 +681,7 @@ class Handler(BaseHTTPRequestHandler):
                 _chunks_by_id,
                 _session(agent, access),
                 policy=policy.Policy(access_level=access),
+                dense=_dense,
                 observer=observe,
             )
             _track_prepared(prepared, model_label)

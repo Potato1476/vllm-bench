@@ -30,7 +30,8 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	attacks-build attacks-score defenses-dryrun defenses-eval spotlight-cost \
 	secrets-scan \
 	dense-env dense-build dense-eval dense-ablation diagrams \
-	ingress-up ingress-down ingress-url creds
+	ingress-up ingress-down ingress-url creds \
+	embeddings-up embeddings-down tracing-up tracing-down trace tracing-check
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -433,6 +434,18 @@ audit-metrics: ## Confirm every metric the rules depend on exists by name
 # --- Tracing ----------------------------------------------------------------
 # Metrics say the p95 moved; a trace says which of the ten guardrail stages moved it, on
 # which request. Tempo is read inside Grafana, so this adds no hostname and no password.
+embeddings-up: ## Install text-embeddings-inference, the query half of hybrid retrieval
+	kubectl apply -f k8s/embeddings/tei.yaml
+	@echo "first start downloads a ~2.2 GB model; readiness allows ten minutes."
+	kubectl -n llm-serving rollout status deploy/tei --timeout=12m
+	@echo
+	@echo "Then turn the guardrail on to use it:"
+	@echo "  helm upgrade guardrail charts/guardrail --reuse-values --set dense.enabled=true"
+	@echo "The image must have been built AFTER 'make dense-build', or it carries no index."
+
+embeddings-down: ## Remove the embeddings service; retrieval falls back to lexical
+	kubectl delete -f k8s/embeddings/tei.yaml --ignore-not-found
+
 tracing-up: ## Install Tempo and point Grafana at it
 	kubectl apply -f k8s/tracing/tempo.yaml
 	kubectl -n monitoring rollout status deploy/tempo --timeout=5m
@@ -567,7 +580,8 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
-	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_tracing
+	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_tracing \
+		tests.test_dense_serving
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py

@@ -52,6 +52,14 @@ spec:
               value: {{ .Values.observability.policyVersion | quote }}
             - name: CORPUS_VERSION
               value: {{ .Values.observability.corpusVersion | quote }}
+            {{- if .Values.dense.enabled }}
+            - name: DENSE_INDEX_PATH
+              value: {{ .Values.dense.indexPath | quote }}
+            - name: DENSE_ENDPOINT
+              value: {{ .Values.dense.endpoint | quote }}
+            - name: DENSE_TIMEOUT_SECONDS
+              value: {{ .Values.dense.timeoutSeconds | quote }}
+            {{- end }}
             {{- if .Values.tracing.enabled }}
             # No endpoint means no tracing: the tracer starts no thread and every span
             # call becomes a no-op, so the offline harnesses that import this module

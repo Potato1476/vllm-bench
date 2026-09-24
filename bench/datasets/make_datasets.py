@@ -42,6 +42,27 @@ PROFILES: dict[str, Profile] = {
     "chat": Profile(500, 300, "short prompt, medium answer -- decode-dominated"),
     "rag": Profile(4000, 250, "long prompt, short answer -- prefill and KV-cache dominated"),
     "code": Profile(1500, 800, "medium prompt, long answer -- the longest time in flight"),
+    # The three profiles above are engine-shape probes, chosen to stress different parts
+    # of vLLM. None of them is what this platform actually serves, and that difference
+    # turned out to matter more than expected.
+    #
+    # Measured on the 144 reference answers in the retrieval gold set -- the answers Minh
+    # wrote for this corpus, which is the closest thing to ground truth available: 32
+    # output tokens at the median, 44 at p90, 54 at the longest. The `rag` profile above
+    # assumes 250, so every sizing number derived from it describes a workload between
+    # five and eight times heavier than the real one.
+    #
+    # That is the difference between meeting the 3s objective and missing it. At 0.24s
+    # TTFT, a 3s budget buys ~37 output tokens on FP16 and ~79 on AWQ. At 250 tokens the
+    # SLO is unreachable on any hardware this project can afford; at 44 it is comfortable
+    # on AWQ and marginal on FP16.
+    #
+    # Added rather than substituted: replacing `rag` would silently change what every
+    # earlier measurement means, including the week-1 ramp in s3://<artifacts>/runs/.
+    # Prompt length stays at 4000 because that part was never in doubt -- five retrieved
+    # chunks of ~400 tokens plus the stable prefix really is what gets prefilled.
+    "moc": Profile(4000, 48, "the real MOC shape -- long RAG prompt, answer measured "
+                             "from the 144 gold answers (p50 32, p90 44)"),
 }
 
 # Sentence pool. Order is shuffled per sample so that no two prompts share a long prefix;

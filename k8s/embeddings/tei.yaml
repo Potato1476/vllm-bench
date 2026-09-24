@@ -1,0 +1,123 @@
+# text-embeddings-inference, for the query half of hybrid retrieval.
+#
+# WHAT THIS IS FOR
+# rag/dense.py needs a vector for the incoming question. The corpus vectors are computed
+# offline by `make dense-build` and baked into the guardrail image, but the QUERY arrives
+# at request time and has to be embedded then. The guardrail image carries numpy and no
+# model, deliberately, so the embedding happens here.
+#
+# The measured stake: on the 144 gold queries, lexical retrieval alone returns nothing
+# relevant at all for 20 of them, against 4 for dense; fused by RRF the pair scores 0.650
+# nDCG@10 against 0.570 lexical. The complete misses are the reason to run this -- they
+# are questions the platform otherwise cannot answer at all.
+#
+# WHY CPU
+# AITeamVN/Vietnamese_Embedding is a BGE-M3 fine-tune: 568M parameters, 1024 dimensions.
+# One query per request, batched across concurrent callers by TEI itself. On a GPU it
+# would be idle between requests while occupying memory that the KV cache needs, and this
+# lab has exactly one card that both engines already share. The CPU image is the right
+# shape here and costs nothing extra -- it runs on the tooling node that is up anyway.
+#
+# Expect ~80-150ms per query on 2 vCPU. That is real, and it is spent before the engine
+# starts generating. Budget it against the 3s objective: at 0.24s TTFT plus ~44 output
+# tokens, there is room, but it is not free. DENSE_TIMEOUT_SECONDS in the guardrail chart
+# bounds it; on timeout retrieval degrades to lexical rather than failing the request.
+#
+# TO ROLL OUT
+#   make embeddings-up
+#   helm upgrade guardrail charts/guardrail --reuse-values --set dense.enabled=true
+# The guardrail image must have been built after `make dense-build`, or the index will be
+# absent from it and the service will report dense off at startup.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tei
+  namespace: llm-serving
+  labels:
+    app.kubernetes.io/name: tei
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tei
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tei
+  namespace: llm-serving
+  labels: &labels
+    app.kubernetes.io/name: tei
+spec:
+  replicas: 1
+  selector:
+    matchLabels: *labels
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      nodeSelector:
+        workload: tooling
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: tei
+          # CPU build. The default image is CUDA-only and will not start without a GPU.
+          image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+          args:
+            # Must match rag/dense.py's MODEL_ID. DenseIndex.load refuses to load vectors
+            # built by a different model, but nothing can check that the SERVING model
+            # matches -- a mismatch there returns ten confident, wrong neighbours and no
+            # error at all. Changing this means rebuilding the index.
+            - --model-id=AITeamVN/Vietnamese_Embedding
+            - --port=8080
+            # One query per request; batching beyond this buys nothing and costs latency.
+            - --max-concurrent-requests=64
+            - --max-batch-tokens=8192
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            # Writable cache. The root filesystem is read-only below, and TEI downloads
+            # the model on first start.
+            - {name: HUGGINGFACE_HUB_CACHE, value: /data}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            # The model is ~2.2 GB and is fetched on first boot, so readiness has to allow
+            # for a download, not just a process start.
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 600
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              # No CPU limit: throttling here shows up as retrieval latency on every
+              # request, and the node has headroom when the GPU node carries the engines.
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - {name: cache, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        # emptyDir, so the model is re-downloaded after a restart. A PVC would mean
+        # another EBS volume for 2.2 GB that HuggingFace serves for free, and this project
+        # has been billed for volumes that outlived the cluster that created them.
+        - name: cache
+          emptyDir:
+            sizeLimit: 6Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
