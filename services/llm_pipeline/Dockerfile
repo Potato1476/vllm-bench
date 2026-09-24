@@ -7,15 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# The one dependency, and only for dense retrieval: rag/dense.py does a 798x1024 dot
-# product per query. Everything else here is stdlib, and stays that way -- the module is
-# imported lazily in services/llm_pipeline/app.py so that an image without it still serves
-# lexical retrieval rather than failing to start.
+# Two small serving dependencies: numpy computes dense-retrieval/cache similarity and
+# redis talks to the pod-local response-cache sidecar. No web framework or model runtime is
+# pulled into this image; the dense module is still imported lazily so lexical-only startup
+# does not depend on an embedding model.
 #
-# Not a web framework, not a model: the wheel is ~16 MB and no torch comes with it. The
+# Neither is a web framework or a model; no torch comes with them. The
 # corpus vectors themselves are not baked in; they are generated artifacts that change
 # with the corpus, so the chart syncs them from S3 the same way vLLM syncs weights.
-RUN pip install --no-cache-dir numpy==2.3.4
+RUN pip install --no-cache-dir numpy==2.3.4 redis==6.4.0
 
 COPY guardrails/ guardrails/
 COPY prompt/ prompt/

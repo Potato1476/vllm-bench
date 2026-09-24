@@ -60,6 +60,24 @@ spec:
             - name: DENSE_TIMEOUT_SECONDS
               value: {{ .Values.dense.timeoutSeconds | quote }}
             {{- end }}
+            {{- if .Values.semanticCache.enabled }}
+            - name: SEMANTIC_CACHE_ENABLED
+              value: "true"
+            - name: REDIS_UNIX_SOCKET
+              value: /run/redis/redis.sock
+            - name: SEMANTIC_CACHE_TTL_SECONDS
+              value: {{ .Values.semanticCache.ttlSeconds | quote }}
+            - name: SEMANTIC_CACHE_THRESHOLD
+              value: {{ .Values.semanticCache.similarityThreshold | quote }}
+            - name: SEMANTIC_CACHE_MAX_CANDIDATES
+              value: {{ .Values.semanticCache.maxCandidates | quote }}
+            {{- if .Values.semanticCache.embeddingEndpoint }}
+            - name: SEMANTIC_CACHE_EMBEDDING_ENDPOINT
+              value: {{ .Values.semanticCache.embeddingEndpoint | quote }}
+            - name: SEMANTIC_CACHE_EMBEDDING_TIMEOUT_SECONDS
+              value: {{ .Values.semanticCache.embeddingTimeoutSeconds | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.tracing.enabled }}
             # No endpoint means no tracing: the tracer starts no thread and every span
             # call becomes a no-op, so the offline harnesses that import this module
@@ -83,6 +101,11 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.semanticCache.enabled }}
+          volumeMounts:
+            - name: redis-socket
+              mountPath: /run/redis
+          {{- end }}
           startupProbe:
             httpGet: {path: /health/readiness, port: http}
             periodSeconds: 3
@@ -103,3 +126,48 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
+        {{- if .Values.semanticCache.enabled }}
+        - name: redis
+          image: {{ .Values.semanticCache.redis.image | quote }}
+          args:
+            - redis-server
+            - --port
+            - "0"
+            - --unixsocket
+            - /run/redis/redis.sock
+            - --unixsocketperm
+            - "770"
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - {{ .Values.semanticCache.redis.maxMemory | quote }}
+            - --maxmemory-policy
+            # Evicting reverse-index or exact-pointer keys independently can make
+            # document invalidation miss a still-live answer. Reject new cache writes
+            # when full instead; the guardrail treats those failures as cache misses.
+            - noeviction
+          resources:
+            {{- toYaml .Values.semanticCache.redis.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-s", "/run/redis/redis.sock", "ping"]
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: redis-socket
+              mountPath: /run/redis
+        {{- end }}
+      {{- if .Values.semanticCache.enabled }}
+      volumes:
+        - name: redis-socket
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+      {{- end }}

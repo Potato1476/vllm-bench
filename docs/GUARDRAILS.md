@@ -68,12 +68,12 @@ guardrail, nên chỉ có **một nơi để audit và một codebase để sử
 các chunk vừa truy hồi. Tách hai bước luôn chạy cùng nhau nghĩa là chuyển 5 chunk × ~900
 ký tự qua mạng hai lần mỗi request.
 
-**Khi thêm semantic cache — chưa có — nó phải nối vào pod guardrail, không phải LiteLLM.**
+**Semantic cache nằm trong pod guardrail, không phải LiteLLM.**
 Cache key chỉ đúng khi dựng từ câu hỏi đã chuẩn hoá và đã che PII, mà cả hai bước đó nằm
 trong pod guardrail. Tra cache ở LiteLLM trước khi gọi guardrail sẽ lấy key trên văn bản
 thô (hai cách diễn đạt thành hai entry), đưa PII chưa che vào Redis và vào log, và có thể
 trả về câu trả lời cho prompt mà guardrail sẽ chặn. Năm quy tắc đầy đủ:
-[`OVERVIEW.md` §3.0c](OVERVIEW.md#30c-semantic-cache--chưa-có-và-năm-quy-tắc-phải-theo-khi-thêm).
+[`OVERVIEW.md` §3.0c](OVERVIEW.md#30c-semantic-response-cache--redis-sidecar).
 
 Chi tiết từng bước và sơ đồ: [`OVERVIEW.md` §3](OVERVIEW.md#3-một-request-đi-qua-những-gì).
 

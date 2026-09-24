@@ -165,6 +165,14 @@ spec:
           annotations:
             summary: "Guardrail target is reachable but its application metrics are missing"
 
+        - alert: GuardrailSemanticCacheErrors
+          expr: rate(guardrail_semantic_cache_requests_total{result="error"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Semantic cache is failing; requests still run through retrieval and vLLM"
+
         - alert: LiteLlmPostgresErrors
           expr: litellm:postgres_error_ratio:rate5m > 0.01
           for: 5m

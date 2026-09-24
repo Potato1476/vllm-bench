@@ -30,6 +30,7 @@ from prompt.build import Session
 from rag import bm25, policy
 from rag.corpus import DEFAULT_CORPUS, load_chunks
 from services.llm_pipeline import tracing
+from services.llm_pipeline.semantic_cache import CacheHit, SemanticResponseCache
 
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
@@ -58,9 +59,8 @@ MODEL_ROUTES = json.loads(os.getenv(
 # Dense retrieval, off unless both halves are present.
 #
 # Measured on the 144 gold queries: lexical alone scores 0.570 nDCG@10, dense 0.606, the
-# two fused by RRF 0.650 -- and more to the point, lexical alone returns nothing relevant
-# at all for 20 queries against dense's 4. Those complete misses are questions the
-# platform simply cannot answer, which is a different kind of failure from ranking badly.
+# two fused by RRF 0.650. Lexical misses 4 queries completely, dense misses 20; fusion
+# keeps lexical's exact-identifier floor while improving paraphrased and reasoning queries.
 #
 # Two things have to be true to turn it on, and they fail independently:
 #   DENSE_INDEX_PATH   the precomputed corpus vectors, built offline by `make dense-build`
@@ -114,6 +114,70 @@ def _load_dense() -> Any:
 
 
 _dense = _load_dense()
+_semantic_cache_configured = os.getenv(
+    "SEMANTIC_CACHE_ENABLED", "false"
+).lower() in ("1", "true", "yes")
+
+
+def _load_semantic_cache() -> SemanticResponseCache | None:
+    """Connect to the pod-local Redis sidecar, or leave serving uncached."""
+    if not _semantic_cache_configured:
+        return None
+    try:
+        import redis
+
+        socket = os.getenv("REDIS_UNIX_SOCKET", "/run/redis/redis.sock")
+        client = redis.Redis(unix_socket_path=socket, socket_timeout=0.2,
+                             socket_connect_timeout=0.2)
+        client.ping()
+        embedder = None
+        cache_embedding_endpoint = os.getenv(
+            "SEMANTIC_CACHE_EMBEDDING_ENDPOINT", DENSE_ENDPOINT
+        ).strip()
+        if cache_embedding_endpoint:
+            from rag.dense import HttpBackend
+
+            embedder = HttpBackend(
+                cache_embedding_endpoint,
+                timeout=float(os.getenv("SEMANTIC_CACHE_EMBEDDING_TIMEOUT_SECONDS", "0.3")),
+            )
+        cache = SemanticResponseCache(
+            client,
+            embedder=embedder,
+            policy_version=os.getenv("POLICY_VERSION", "builtin-v1"),
+            corpus_version=os.getenv("CORPUS_VERSION", "bundled"),
+            ttl_seconds=int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", "3600")),
+            similarity_threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.96")),
+            max_candidates=int(os.getenv("SEMANTIC_CACHE_MAX_CANDIDATES", "256")),
+        )
+        print(f"semantic cache on: redis unix socket {socket}", flush=True)
+        return cache
+    except Exception as exc:  # cache availability must not become serving availability
+        print(f"semantic cache unavailable ({type(exc).__name__}: {exc}); disabled", flush=True)
+        return None
+
+
+_semantic_cache = _load_semantic_cache()
+_semantic_cache_retry_after = 0.0
+_semantic_cache_lock = threading.Lock()
+
+
+def _get_semantic_cache() -> SemanticResponseCache | None:
+    """Reconnect after a Redis-sidecar startup race or restart."""
+    global _semantic_cache, _semantic_cache_retry_after
+    if _semantic_cache is not None or not _semantic_cache_configured:
+        return _semantic_cache
+    now = time.monotonic()
+    if now < _semantic_cache_retry_after:
+        return None
+    with _semantic_cache_lock:
+        if _semantic_cache is None and time.monotonic() >= _semantic_cache_retry_after:
+            _semantic_cache = _load_semantic_cache()
+            if _semantic_cache is None:
+                _semantic_cache_retry_after = time.monotonic() + 5.0
+    return _semantic_cache
+
+
 _sessions: dict[tuple[str, str], Session] = {}
 _sessions_lock = threading.Lock()
 
@@ -153,6 +217,10 @@ class Metrics:
         "guardrail_citations_total": (
             "Citation observations by validity.",
             ("kind",),
+        ),
+        "guardrail_semantic_cache_requests_total": (
+            "Response-cache lookups by result.",
+            ("result",),
         ),
     }
     HISTOGRAMS = {
@@ -253,6 +321,10 @@ class Metrics:
             self.observe("guardrail_grounding_overlap_ratio", {"verdict": verdict}, 0, count=False)
         for kind in ("valid", "fabricated", "missing"):
             self.inc("guardrail_citations_total", {"kind": kind}, 0)
+        for result in (
+            "exact", "semantic", "miss", "skipped_pii", "bypass", "error", "disabled"
+        ):
+            self.inc("guardrail_semantic_cache_requests_total", {"result": result}, 0)
         for source, action in (("user", "block"), ("document", "drop")):
             self.inc("guardrail_injection_detections_total", {
                 "source": source, "action": action,
@@ -419,6 +491,47 @@ def _answer(response: dict[str, Any]) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("vLLM returned empty assistant content")
     return content
+
+
+def _cached_completion(hit: CacheHit, model: str, started: float) -> dict[str, Any]:
+    """An OpenAI-compatible response for a request that never reached the engine."""
+    return {
+        "id": f"chatcmpl-cache-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": hit.text},
+            "finish_reason": "stop",
+        }],
+        # No inference happened.  Keeping explicit zeroes prevents a cache hit from being
+        # mistaken for missing usage telemetry by clients that aggregate this field.
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "guardrail": {
+            "verdict": hit.verdict,
+            "cited": list(hit.cited),
+            "dropped_documents": [],
+            "latency_seconds": round(time.monotonic() - started, 6),
+            "cache": {"hit": True, "kind": hit.kind,
+                      "similarity": round(hit.similarity, 6)},
+        },
+    }
+
+
+def _cache_variant(payload: dict[str, Any], query_scope: str | None) -> str:
+    """Partition answers whose generation contract differs."""
+    # vLLM accepts sampling extensions beyond the OpenAI fields (top_k, min_p,
+    # repetition_penalty, guided decoding, and more). An allow-list here would quietly
+    # serve an answer generated under a different contract whenever a new option appears.
+    # Hash every forwarded option instead, excluding only fields this adapter replaces or
+    # that cannot affect generated content.
+    ignored = {"messages", "metadata", "model", "stream", "user"}
+    values = {name: value for name, value in payload.items() if name not in ignored}
+    values["max_tokens"] = values.get("max_tokens") or DEFAULT_MAX_TOKENS
+    values["query_scope"] = query_scope or "current"
+    encoded = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return uuid.uuid5(uuid.NAMESPACE_OID, encoded).hex
 
 
 def _model_label(model: str) -> str:
@@ -675,6 +788,74 @@ class Handler(BaseHTTPRequestHandler):
             # later identity integration may map a verified LiteLLM key to a policy,
             # but accepting metadata/access_level here would be privilege escalation.
             access = DEFAULT_ACCESS_LEVEL
+            checked = pipeline.preflight(question, observer=observe)
+
+            # A direct-injection refusal still goes through prepare below so the response,
+            # metrics and traces use the same PreparedRequest contract as a cache miss.
+            # PII-bearing requests never touch Redis: two callers' different phone numbers
+            # both redact to [PHONE_1] and would otherwise collide on the same cache key.
+            cache_hit: CacheHit | None = None
+            semantic_cache = _get_semantic_cache()
+            cache_variant = _cache_variant(
+                payload, checked.canonical.scope if checked.canonical is not None else None
+            )
+            cache_eligible = (
+                checked.ok
+                and checked.inbound_pii is not None
+                and not checked.inbound_pii.findings
+                and payload.get("n", 1) == 1
+                and not payload.get("tools")
+                and not payload.get("logprobs")
+            )
+            if semantic_cache is None:
+                _telemetry.inc("guardrail_semantic_cache_requests_total", {
+                    "result": "disabled",
+                })
+            elif checked.ok and checked.inbound_pii and checked.inbound_pii.findings:
+                _telemetry.inc("guardrail_semantic_cache_requests_total", {
+                    "result": "skipped_pii",
+                })
+                root.set("cache.result", "skipped_pii")
+            elif checked.ok and not cache_eligible:
+                _telemetry.inc("guardrail_semantic_cache_requests_total", {
+                    "result": "bypass",
+                })
+                root.set("cache.result", "bypass")
+            elif cache_eligible:
+                assert checked.canonical is not None
+                try:
+                    cache_hit = semantic_cache.lookup(
+                        checked.canonical.text, model=model, access_level=access,
+                        variant=cache_variant,
+                    )
+                    cache_result = cache_hit.kind if cache_hit is not None else "miss"
+                    _telemetry.inc("guardrail_semantic_cache_requests_total", {
+                        "result": cache_result,
+                    })
+                    root.set("cache.result", cache_result)
+                except Exception as exc:  # Redis failure degrades to an ordinary request
+                    print(f"semantic cache lookup failed: {type(exc).__name__}", flush=True)
+                    _telemetry.inc("guardrail_semantic_cache_requests_total", {
+                        "result": "error",
+                    })
+                    root.set("cache.result", "error")
+
+            if cache_hit is not None:
+                response = _cached_completion(cache_hit, model, started)
+                response["guardrail"]["trace_id"] = root.trace_id if root.sampled else ""
+                root.update({
+                    "cache.hit": True,
+                    "cache.kind": cache_hit.kind,
+                    "cache.similarity": round(cache_hit.similarity, 6),
+                })
+                outcome = "allowed"
+                terminal_stage = "none"
+                if payload.get("stream") is True:
+                    self._sse(response, cache_hit.text, model)
+                else:
+                    self._json(HTTPStatus.OK, response)
+                return
+
             prepared = pipeline.prepare(
                 question,
                 _index,
@@ -683,6 +864,7 @@ class Handler(BaseHTTPRequestHandler):
                 policy=policy.Policy(access_level=access),
                 dense=_dense,
                 observer=observe,
+                preflight_result=checked,
             )
             _track_prepared(prepared, model_label)
             _trace_prepared(root, prepared, agent, model_label)
@@ -759,7 +941,23 @@ class Handler(BaseHTTPRequestHandler):
                 # that only keeps the JSON -- the bench runner, a saved curl output --
                 # can still find the request in Tempo afterwards.
                 "trace_id": root.trace_id if root.sampled else "",
+                "cache": {"hit": False},
             })
+            if semantic_cache is not None and cache_eligible:
+                assert checked.canonical is not None
+                try:
+                    semantic_cache.store(
+                        checked.canonical.text,
+                        model=model,
+                        access_level=access,
+                        text=final.text,
+                        cited=final.report.cited,
+                        document_ids=[chunk.document_id for chunk in prepared.context],
+                        verdict=final.report.verdict,
+                        variant=cache_variant,
+                    )
+                except Exception as exc:  # a cache write is never part of request success
+                    print(f"semantic cache store failed: {type(exc).__name__}", flush=True)
             outcome = "allowed"
             terminal_stage = "none"
             if payload.get("stream") is True:

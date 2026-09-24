@@ -110,6 +110,65 @@ class GuardrailServiceTest(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "injection")
         self.assertEqual(_FakeVllm.calls, before)
 
+    def test_second_identical_request_is_served_without_retrieval_or_vllm(self) -> None:
+        from services.llm_pipeline.semantic_cache import SemanticResponseCache
+        from tests.test_semantic_cache import MemoryRedis
+
+        saved = app._semantic_cache
+        app._semantic_cache = SemanticResponseCache(MemoryRedis(), embedder=None)
+        try:
+            question = "Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?"
+            before = _FakeVllm.calls
+            first_status, first = self._post(question)
+            after_first = _FakeVllm.calls
+            second_status, second = self._post(question)
+            self.assertEqual((first_status, second_status), (200, 200))
+            self.assertEqual(after_first, before + 1)
+            self.assertEqual(_FakeVllm.calls, after_first)
+            self.assertFalse(first["guardrail"]["cache"]["hit"])
+            self.assertTrue(second["guardrail"]["cache"]["hit"])
+            self.assertEqual(second["guardrail"]["cache"]["kind"], "exact")
+        finally:
+            app._semantic_cache = saved
+
+    def test_a_request_with_pii_never_touches_the_response_cache(self) -> None:
+        class MustNotBeCalled:
+            def lookup(self, *_args, **_kwargs):
+                raise AssertionError("PII request performed a cache lookup")
+
+            def store(self, *_args, **_kwargs):
+                raise AssertionError("PII request was stored")
+
+        saved = app._semantic_cache
+        app._semantic_cache = MustNotBeCalled()
+        try:
+            status, body = self._post(
+                "Gọi 0912345678 và cho biết chuyến hoàn thành cần điều kiện gì?"
+            )
+            self.assertEqual(status, 200)
+            self.assertFalse(body["guardrail"]["cache"]["hit"])
+        finally:
+            app._semantic_cache = saved
+
+    def test_cache_variant_partitions_vllm_sampling_extensions(self) -> None:
+        base = {
+            "model": "qwen2.5-7b",
+            "messages": [{"role": "user", "content": "doanh thu"}],
+            "max_tokens": 100,
+            "top_k": 20,
+        }
+        changed = {**base, "top_k": 40}
+        self.assertNotEqual(
+            app._cache_variant(base, "current"),
+            app._cache_variant(changed, "current"),
+        )
+
+        streamed = {**base, "stream": True, "user": "another-caller"}
+        self.assertEqual(
+            app._cache_variant(base, "current"),
+            app._cache_variant(streamed, "current"),
+        )
+
     def test_an_unbounded_request_gets_a_length_cap(self) -> None:
         # Answer length is the only term in the p95 budget the platform controls, so a
         # request that names no limit must not be allowed to generate indefinitely.

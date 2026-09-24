@@ -287,6 +287,21 @@ có overlap giống nhau.
 Đếm citation hợp lệ, citation không có trong context và citation bị thiếu. Một request có
 thể tăng counter nhiều lần nếu answer chứa nhiều citation hoặc nhiều câu thiếu citation.
 
+### 2.6 Semantic response cache
+
+#### `guardrail_semantic_cache_requests_total`
+
+| Thuộc tính | Giá trị |
+|---|---|
+| Type | Counter |
+| Labels | `result="exact|semantic|miss|skipped_pii|bypass|error|disabled"` |
+
+Đếm kết quả lookup response cache. `skipped_pii` xác nhận bất biến request chứa PII không
+đọc hoặc ghi Redis; `bypass` là request nhiều choice/tool/logprobs không giữ được nguyên hợp
+đồng nếu trả từ cache. `error` nghĩa là cache hỏng nhưng request vẫn tiếp tục qua retrieval
+và vLLM. Hit ratio dùng `(exact + semantic) / (exact + semantic + miss)` và không đưa các
+trạng thái skip/bypass/disabled vào mẫu số.
+
 ## 3. LiteLLM raw metrics
 
 Các tên dưới đây đã được đối chiếu với source của image pin `v1.90.2`.

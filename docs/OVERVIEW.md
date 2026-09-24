@@ -154,9 +154,11 @@ trừ tuần 6 — nó xoá luôn bucket.
 
 Dựng lại bằng `make diagrams`. Nguồn: `docs/diagrams/request_flow.py`.
 
-Sơ đồ vẽ **đúng những gì đang chạy trên EKS**, và đánh số trùng khớp với các mốc trong
-`guardrails/pipeline.py` — nên đọc sơ đồ rồi mở thẳng mã ra đối chiếu được. Hai thứ **cố ý không có** vì chưa nối vào serving: semantic cache ở Redis và
-known-answer detection. Dense **đã nối** vào `app.py` nhưng cần dựng TEI mới bật được
+Sơ đồ đánh số trùng khớp với các mốc trong `guardrails/pipeline.py`. Semantic response
+cache nằm giữa bước canonicalise và retrieval; nhánh cache hit đi thẳng tới response vì
+chỉ câu trả lời đã qua output checks mới được lưu. Known-answer detection vẫn chưa nối vào
+serving. Dense **đã nối** vào `app.py`
+nhưng cần dựng TEI mới bật được
 (`make embeddings-up`); thiếu nó thì truy hồi lùi về BM25.
 
 ### 3.0 Ba pod, và pod nào sở hữu cái gì
@@ -251,10 +253,11 @@ chi tiết và lý do ở [`TRACING.md`](TRACING.md).
 | 8 · trích dẫn bịa | chặn câu trả lời | |
 | 9 · PII đầu ra | chặn câu trả lời | |
 
-### 3.0c Semantic cache — chưa có, và năm quy tắc phải theo khi thêm
+### 3.0c Semantic response cache — Redis sidecar
 
-Sơ đồ không có Redis vì nó chưa được nối. Khi thêm, đây là năm điều kiện để nó không
-thành lỗ hổng. Ghi lại ở đây vì bốn trong năm chỉ lộ ra khi đã vẽ xong luồng.
+Redis chạy cùng pod guardrail qua Unix socket, không có TCP Service. Exact hit dùng câu hỏi
+đã canonicalise; semantic hit dùng embedding TEI và ngưỡng cosine mặc định 0,96. Năm điều
+kiện dưới đây là bất biến được code và test giữ lại.
 
 **Cache câu trả lời khác hẳn prefix cache KV.** Redis lưu **câu trả lời hoàn chỉnh** và
 một lần trúng bỏ qua cả truy hồi lẫn GPU; prefix cache lưu **khối KV** bên trong vLLM và
@@ -286,9 +289,10 @@ che sinh ra để tránh.
 kiểm lại: chỉ ghi vào Redis **sau bước 9**, nên một lần trúng an toàn nhờ thứ đã được cho
 vào. Kiểm lại mỗi lần trúng thì vứt đi phần lớn độ trễ mà cache được mua về.
 
-**Còn một điểm chưa có lời giải:** câu trả lời trong cache tính từ corpus tại thời điểm T.
-Khi một tài liệu chuyển `deprecated`, mọi entry dựa trên nó thành sai mà không ai biết.
-Cần TTL hoặc xoá theo `document_id`.
+Mỗi entry ghi reverse index cho **toàn bộ document trong context**, không chỉ citation.
+`make cache-invalidate DOC=<document_id>` xoá đúng các câu trả lời phụ thuộc tài liệu đó;
+TTL mặc định là một giờ. Đổi `CORPUS_VERSION` hoặc `POLICY_VERSION` tạo namespace mới và
+vô hiệu toàn bộ cache cũ mà không cần quét key.
 
 ### 3.1 Prompt được dựng như thế nào, và cache nằm ở đâu
 

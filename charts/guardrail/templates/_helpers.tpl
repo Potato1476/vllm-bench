@@ -8,4 +8,7 @@
 {{- if lt (int .Values.replicaCount) 1 -}}
 {{- fail "replicaCount must be at least 1" -}}
 {{- end -}}
+{{- if and .Values.semanticCache.enabled (gt (int .Values.replicaCount) 1) -}}
+{{- fail "pod-local semantic cache requires replicaCount=1; use an external shared Redis before scaling guardrail" -}}
+{{- end -}}
 {{- end -}}

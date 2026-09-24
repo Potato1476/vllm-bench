@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Render the request flow implemented by the current EKS deployment.
 
-Redis/semantic response caching, serving-time dense retrieval and the optional
-known-answer detector are intentionally absent because they are not wired into serving.
+Semantic response caching and serving-time dense retrieval are wired into serving; TEI is
+optional and the known-answer detector remains off.
 """
 
 from pathlib import Path
@@ -14,8 +14,8 @@ from diagrams.aws.storage import S3
 from diagrams.generic.compute import Rack
 from diagrams.k8s.compute import Pod
 from diagrams.k8s.network import Ingress
+from diagrams.onprem.inmemory import Redis
 from diagrams.onprem.monitoring import Prometheus
-
 
 OUT = Path(__file__).with_name("request_flow")
 
@@ -54,7 +54,7 @@ def main() -> None:
 
     with Diagram(
         "Luồng request hiện tại — LiteLLM → Guardrail → vLLM\n"
-        "Không Redis/response cache · streaming chỉ phát sau output checks",
+        "Redis response cache sau preflight · streaming chỉ phát sau output checks",
         filename=str(OUT),
         outformat="png",
         show=False,
@@ -83,10 +83,11 @@ def main() -> None:
                         "Bearer / virtual key\nquota · model permissions · routing"
                     )
                     prepare = Pod(
-                        "Guardrail · pipeline.prepare\n"
+                        "Guardrail · preflight + prepare\n"
                         "1  direct injection\n"
                         "2  redact inbound PII\n"
                         "3  canonicalise\n"
+                        "3b Redis exact/semantic lookup\n"
                         "4  BM25 retrieval\n"
                         "5  metadata policy\n"
                         "6  document injection\n"
@@ -114,10 +115,15 @@ def main() -> None:
                     ingress_out = Ingress("Response qua ingress\nJSON hoặc SSE")
 
                 corpus = Rack("Corpus index\n798 chunks + metadata\nBM25 loaded at startup")
+                response_cache = Redis(
+                    "Redis sidecar · Unix socket\n"
+                    "safe answers only · TTL 1h\nreverse index by document_id"
+                )
+                tei = Pod("TEI embeddings · optional\nsemantic cache + dense query")
                 metrics = Prometheus("Prometheus\nscrape LiteLLM\nGuardrail · vLLM")
                 policy = Rack(
                     "Serving policy\naccess_level = internal-demo\n"
-                    "dense + known-answer: off\nsemantic response cache: absent"
+                    "dense: optional · known-answer: off\nsemantic threshold = 0.96"
                 )
 
         weights = S3("Amazon S3\nmodel weights")
@@ -127,6 +133,7 @@ def main() -> None:
         litellm_in >> flow("OpenAI-compatible") >> prepare
         prepare >> flow("model route") >> model_a
         prepare >> flow("model route") >> model_b
+        prepare >> flow("cache hit") >> litellm_out
         model_a >> flow("full answer") >> finalise
         model_b >> flow("full answer") >> finalise
         finalise >> flow("checked answer") >> litellm_out
@@ -136,6 +143,8 @@ def main() -> None:
         litellm_in >> data("key + quota") >> aurora
         litellm_out >> data("spend") >> aurora
         prepare >> data("BM25 search") >> corpus
+        prepare >> data("lookup / safe store") >> response_cache
+        prepare >> data("query embedding") >> tei
         model_a >> data("load weights") >> weights
         model_b >> data("load weights") >> weights
         litellm_in >> data("metrics") >> metrics

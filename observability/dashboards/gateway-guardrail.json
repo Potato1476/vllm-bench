@@ -165,7 +165,8 @@
       "targets": [
         {"refId": "A", "expr": "sum by (direction, kind, action) (rate(guardrail_pii_findings_total[5m]))", "legendFormat": "PII {{direction}} / {{kind}} / {{action}}"},
         {"refId": "B", "expr": "sum by (source, action) (rate(guardrail_injection_detections_total[5m]))", "legendFormat": "injection {{source}} / {{action}}"},
-        {"refId": "C", "expr": "sum by (kind) (rate(guardrail_citations_total[5m]))", "legendFormat": "citation {{kind}}"}
+        {"refId": "C", "expr": "sum by (kind) (rate(guardrail_citations_total[5m]))", "legendFormat": "citation {{kind}}"},
+        {"refId": "D", "expr": "sum by (result) (rate(guardrail_semantic_cache_requests_total[5m]))", "legendFormat": "response cache {{result}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "decimals": 3}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}

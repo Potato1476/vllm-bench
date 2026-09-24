@@ -79,6 +79,51 @@ class PreparedRequest:
         return self.refusal is None and self.prompt is not None
 
 
+@dataclass
+class PreflightResult:
+    """The cache-safe part of input processing.
+
+    A response-cache lookup belongs after these checks and before retrieval.  This keeps
+    raw PII out of Redis, refuses direct injection before it can influence a cache key,
+    and makes paraphrases that canonicalise to the same question share an exact key.
+    """
+
+    canonical: CanonicalQuery | None
+    inbound_pii: pii_vi.Redaction | None = None
+    refusal: Refusal | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.refusal is None and self.canonical is not None
+
+
+def preflight(
+    question: str,
+    *,
+    classifier: injection.InjectionClassifier | None = None,
+    observer: StageObserver | None = None,
+) -> PreflightResult:
+    """Run the three stages that must precede any response-cache access."""
+    started = time.perf_counter()
+    verdict = injection.inspect(question, source="user", classifier=classifier)
+    _observe(observer, "injection_user", started)
+    if verdict.blocked:
+        return PreflightResult(
+            canonical=None,
+            refusal=Refusal("injection", "câu hỏi chứa chỉ dẫn nhằm ghi đè hệ thống",
+                            [s.rule for s in verdict.signals]),
+        )
+
+    started = time.perf_counter()
+    red = pii_vi.redact(question)
+    _observe(observer, "pii_ingress", started)
+
+    started = time.perf_counter()
+    canon = canonicalise(red.text)
+    _observe(observer, "canonicalise", started)
+    return PreflightResult(canonical=canon, inbound_pii=red)
+
+
 def prepare(
     question: str,
     index: bm25.Bm25Index,
@@ -91,26 +136,25 @@ def prepare(
     detector: known_answer.Completion | None = None,
     top_k: int = 5,
     observer: StageObserver | None = None,
+    preflight_result: PreflightResult | None = None,
 ) -> PreparedRequest:
-    # 1 -- direct injection
-    started = time.perf_counter()
-    verdict = injection.inspect(question, source="user", classifier=classifier)
-    _observe(observer, "injection_user", started)
-    if verdict.blocked:
+    # 1-3 -- direct injection, PII redaction and canonicalisation.  The serving adapter
+    # may run this before a response-cache lookup and hand the result back here so a miss
+    # does not repeat the work.
+    checked = preflight_result or preflight(
+        question, classifier=classifier, observer=observer
+    )
+    if not checked.ok:
+        assert checked.refusal is not None
         return PreparedRequest(
             prompt=None, canonical=None,
-            refusal=Refusal("injection", "câu hỏi chứa chỉ dẫn nhằm ghi đè hệ thống",
-                            [s.rule for s in verdict.signals]))
-
-    # 2 -- inbound PII, before anything persists it
-    started = time.perf_counter()
-    red = pii_vi.redact(question)
-    _observe(observer, "pii_ingress", started)
-
-    # 3 -- canonical form drives both retrieval and the cache key
-    started = time.perf_counter()
-    canon = canonicalise(red.text)
-    _observe(observer, "canonicalise", started)
+            inbound_pii=checked.inbound_pii,
+            refusal=checked.refusal,
+        )
+    assert checked.canonical is not None
+    canon = checked.canonical
+    red = checked.inbound_pii
+    assert red is not None
 
     # A question explicitly about superseded rules needs them unsuppressed, which is why
     # canonicalise extracts the marker instead of deleting it.

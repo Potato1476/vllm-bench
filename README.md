@@ -314,8 +314,20 @@ make litellm-up
 
 Luồng lab là LiteLLM → guardrail service → vLLM. Guardrail chạy `prepare` trước khi sinh
 và `finalise` trước khi phát câu trả lời; request streaming vì vậy được buffer cho đến khi
-output checks pass. Redis và response cache tạm thời nằm ngoài phạm vi; chart cố ý từ chối
-`replicaCount > 1` để quota/router state không bị chia tách giữa các pod.
+output checks pass. Guardrail chart chạy Redis sidecar qua Unix socket để cache câu trả lời
+đã an toàn; cache key tách theo model, quyền, tham số sinh, policy và corpus. Bật TEI rồi
+đặt `semanticCache.embeddingEndpoint` để dùng semantic hit; nếu để trống vẫn có exact hit:
+
+```bash
+make embeddings-up
+helm upgrade guardrail charts/guardrail --reuse-values \
+  --set semanticCache.embeddingEndpoint=http://tei.llm-serving.svc.cluster.local
+make cache-invalidate DOC=METRIC-TRIP-001  # khi tài liệu này thay đổi/deprecated
+make cache-clear                           # xoá toàn bộ cache khi cần
+```
+
+Request chứa PII không được đọc hoặc ghi cache. Chart giữ `replicaCount=1` khi dùng Redis
+sidecar; muốn scale guardrail cần chuyển sang Redis dùng chung trước.
 
 ## Bộ đo
 

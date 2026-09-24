@@ -31,7 +31,8 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	secrets-scan \
 	dense-env dense-build dense-eval dense-ablation diagrams \
 	ingress-up ingress-down ingress-url creds \
-	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check
+	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check \
+	cache-invalidate cache-clear
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -447,11 +448,21 @@ embeddings-up: ## Install text-embeddings-inference, the query half of hybrid re
 	kubectl -n llm-serving rollout status deploy/tei --timeout=12m
 	@echo
 	@echo "Then turn the guardrail on to use it:"
-	@echo "  helm upgrade guardrail charts/guardrail --reuse-values --set dense.enabled=true"
+	@echo "  helm upgrade guardrail charts/guardrail --reuse-values --set dense.enabled=true \\"
+	@echo "    --set semanticCache.embeddingEndpoint=http://tei.llm-serving.svc.cluster.local"
 	@echo "The image must have been built AFTER 'make dense-build', or it carries no index."
 
 embeddings-down: ## Remove the embeddings service; retrieval falls back to lexical
 	kubectl delete -f k8s/embeddings/tei.yaml --ignore-not-found
+
+cache-invalidate: ## Remove cached answers that depended on DOC=<document_id>
+	@test -n "$(DOC)" || { echo "DOC=<document_id> is required"; exit 1; }
+	kubectl -n llm-serving exec deploy/guardrail -c guardrail -- \
+		python -m services.llm_pipeline.cache_admin invalidate --document-id "$(DOC)"
+
+cache-clear: ## Clear all semantic response-cache keys
+	kubectl -n llm-serving exec deploy/guardrail -c guardrail -- \
+		python -m services.llm_pipeline.cache_admin clear
 
 tracing-up: ## Install Tempo and point Grafana at it
 	kubectl apply -f k8s/tracing/tempo.yaml
@@ -587,7 +598,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
-	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_tracing \
+	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_semantic_cache tests.test_tracing \
 		tests.test_dense_serving tests.test_availability
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
