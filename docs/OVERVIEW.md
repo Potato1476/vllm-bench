@@ -356,6 +356,39 @@ tensor core          6-35%   ← rảnh phần lớn thời gian
 Thêm một trần nữa: L4 bị **chặn công suất ở 72W**, xung tụt 2040 → 1400 MHz khi có tải.
 Không phải quá nhiệt (70°C, ngưỡng ~85°C). Khi so với L40S (350W) nhớ ghi lại biến này.
 
+### Trọng số AWQ — đã có trên S3, chưa đo
+
+Hệ quả trực tiếp của đoạn trên: trọng số 4-bit đã được publish, và `mode: shared` lần đầu
+tiên chạy được.
+
+| | FP16 | AWQ 4-bit |
+|---|---|---|
+| Qwen2.5-7B-Instruct | 14,2 GiB | **5,2 GiB** |
+| Qwen2.5-1.5B-Instruct | 2,9 GiB | **1,5 GiB** |
+| Tổng | 17,1 GiB | **6,7 GiB** |
+| Vừa `mode: shared` trên L4 22,5 GiB? | **Không** | Có, còn ~13 GiB cho KV cache |
+
+Cả hai đều là bản AWQ **chính chủ Qwen**, apache-2.0 — không phải bản cộng đồng tái lượng
+tử hoá, để lineage của một con số benchmark chỉ gồm một repo và một giấy phép.
+
+`mode: shared` nằm trong `values.yaml` như trạng thái bình thường của lab và **chưa từng
+chạy một lần nào**, vì model A cần 14,2 GiB còn phần card của nó là 14,6 GiB — phép tính
+mà không ai thực hiện cho tới khi engine thử. Giờ `vllm.validate` làm phép nhân đó lúc
+render và từ chối kèm số liệu, thay vì để hỏng thành lỗi cấp phát giữa cửa sổ đo.
+
+**Hai thứ cần đo, chưa đo:**
+
+1. **ITL.** Sàn vật lý FP16 là 51 ms/token, tức **SLO 40ms không đạt được ở bất kỳ số GPU
+   nào**. AWQ đưa sàn xuống ~24ms. Đây không chỉ là chuyện nhét vừa hai model — nó là thứ
+   quyết định SLO lớp A có khả thi hay không. Chạy `make smoke CLASS=a` rồi ramp lại.
+2. **Chất lượng.** Lượng tử hoá 4-bit mất một phần độ chính xác, và bộ 144 truy vấn vàng
+   cùng bộ tấn công 298 mẫu là công cụ sẵn có để định lượng. Đừng báo cáo throughput AWQ
+   mà không kèm con số này.
+
+Trọng số FP16 **vẫn giữ nguyên trên S3**. `QUANT=none` cho các lần chạy `solo-a`/`solo-b`
+sinh ra con số sizing production — throughput từ trọng số 4-bit không so sánh được với
+FP16, nên giữ cả hai mới có cái để đối chiếu.
+
 ### RAG — lớp metadata
 
 ```
@@ -427,6 +460,8 @@ từ hạ tầng AWS, mà IP đó không nằm trong `publicAccessCidrs`. Dùng 
 | Dataset tổng hợp (warehouse + corpus truy hồi) | Minh, xong |
 | Nhánh dense (BM25 + embedding, RRF) | xong |
 | Bộ test tấn công 298 mẫu, chia hai nửa | xong |
+| Trọng số AWQ 4-bit + `mode: shared` | trọng số đã lên S3, chart đã chuyển, **chưa đo** |
+| Trace request (Tempo, span theo từng stage) | xong |
 | Rerank | **chưa ai làm** |
 | Gateway LiteLLM (nhãn agent, đếm lỗi, định tuyến) | **chưa ai làm** |
 | Probe uptime ngoài cụm (Lambda) | Minh, chưa làm |
@@ -438,6 +473,11 @@ Thứ tự đề nghị: **dense + rerank** trước (nó mở khoá hai nhóm t
 mới tới phần đo chi phí và uptime.
 
 Một câu nên hỏi mentor sớm, vì nó quyết định toàn bộ bài toán sizing: **câu trả lời trung
-bình của MOC dài bao nhiêu token?** Với ITL hiện tại, ràng buộc "p95 < 3s" chỉ đủ cho
-khoảng 43 token đầu ra. Nếu thực tế là 300 token thì SLO đó không đạt được với bất kỳ số
-GPU nào, và biết sớm thì hơn.
+bình của MOC dài bao nhiêu token?** Với ITL đo được trên FP16, ràng buộc "p95 < 3s" chỉ đủ
+cho khoảng 43 token đầu ra. Nếu thực tế là 300 token thì con số đó không cứu được bằng
+cách thêm GPU — thêm GPU tăng thông lượng, không giảm ITL.
+
+Trọng số AWQ vừa publish (§6) thay đổi chính phép tính này, vì nghẽn là băng thông bộ nhớ
+và 4-bit cắt số byte đọc mỗi token đi khoảng bốn lần. **Đo lại ITL trên AWQ trước khi trả
+lời mentor** — nhưng vẫn hỏi câu đó sớm, vì nếu đáp án là 300 token thì nó định hình lại
+cả SLO lẫn cách chọn model, chứ không chỉ chọn lượng tử hoá.

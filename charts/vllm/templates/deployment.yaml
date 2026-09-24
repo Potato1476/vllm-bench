@@ -16,6 +16,11 @@ metadata:
     # number" without cross-referencing anything.
     vllm-bench/mode: {{ $root.Values.mode }}
     vllm-bench/gpu-memory-utilization: {{ $gmu | quote }}
+    # Which weights produced a number is part of the number. A throughput figure from
+    # 4-bit AWQ is not comparable with one from FP16, and the difference is invisible in
+    # the pod spec otherwise -- both mount /weights from an S3 prefix.
+    vllm-bench/quantization: {{ $root.Values.quantization | quote }}
+    vllm-bench/weights: {{ include "vllm.s3Prefix" (dict "root" $root "key" $key) | quote }}
 spec:
   replicas: 1
   # One physical GPU. A rolling update would ask the scheduler to place a second pod
@@ -79,7 +84,7 @@ spec:
               df -h /weights | tail -1
           env:
             - name: S3_MODEL_URI
-              value: "s3://{{ $root.Values.artifactsBucket }}/{{ $m.s3Prefix }}/"
+              value: "s3://{{ $root.Values.artifactsBucket }}/{{ include "vllm.s3Prefix" (dict "root" $root "key" $key) }}/"
           volumeMounts:
             - name: weights
               mountPath: /weights

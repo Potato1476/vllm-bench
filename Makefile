@@ -25,7 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
-	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch \
+	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
 	attacks-build attacks-score defenses-dryrun defenses-eval spotlight-cost \
 	secrets-scan \
@@ -221,9 +221,28 @@ fix-cidr: ## Repoint the cluster at your current public IP after an ISP address 
 # production for an architecture nobody intends to deploy.
 MODE ?= shared
 
-vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b
-	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null); \
-	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null); \
+# Which weights to serve: awq (4-bit) or none (the original FP16 checkpoints).
+#
+# awq is the default because `shared` is the lab's normal mode and FP16 does not fit in
+# it: model A alone needs 14.2 GiB against a 14.6 GiB share of the card. The chart now
+# refuses that combination at render time with the arithmetic printed, instead of letting
+# it fail as an allocation error partway into a measurement window.
+#
+# Use QUANT=none for the solo runs that produce the production sizing number -- a
+# throughput figure from 4-bit weights is not comparable with one from FP16.
+QUANT ?= awq
+
+vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b  QUANT=awq|none
+# `terraform output -raw` on a destroyed tier exits 0 and prints a "No outputs found"
+# warning, in colour, to stdout. So neither `|| echo PLACEHOLDER` nor a plain -z test
+# fires: the variable ends up holding ANSI escape sequences, which reach the chart and
+# come back as "YAML parse error: control characters are not allowed" pointing at a
+# template that is fine. Match the shape of the value instead of trusting the exit code
+# -- the same guard litellm-secret and ARTIFACTS already use.
+	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null \
+		| grep -E '^arn:aws:iam::[0-9]{12}:role/' || true); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null \
+		| grep -Ex '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]' || true); \
 	if [ -z "$$arn" ] || [ -z "$$bkt" ]; then \
 		echo "terraform outputs are empty -- is the cluster up? try: make lab-up"; \
 		exit 1; \
@@ -231,20 +250,24 @@ vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b
 	helm upgrade --install vllm charts/vllm \
 		-n inference --create-namespace \
 		--set mode=$(MODE) \
+		--set quantization=$(QUANT) \
 		--set artifactsBucket="$$bkt" \
 		--set roleArn="$$arn" \
 		--wait --timeout 25m
 	@echo
-	@echo "mode=$(MODE). A cold node syncs weights from S3 before the engine starts;"
+	@echo "mode=$(MODE) quantization=$(QUANT). A cold node syncs weights from S3 first;"
 	@echo "allow up to 20 minutes. Watch with:"
 	@echo "  kubectl -n inference get pod -w"
 	@echo "  kubectl -n inference logs -f deploy/vllm-a -c fetch-weights"
 
-vllm-diff: ## Render the chart without applying it. MODE=shared|solo-a|solo-b
-	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null || echo PLACEHOLDER); \
-	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null || echo PLACEHOLDER); \
+vllm-diff: ## Render the chart without applying it. MODE=shared|solo-a|solo-b QUANT=awq|none
+	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null \
+		| grep -E '^arn:aws:iam::[0-9]{12}:role/' || echo PLACEHOLDER); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null \
+		| grep -Ex '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]' || echo PLACEHOLDER); \
 	helm template vllm charts/vllm -n inference \
-		--set mode=$(MODE) --set artifactsBucket="$$bkt" --set roleArn="$$arn"
+		--set mode=$(MODE) --set quantization=$(QUANT) \
+		--set artifactsBucket="$$bkt" --set roleArn="$$arn"
 
 smoke: ## Seven checks that separate "cluster broken" from "measurement bad". CLASS=a|b
 	@CLASS=$(or $(CLASS),a) ./bench/scripts/smoke.sh
@@ -265,7 +288,8 @@ GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag services/llm_pipeline \
 	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
 
 guardrail-image: ## Build and push the guardrail service image to the core ECR repository
-	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null); \
+	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
+		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
 	reg=$${repo%%/*}; \
 	aws ecr get-login-password --region $(REGION) \
@@ -276,7 +300,8 @@ guardrail-image: ## Build and push the guardrail service image to the core ECR r
 	echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"
 
 guardrail-up: ## Install/upgrade the OpenAI-compatible guardrail service
-	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null); \
+	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
+		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
 	helm upgrade --install guardrail charts/guardrail \
 		-n llm-serving --create-namespace \
@@ -614,9 +639,22 @@ DATASET_N       ?= 2000
 ARTIFACTS       ?= $(shell $(TFC) output -raw artifacts_bucket_name 2>/dev/null \
                      | grep -Ex '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]' || true)
 
-model-fetch: ## Download model weights and publish them to S3 (resumable, retries)
-	@test -n "$(ARTIFACTS)" || { echo "artifacts bucket unknown (is the cluster up?)"; exit 1; }
-	@BUCKET="$(ARTIFACTS)" ./bench/scripts/fetch_model.sh
+model-fetch: ## Publish one checkpoint to S3. REPO= PREFIX= LOCAL_DIR= (resumable)
+# The bucket lives in the core tier, which outlives every cluster -- so weights can be
+# fetched with no cluster running, which is the usual case for a long download.
+	@test -n "$(ARTIFACTS)" || { echo "artifacts bucket unknown -- run: make core-up"; exit 1; }
+	@BUCKET="$(ARTIFACTS)" REPO="$(REPO)" PREFIX="$(PREFIX)" LOCAL_DIR="$(LOCAL_DIR)" \
+		./bench/scripts/fetch_model.sh
+
+models-awq: ## Fetch both 4-bit AWQ checkpoints -- what `mode: shared` needs to fit
+# Sequential on purpose: two hf downloads over one home connection share the bandwidth
+# and both take longer than running them one after the other.
+	@$(MAKE) --no-print-directory model-fetch \
+		REPO=Qwen/Qwen2.5-7B-Instruct-AWQ \
+		PREFIX=models/Qwen2.5-7B-Instruct-AWQ LOCAL_DIR=/tmp/qwen7b-awq
+	@$(MAKE) --no-print-directory model-fetch \
+		REPO=Qwen/Qwen2.5-1.5B-Instruct-AWQ \
+		PREFIX=models/Qwen2.5-1.5B-Instruct-AWQ LOCAL_DIR=/tmp/qwen1.5b-awq
 
 datasets: ## Generate the three reference datasets and publish them with checksums
 	python3 bench/datasets/make_datasets.py --n $(DATASET_N) --version $(DATASET_VERSION)

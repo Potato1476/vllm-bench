@@ -146,8 +146,13 @@ export ARTIFACTS=$(terraform -chdir=terraform/core output -raw artifacts_bucket_
 Trọng số model phải được đẩy lên trước phiên đầu tiên:
 
 ```bash
-make model-fetch          # resumable, retries, verifies sizes, then uploads
+make models-awq           # cả hai checkpoint AWQ 4-bit -- thứ `MODE=shared` cần để vừa card
+make model-fetch          # FP16 7B (mặc định); resumable, retries, verifies sizes
 ```
+
+`make model-fetch` nhận `REPO=`, `PREFIX=` và `LOCAL_DIR=` để lấy checkpoint bất kỳ. Bucket
+nằm ở tầng core vốn sống lâu hơn mọi cluster, nên tải được khi **không có cluster nào
+chạy** — đó cũng là tình huống thường gặp với một lần tải kéo dài hàng giờ.
 
 Or by hand. `huggingface-cli` was removed; the CLI is now `hf`. `HF_HUB_DISABLE_XET=1`
 matters: HuggingFace's Xet backend drops the connection partway through a 15 GB transfer
@@ -374,10 +379,17 @@ cache, TTFT sụp xuống, và bạn đang đo cache chứ không đo engine.
 | `solo-a` | chỉ lớp A, trọn card | A 0,90 | **đo X_A** cho việc tính số GPU production |
 | `solo-b` | chỉ lớp B, trọn card | B 0,90 | đo X_B |
 
+Biến thứ hai là `QUANT`: `awq` (mặc định, 4-bit) hoặc `none` (FP16 gốc). Cả hai bộ trọng
+số đều nằm trên S3 nên chuyển qua lại không phải tải lại.
+
+`QUANT=awq` là mặc định vì FP16 **không vừa** `MODE=shared` — xem bảng ở dưới. Ngược lại,
+dùng `QUANT=none` cho các lần `solo-*` sinh ra con số sizing production: throughput từ
+trọng số 4-bit không so sánh được với FP16, nên phải giữ cả hai mới có cái đối chiếu.
+
 ```bash
-make vllm-up MODE=solo-a     # đo X_A
-make vllm-up MODE=shared     # quay lại cấu hình pilot
-make vllm-diff MODE=solo-b   # xem trước, không apply
+make vllm-up MODE=solo-a QUANT=none    # đo X_A trên FP16, mốc so sánh
+make vllm-up MODE=shared               # cấu hình pilot: shared + AWQ
+make vllm-diff MODE=solo-b             # xem trước, không apply
 ```
 
 ### Vì sao cần `solo-*`
@@ -385,13 +397,31 @@ make vllm-diff MODE=solo-b   # xem trước, không apply
 Production (§2.7) cho **mỗi model một node group riêng**, nên model 7B độc chiếm một card.
 Lab thì dùng chung để tiết kiệm credit. Hai hình dạng khác nhau:
 
-| | KV cache còn lại | Request lớp A đồng thời |
-|---|---|---|
-| 7B trọn card (`solo-a`) | 14,1 GiB | **203** |
-| 7B dùng chung (`shared`) | 8,5 GiB | **123** |
+Bảng dưới là **số học, không phải số đo**: suy ra từ `num_hidden_layers=28`,
+`num_key_value_heads=4` (GQA), `head_dim=128` → **56 KiB KV mỗi token**, với hồ sơ lớp A
+1000 token vào + 300 ra. KV cache vẫn là fp16 kể cả khi trọng số là AWQ — lượng tử hoá
+động đến trọng số, không động đến KV. vLLM in con số thật lúc khởi động
+(`GPU KV cache size: N tokens`), nên kiểm chứng chỉ tốn một dòng log.
 
-Lớp A mất khoảng **40% năng lực** khi dùng chung, vì mỗi GiB cấp cho model nhỏ lấy thẳng
-từ KV cache của model lớn. Nếu lấy X_A đo ở chế độ `shared` rồi đưa vào công thức
+| | Ngân sách card | Trọng số | KV còn lại | Request lớp A đồng thời |
+|---|---|---|---|---|
+| `solo-a` FP16 | 20,3 GiB | 14,2 | 6,1 GiB | 87 |
+| `solo-a` AWQ | 20,3 GiB | 5,2 | 15,1 GiB | **217** |
+| `shared` FP16 | 14,6 GiB | 14,2 | **0,4 GiB** | **không chạy được** |
+| `shared` AWQ | 14,6 GiB | 5,2 | 9,4 GiB | 136 |
+
+> **Một sai lệch đã tồn tại trong repo này, ghi lại để không lặp lại.** Bảng cũ ghi
+> 14,1 GiB / 203 cho `solo-a` và 8,5 GiB / 123 cho `shared`. Giải ngược ra thì cả hai đều
+> ứng với trọng số **~6,1 GiB** — tức cỡ trọng số lượng tử hoá, chứ không phải FP16
+> 14,2 GiB đang thực sự chạy. Nói cách khác phần tính năng lực đã ngầm giả định AWQ từ
+> đầu, còn phần triển khai và đo đạc thì dùng FP16, và không có gì bắt hai bên phải khớp.
+> Triệu chứng là `mode: shared` — được mô tả là "mặc định của lab và của pilot" — **chưa
+> từng chạy một lần nào**. Giờ `vllm.validate` thực hiện đúng phép nhân đó lúc render
+> chart và từ chối cấu hình không vừa, kèm nguyên số liệu.
+
+Lớp A mất khoảng **37% năng lực** khi dùng chung (217 → 136 ở AWQ), vì mỗi GiB cấp cho
+model nhỏ lấy thẳng từ KV cache của model lớn. Nếu lấy X_A đo ở chế độ `shared` rồi đưa
+vào công thức
 
 ```
 N = ceil(35 / (0,7 × X_A)) + ceil(15 / (0,7 × X_B))

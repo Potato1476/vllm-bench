@@ -14,9 +14,53 @@
 # KV cache.
 mode: shared
 
+# Which weights to serve: `none` for the original FP16 checkpoints, `awq` for the 4-bit
+# AWQ ones. Both are published to S3, so this switches between them without a re-download.
+#
+# This is what makes `mode: shared` physically possible. FP16 weights are 14.2 + 2.9 =
+# 17.1 GiB, and model A's 0.65 share of a 22.5 GiB L4 is 14.6 GiB -- the weights alone do
+# not fit, let alone a KV cache. The `vllm.validate` helper now refuses that combination
+# with the arithmetic spelled out, rather than letting it fail as an allocation error
+# twenty minutes into a run. AWQ is 5.2 + 1.5 = 6.7 GiB and leaves ~13 GiB of KV cache
+# across both engines.
+#
+# It should also be faster, not only smaller, and for a reason this project measured
+# rather than assumed: DCGM put DRAM_ACTIVE at 94% while PIPE_TENSOR_ACTIVE sat between
+# 6 and 35%, so decode here is bound by memory bandwidth, not by arithmetic. 4-bit weights
+# cut the bytes moved per token by roughly four. Whether that converts into throughput is
+# exactly the thing to measure -- see docs/OVERVIEW.md §6.
+#
+# It is not free: 4-bit quantisation costs some accuracy. Keep the FP16 prefixes for the
+# solo-a / solo-b runs that produce the production sizing number, so the comparison stays
+# available rather than being overwritten.
+quantization: awq
+
+# Total memory on the card, as nvidia-smi reports it for the L4 in a g6.xlarge (23034
+# MiB). vLLM's --gpu-memory-utilization is a fraction of this total, weights included,
+# which is why the fit check below multiplies rather than subtracts.
+gpuMemoryGiB: 22.5
+
+# The smallest KV cache worth starting an engine with. Below this vLLM either refuses to
+# allocate or runs one sequence at a time, which measures nothing.
+minKvCacheGiB: 1.5
+
+# No --quantization flag is passed anywhere, and that is deliberate rather than an
+# oversight: vLLM reads quantization_config out of the checkpoint's own config.json.
+# Verified against the downloaded file, not assumed -- Qwen's AWQ release declares
+# quant_method=awq, bits=4, group_size=128, zero_point=true, version=gemm, and
+# torch_dtype=float16, which is why models.*.dtype below stays float16. On an L4 (Ada,
+# SM 8.9) vLLM selects the awq_marlin kernel from that automatically. Naming a kernel
+# here would only create a way for the chart to disagree with the weights.
+
 # What a g6.xlarge leaves for pods after the kube-system and GPU-operator daemonsets.
 # Measured, not guessed: 3920m allocatable minus ~185m of daemonsets.
 nodeAllocatableCpu: 3.7
+
+# Host RAM, not GPU memory. Same purpose as the line above, for the resource that fails
+# the same way: a pod that does not fit sits Pending with "Insufficient memory", which
+# reads as a scheduling hiccup rather than as a sizing mistake. 16 GiB on a g6.xlarge,
+# minus the kubelet's reservations.
+nodeAllocatableMemoryGiB: 14.4
 
 image:
   repository: vllm/vllm-openai
@@ -52,6 +96,15 @@ models:
   a:
     servedName: qwen2.5-7b
     s3Prefix: models/Qwen2.5-7B-Instruct
+    # Size of the weights once resident on the GPU, used by the fit check. Taken from
+    # what is actually in S3, not from the parameter count.
+    weightsGiB: 14.2
+    awq:
+      # Qwen's own AWQ release, apache-2.0, same as the FP16 checkpoint. Official rather
+      # than a community re-quantisation so the lineage of a benchmark number is one repo
+      # and one licence, not a stranger's calibration set.
+      s3Prefix: models/Qwen2.5-7B-Instruct-AWQ
+      weightsGiB: 5.2
     # Class A: 1000 input + 300 output. 8192 leaves room for the RAG profile too.
     maxModelLen: 8192
     maxNumSeqs: 128
@@ -71,6 +124,10 @@ models:
   b:
     servedName: qwen2.5-1.5b
     s3Prefix: models/Qwen2.5-1.5B-Instruct
+    weightsGiB: 2.9
+    awq:
+      s3Prefix: models/Qwen2.5-1.5B-Instruct-AWQ
+      weightsGiB: 1.5
     # Class B: 800 input + 100 output JSON. A smaller context leaves more KV per
     # sequence, which is what lets the batch grow.
     maxModelLen: 4096
