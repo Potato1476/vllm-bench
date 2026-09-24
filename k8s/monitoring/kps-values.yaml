@@ -80,6 +80,31 @@ grafana:
     userKey: admin-user
     passwordKey: admin-password
   defaultDashboardsTimezone: Asia/Ho_Chi_Minh
+  # Traces are read here, in Explore, and nowhere else. Tempo has no UI of its own worth
+  # publishing, so this datasource is the entire answer to "where do I look at a trace" --
+  # no sixth ingress hostname, no second password, no extra port on the node.
+  #
+  # Provisioned unconditionally, including when `make tracing-up` has not been run. An
+  # unreachable datasource shows an error inside Explore when someone goes looking, which
+  # is a better failure than a missing menu entry that gives no hint anything exists.
+  additionalDataSources:
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      jsonData:
+        # Every span the guardrail emits carries guardrail.model, so the service graph in
+        # Explore separates the two engines without any further configuration.
+        nodeGraph:
+          enabled: true
+        # Jump from a span to the metrics for the same minute. The guardrail's histograms
+        # are labelled by model, which is the label these traces share with them.
+        tracesToMetrics:
+          datasourceUid: prometheus
+          tags:
+            - key: guardrail.model
+              value: model
   sidecar:
     dashboards:
       enabled: true

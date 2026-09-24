@@ -10,6 +10,8 @@ Tài liệu chi tiết cho từng mảng:
 | | |
 |---|---|
 | [`GUARDRAILS.md`](GUARDRAILS.md) | Mô hình mối đe doạ, ba lớp phòng thủ, bộ test 298 mẫu chia hai nửa, và số đo trên nửa giữ lại |
+| [`TRACING.md`](TRACING.md) | Xem một request cụ thể đi qua 10 stage: Tempo, span model, và vì sao span không chứa nội dung |
+| [`metric-names.md`](metric-names.md) | Từng metric của LiteLLM và guardrail: type, label, ý nghĩa |
 | [`diagrams/request_flow.png`](diagrams/request_flow.png) | Sơ đồ luồng một request, cả nhánh cache HIT lẫn MISS |
 
 ---
@@ -138,6 +140,11 @@ theo `agent|access_level`. Chi tiết ở §3.1 và §3.2.
 
 **10 · Khôi phục placeholder.** `[PHONE_1]` → `0912345678`, **chỉ những giá trị chính
 người này đã nhập**.
+
+**Xem mười bước này chạy trên một request cụ thể:** `make trace` bắn một request rồi in
+link mở đúng trace của nó trong Grafana, nơi mỗi bước ở trên là một span, và bước nào
+chặn request thì span đó tô đỏ. Span mang quyết định và con số, **không mang nội dung** —
+chi tiết và lý do ở [`TRACING.md`](TRACING.md).
 
 ### 3.0b Ở đâu thì dừng, và dừng kiểu gì
 

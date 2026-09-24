@@ -60,3 +60,13 @@ podDisruptionBudget:
   minAvailable: 1
 
 topologySpreadConstraints: []
+
+tracing:
+  # Sends gateway spans to Tempo, and starts the trace that the guardrail service and
+  # vLLM then continue -- so one trace covers all three hops instead of three unrelated
+  # ones. Safe to leave on when Tempo is absent: the exporter fails in the background.
+  #
+  # Requires litellm_settings.turn_off_message_logging, which the ConfigMap sets and
+  # explains. Without it the OTEL callback writes prompts into spans.
+  enabled: true
+  endpoint: http://tempo.monitoring.svc.cluster.local:4318

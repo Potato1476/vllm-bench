@@ -20,6 +20,19 @@ observability:
   policyVersion: builtin-v1
   corpusVersion: bundled
 
+tracing:
+  # On by default. The exporter runs on a background thread and drops spans rather than
+  # blocking a request, so a Tempo that is absent or restarting costs serving nothing --
+  # which is what makes leaving this on safe even when `make tracing-up` has not been run.
+  enabled: true
+  endpoint: http://tempo.monitoring.svc.cluster.local:4318
+  serviceName: guardrail
+  # Sample everything. This lab serves a few hundred requests per benchmark run, and the
+  # reason to open a trace is almost always "the request I just sent" -- a sampler that
+  # threw most of them away would make the tool useless at exactly the moment it is
+  # wanted. Lower it if a load test ever makes the span volume matter.
+  sampleRatio: 1.0
+
 resources:
   requests:
     cpu: 250m

@@ -14,9 +14,13 @@ from services.llm_pipeline import app
 
 class _FakeVllm(BaseHTTPRequestHandler):
     calls = 0
+    # Recorded so tests/test_tracing.py can check the trace context really reaches the
+    # engine, rather than only checking that the guardrail meant to send it.
+    last_traceparent: str | None = None
 
     def do_POST(self) -> None:  # noqa: N802
         type(self).calls += 1
+        type(self).last_traceparent = self.headers.get("traceparent")
         size = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(size))
         assert payload["stream"] is False

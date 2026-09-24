@@ -1,0 +1,187 @@
+# Grafana Tempo, single binary, applied by `make tracing-up`.
+#
+# WHY TEMPO
+# Grafana is already deployed and already published through the ingress, and Tempo is a
+# datasource inside it rather than a second UI. No sixth hostname, no second basic-auth
+# credential, and no further widening of the security group -- which matters more than
+# usual here, because this lab runs with PUBLIC=1.
+#
+# The alternative worth naming is an LLM-specific tracer (Langfuse, Phoenix). Their value
+# is showing the prompt and the completion, and this platform redacts PII out of exactly
+# that text at pipeline stage 2. Storing it in a trace backend would put it back, in a
+# third place, after the request log and the cache key. See the docstring of
+# services/llm_pipeline/tracing.py.
+#
+# WHY PLAIN MANIFESTS AND NOT THE HELM CHART
+# grafana/tempo (single binary) is marked `deprecated: true`; Grafana points users at
+# tempo-distributed, which splits into distributor, ingester, querier, query-frontend,
+# compactor and a memcached, and does not fit on an m7i.large that has already run out of
+# allocatable CPU three times. The deprecated chart also could not express what is wanted
+# here: its service template dereferences .receivers.jaeger.protocols unconditionally, so
+# disabling the Jaeger, Zipkin and OpenCensus receivers -- none of which has a caller in
+# this cluster -- fails to render at all. Tempo in monolithic mode is a ConfigMap, a
+# Deployment and a Service; owning those three is less work than working around a chart
+# that is no longer maintained.
+#
+# WHY TRACES DO NOT SURVIVE lab-down
+# Storage is an emptyDir, so traces die with the pod and with the cluster. Deliberate:
+#   - A trace answers "I sent a request just now, where did it go, what blocked it". It
+#     is read minutes after the request. The durable record of a session is the metric
+#     snapshot `make snapshot` copies to S3 before teardown.
+#   - A PersistentVolumeClaim means another EBS volume, and this project has already been
+#     billed for orphaned volumes that outlived the cluster that created them.
+#   - An S3 backend would work, and would need an IRSA role, a bucket policy and a
+#     Terraform change in the cluster tier, for data with a useful life of one afternoon.
+# To change that later: set storage.trace.backend to s3 below, give the ServiceAccount an
+# eks.amazonaws.com/role-arn annotation, and nothing else here has to move.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tempo
+  namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo
+  namespace: monitoring
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+      # A trace search over a wide window is slower than Grafana's default patience.
+      log_level: warn
+
+    distributor:
+      receivers:
+        # OTLP only. Everything that sends traces here speaks it: the guardrail service
+        # (services/llm_pipeline/tracing.py), LiteLLM's otel callback, and vLLM when
+        # started with --otlp-traces-endpoint.
+        otlp:
+          protocols:
+            http:
+              endpoint: 0.0.0.0:4318
+            grpc:
+              endpoint: 0.0.0.0:4317
+
+    ingester:
+      # Flush often. The default holds a block open far longer, and a trace that is not
+      # yet flushed is not yet searchable -- which, when you are checking a request you
+      # sent thirty seconds ago, is indistinguishable from tracing being broken.
+      max_block_duration: 1m
+
+    compactor:
+      compaction:
+        block_retention: 24h
+
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+        wal:
+          path: /var/tempo/wal
+
+    # Never phone home from a lab that is deliberately exposed to the internet.
+    usage_report:
+      reporting_enabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: monitoring
+  labels: &labels
+    app.kubernetes.io/name: tempo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: *labels
+  # Traces live in an emptyDir, so a rolling update would keep the old pod's data alive
+  # while the new pod answers queries with none of it. Recreate makes the gap explicit
+  # and short instead of silently serving an empty backend.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      serviceAccountName: tempo
+      nodeSelector:
+        workload: tooling
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.9.0
+          args: ["-config.file=/conf/tempo.yaml"]
+          ports:
+            - {name: http, containerPort: 3200}
+            - {name: otlp-http, containerPort: 4318}
+            - {name: otlp-grpc, containerPort: 4317}
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /ready, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              # No CPU limit on purpose: throttling the ingester makes it drop spans, and
+              # a dropped span looks exactly like a service that never emitted one.
+              memory: 512Mi
+          volumeMounts:
+            - {name: config, mountPath: /conf}
+            - {name: data, mountPath: /var/tempo}
+      volumes:
+        - name: config
+          configMap: {name: tempo}
+        - name: data
+          emptyDir:
+            # Bounded so a runaway trace volume cannot fill the node's disk and evict
+            # Prometheus, which shares it.
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: tempo
+spec:
+  # ClusterIP only. Nothing outside the cluster sends traces, and nothing outside reads
+  # them either -- Grafana queries this from inside, and Grafana is the published UI.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tempo
+  ports:
+    - {name: http, port: 3200, targetPort: http}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tempo
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack only adopts ServiceMonitors carrying its release label.
+    release: kps
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

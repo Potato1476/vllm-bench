@@ -108,6 +108,26 @@ với latency thường cho thấy pod Guardrail hoặc upstream đang bị ngh�
 Gắn lineage của image, policy và corpus vào dữ liệu benchmark. Metric này cũng được dùng
 để phát hiện trường hợp target còn `up=1` nhưng application metrics bị mất.
 
+#### `guardrail_trace_spans_total`
+
+| Thuộc tính | Giá trị |
+|---|---|
+| Type | Counter |
+| Labels | `result` = `exported` \| `dropped` \| `failed` |
+
+Chỉ xuất hiện khi tracing được bật (`OTEL_EXPORTER_OTLP_ENDPOINT` có giá trị).
+
+Exporter trong `services/llm_pipeline/tracing.py` cố tình nuốt mọi lỗi kết nối: một
+Tempo chết không được phép làm chậm request. Hệ quả là tracing hỏng **hoàn toàn im
+lặng** — không log, không lỗi, chỉ là trace không bao giờ xuất hiện. Ba counter này là
+cách duy nhất để thấy điều đó từ dashboard.
+
+- `failed` tăng → không gửi được tới Tempo (Tempo chưa chạy, sai endpoint, network).
+- `dropped` tăng → hàng đợi đầy, exporter không theo kịp. Đáng lo hơn `failed` vì trace
+  *vẫn* có, nhưng đã thành mẫu thiên lệch: request chậm là request dễ bị bỏ nhất.
+
+Hai alert tương ứng nằm trong nhóm `tracing` của `observability/rules/alerts.yaml`.
+
 ### 2.2 Latency
 
 #### `guardrail_request_duration_seconds`

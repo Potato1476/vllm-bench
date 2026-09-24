@@ -405,6 +405,40 @@ dashboards: ## Load observability/dashboards/*.json into Grafana via ConfigMap
 audit-metrics: ## Confirm every metric the rules depend on exists by name
 	./bench/scripts/audit_metrics.sh
 
+# --- Tracing ----------------------------------------------------------------
+# Metrics say the p95 moved; a trace says which of the ten guardrail stages moved it, on
+# which request. Tempo is read inside Grafana, so this adds no hostname and no password.
+tracing-up: ## Install Tempo and point Grafana at it
+	kubectl apply -f k8s/tracing/tempo.yaml
+	kubectl -n monitoring rollout status deploy/tempo --timeout=5m
+	@echo
+	@echo "The Tempo datasource is provisioned by k8s/monitoring/kps-values.yaml. If this"
+	@echo "is the first time, Grafana needs it applied:  make monitoring-up"
+	@echo
+	@echo "Guardrail and LiteLLM send spans only if they were installed with tracing on,"
+	@echo "which is the chart default. If they were already running, restart them:"
+	@echo "  kubectl -n llm-serving rollout restart deploy/guardrail deploy/litellm"
+	@echo
+	@echo "Then:  make trace"
+
+tracing-down: ## Remove Tempo. Traces are in an emptyDir, so they go with it.
+	kubectl delete -f k8s/tracing/tempo.yaml --ignore-not-found
+
+trace: ## Send one request and print the link that opens its trace. Q= MODEL= DIRECT=1
+	@MODEL="$(MODEL)" Q="$(Q)" AGENT="$(AGENT)" MAX_TOKENS="$(MAX_TOKENS)" \
+		DIRECT="$(DIRECT)" ./bench/scripts/trace_request.sh
+
+tracing-check: ## Is anything actually being exported? Reads both ends.
+	@echo "--- guardrail: spans no da gui ---"
+	@kubectl -n llm-serving exec deploy/guardrail -- \
+		python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/metrics').read().decode())" \
+		2>/dev/null | grep guardrail_trace_spans_total || echo "  (khong co -- tracing dang tat)"
+	@echo "--- tempo: spans da nhan ---"
+	@kubectl -n monitoring exec deploy/tempo -- \
+		wget -qO- http://127.0.0.1:3200/metrics 2>/dev/null \
+		| grep -E "^tempo_distributor_spans_received_total|^tempo_receiver_accepted_spans" \
+		|| echo "  (khong doc duoc -- tempo chay chua?)"
+
 pf: ## Port-forward Prometheus 9090, Grafana 3000, LiteLLM 4000, guardrail 8080, vLLM 8000
 	@kubectl -n monitoring port-forward svc/kps-kube-prometheus-stack-prometheus 9090:9090 >/dev/null 2>&1 &
 	@kubectl -n monitoring port-forward svc/kps-grafana 3000:80 >/dev/null 2>&1 &
@@ -508,7 +542,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
-	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline
+	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_tracing
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py

@@ -22,8 +22,17 @@ data:
       master_key: os.environ/LITELLM_MASTER_KEY
     litellm_settings:
       drop_params: true
+      # Load-bearing for tracing, not only for logs. LiteLLM's OTEL callback otherwise
+      # stamps the raw request onto every span -- opentelemetry.py sets
+      # attrs["gen_ai.prompt"] = msg["content"] -- which would put the text that pipeline
+      # stage 2 redacts into the trace backend verbatim. This flag is what forces its
+      # NO_CONTENT path. Never enable "otel" below without it.
       turn_off_message_logging: true
+      {{- if .Values.tracing.enabled }}
+      callbacks: ["prometheus", "otel"]
+      {{- else }}
       callbacks: ["prometheus"]
+      {{- end }}
       # Aurora is on the request path for virtual keys, budgets and spend accounting.
       # This callback exposes its latency and failure counters without logging content.
       service_callback: ["prometheus_system"]

@@ -52,6 +52,27 @@ spec:
               value: {{ .Values.observability.policyVersion | quote }}
             - name: CORPUS_VERSION
               value: {{ .Values.observability.corpusVersion | quote }}
+            {{- if .Values.tracing.enabled }}
+            # No endpoint means no tracing: the tracer starts no thread and every span
+            # call becomes a no-op, so the offline harnesses that import this module
+            # need no configuration to avoid it.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.tracing.serviceName | quote }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ .Values.image.tag | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .Values.tracing.sampleRatio | quote }}
+            # Which pod and node served a request is the first question asked of a slow
+            # trace, and the only place the answer can come from is the pod itself.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

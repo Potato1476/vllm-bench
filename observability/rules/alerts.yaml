@@ -206,3 +206,29 @@ spec:
             severity: info
           annotations:
             summary: "GPU over 85C -- sustained capacity may be below the short-run number"
+
+    # Tracing fails quietly by design: the exporter in services/llm_pipeline/tracing.py
+    # swallows connection errors so a collector outage can never slow a request. Quiet
+    # failure means nobody finds out until they go looking for a trace that was never
+    # stored -- usually in the middle of debugging something else. These two make the
+    # absence visible instead.
+    - name: tracing
+      rules:
+        - alert: TraceExportFailing
+          expr: rate(guardrail_trace_spans_total{result="failed"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Guardrail cannot reach Tempo -- traces are being lost, serving is unaffected"
+
+        - alert: TraceSpansDropped
+          # The queue is bounded and drops rather than blocks. Sustained drops mean the
+          # exporter is not keeping up, so the traces that do arrive are a biased sample
+          # -- the slow requests are the ones most likely to be missing.
+          expr: rate(guardrail_trace_spans_total{result="dropped"}[10m]) > 0
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "Trace queue is overflowing -- stored traces are no longer a fair sample"

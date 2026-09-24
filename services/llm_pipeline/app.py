@@ -29,6 +29,7 @@ from guardrails import pipeline
 from prompt.build import Session
 from rag import bm25, policy
 from rag.corpus import DEFAULT_CORPUS, load_chunks
+from services.llm_pipeline import tracing
 
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
@@ -42,6 +43,8 @@ MODEL_ROUTES = json.loads(os.getenv(
         "qwen2.5-1.5b": "http://vllm-b.inference.svc.cluster.local:8000/v1",
     }),
 ))
+
+_tracer = tracing.from_environment()
 
 _chunks = load_chunks(CORPUS_PATH)
 _chunks_by_id = {chunk.chunk_id: chunk for chunk in _chunks}
@@ -317,14 +320,22 @@ def _upstream_payload(
     return forwarded
 
 
-def _call_vllm(model: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _call_vllm(
+    model: str, payload: dict[str, Any], traceparent: str | None = None
+) -> dict[str, Any]:
     base = MODEL_ROUTES.get(model)
     if not base:
         raise ValueError(f"model is not routed by guardrail: {model}")
+    headers = {"Authorization": "Bearer none", "Content-Type": "application/json"}
+    # Hand vLLM the current span as its parent. It only acts on this when started with
+    # --otlp-traces-endpoint; otherwise the header is ignored and the engine's time still
+    # shows in the waterfall, measured from this side as the upstream span.
+    if traceparent:
+        headers["traceparent"] = traceparent
     request = urllib.request.Request(
         f"{base.rstrip('/')}/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode(),
-        headers={"Authorization": "Bearer none", "Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
@@ -412,8 +423,109 @@ def _track_final(final: pipeline.FinalAnswer) -> None:
         })
 
 
+def _trace_metrics() -> bytes:
+    """Whether the exporter itself is working.
+
+    A trace backend fails quietly by design -- the tracer swallows connection errors so a
+    collector outage cannot slow serving -- and quiet failure means nobody notices until
+    they go looking for a trace that was never stored. These three counters are how the
+    absence of traces becomes visible on the dashboard that is already being watched.
+    """
+    if not _tracer.enabled:
+        return b""
+    return (
+        "# HELP guardrail_trace_spans_total Spans by what became of them.\n"
+        "# TYPE guardrail_trace_spans_total counter\n"
+        f'guardrail_trace_spans_total{{result="exported"}} {_tracer.exported}\n'
+        f'guardrail_trace_spans_total{{result="dropped"}} {_tracer.dropped}\n'
+        f'guardrail_trace_spans_total{{result="failed"}} {_tracer.failures}\n'
+    ).encode()
+
+
+# A refusal names the decision, the observer names the stage that timed it, and for the
+# input injection check those two strings differ. Without this the blocking span stays
+# green and the waterfall shows a refused request with nothing marked as the cause.
+_REFUSAL_TO_SPAN = {"injection": "injection_user"}
+
+
+def _trace_refusal(
+    stage_spans: dict[str, tracing.Span], refusal: pipeline.Refusal
+) -> None:
+    """Mark the stage that stopped the request, so it is the red bar in the waterfall."""
+    span = stage_spans.get(_REFUSAL_TO_SPAN.get(refusal.stage, refusal.stage))
+    if span is not None:
+        span.fail(refusal.reason)
+
+
+def _trace_prepared(
+    span: tracing.Span, prepared: pipeline.PreparedRequest, agent: str, model: str
+) -> None:
+    """Attach what the input half decided. Counts and verdicts only -- never content."""
+    span.update({
+        "guardrail.agent": agent,
+        "guardrail.model": model,
+        "rag.documents.retrieved": len(prepared.context),
+        "rag.documents.denied": prepared.denied_documents,
+        "rag.documents.stale": prepared.stale_documents,
+        "rag.documents.dropped_injection": len(prepared.dropped_documents),
+    })
+    if prepared.inbound_pii:
+        findings = Counter(finding.kind for finding in prepared.inbound_pii.findings)
+        span.set("guardrail.pii.ingress.count", sum(findings.values()))
+        # The kinds found, not the values found. Knowing a CCCD was redacted is the whole
+        # diagnostic value; knowing which CCCD would undo the redaction.
+        span.set("guardrail.pii.ingress.kinds", ",".join(sorted(findings)))
+    if prepared.prompt is not None:
+        span.set("prompt.cache_salt", prepared.prompt.cache_salt)
+
+
+def _trace_final(span: tracing.Span, final: pipeline.FinalAnswer) -> None:
+    report = final.report
+    span.update({
+        "guardrail.grounding.verdict": report.verdict,
+        "guardrail.grounding.overlap": round(report.overlap, 4),
+        "guardrail.citations.cited": len(report.cited),
+        "guardrail.citations.fabricated": len(report.fabricated),
+        "guardrail.citations.uncited_sentences": len(report.uncited_sentences),
+    })
+    if final.outbound_pii:
+        kinds = sorted({finding.kind for finding in final.outbound_pii})
+        span.set("guardrail.pii.egress.count", len(final.outbound_pii))
+        span.set("guardrail.pii.egress.kinds", ",".join(kinds))
+
+
+def _trace_usage(span: tracing.Span, upstream: dict[str, Any]) -> None:
+    """Token counts from vLLM's response, which is the only place they are reported."""
+    usage = upstream.get("usage")
+    if not isinstance(usage, dict):
+        return
+    for attribute, key in (
+        ("llm.usage.prompt_tokens", "prompt_tokens"),
+        ("llm.usage.completion_tokens", "completion_tokens"),
+        ("llm.usage.total_tokens", "total_tokens"),
+    ):
+        value = usage.get(key)
+        if isinstance(value, int):
+            span.set(attribute, value)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "vllm-bench-guardrail/1"
+
+    # Defensive, and deliberately so. BaseHTTPRequestHandler.handle() loops over
+    # handle_one_request, so one instance can serve several requests on one connection --
+    # and anything stored on self then outlives the request that set it. Today it cannot
+    # happen here, because the default protocol_version is HTTP/1.0 and keep-alive is
+    # refused, so every request gets a fresh instance. It is one `protocol_version =
+    # "HTTP/1.1"` away from happening, and the symptom would be quiet and confusing:
+    # /health answers and the 404 branch below carrying the X-Trace-Id of whatever
+    # completion preceded them on the same socket, pointing at a trace that is not
+    # theirs. Resetting costs one assignment.
+    _trace_id = ""
+
+    def handle_one_request(self) -> None:
+        self._trace_id = ""
+        super().handle_one_request()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in ("/health", "/health/readiness", "/health/liveliness"):
@@ -442,6 +554,26 @@ class Handler(BaseHTTPRequestHandler):
         outcome = "error"
         terminal_stage = "internal"
         upstream_elapsed = 0.0
+
+        # Continue the trace LiteLLM started, so one trace covers gateway, guardrail and
+        # engine. A caller who sends no traceparent -- curl, the bench runner -- starts a
+        # new one here and gets its id back in the X-Trace-Id response header.
+        root = _tracer.start(
+            "POST /v1/chat/completions",
+            self.headers.get("traceparent"),
+            tracing.KIND_SERVER,
+        )
+        self._trace_id = root.trace_id
+        spans: list[tracing.Span] = [root]
+        stage_spans: dict[str, tracing.Span] = {}
+
+        def observe(stage: str, seconds: float) -> None:
+            """Record each pipeline stage as both a histogram sample and a span."""
+            _observe_stage(stage, seconds)
+            span = _tracer.child_ending_now(root, f"guardrail.{stage}", seconds)
+            stage_spans[stage] = span
+            spans.append(span)
+
         _telemetry.add_gauge("guardrail_in_flight_requests", {}, 1)
         try:
             payload = self._read_json()
@@ -476,13 +608,15 @@ class Handler(BaseHTTPRequestHandler):
                 _chunks_by_id,
                 _session(agent, access),
                 policy=policy.Policy(access_level=access),
-                observer=_observe_stage,
+                observer=observe,
             )
             _track_prepared(prepared, model_label)
+            _trace_prepared(root, prepared, agent, model_label)
             if not prepared.ok:
                 assert prepared.refusal is not None
                 outcome = "refused"
                 terminal_stage = prepared.refusal.stage
+                _trace_refusal(stage_spans, prepared.refusal)
                 if terminal_stage == "injection":
                     _telemetry.inc(
                         "guardrail_injection_detections_total",
@@ -498,10 +632,24 @@ class Handler(BaseHTTPRequestHandler):
 
             upstream_started = time.monotonic()
             upstream_outcome = "error"
+            upstream_span = _tracer.child(root, f"vllm {model}", tracing.KIND_CLIENT)
+            spans.append(upstream_span)
+            upstream_span.set("guardrail.model", model_label)
             try:
-                upstream = _call_vllm(model, _upstream_payload(payload, prepared))
+                upstream = _call_vllm(
+                    model,
+                    _upstream_payload(payload, prepared),
+                    traceparent=upstream_span.traceparent(),
+                )
                 upstream_outcome = "success"
+                _trace_usage(upstream_span, upstream)
+            except Exception as exc:
+                # The class name, never str(exc): an upstream error often quotes the body
+                # that caused it, and that body is the user's prompt.
+                upstream_span.fail(type(exc).__name__)
+                raise
             finally:
+                upstream_span.end_ns = time.time_ns()
                 upstream_elapsed = time.monotonic() - upstream_started
                 _telemetry.observe(
                     "guardrail_upstream_duration_seconds",
@@ -510,12 +658,14 @@ class Handler(BaseHTTPRequestHandler):
                 _telemetry.inc("guardrail_upstream_requests_total", {
                     "model": model_label, "outcome": upstream_outcome,
                 })
-            final = pipeline.finalise(_answer(upstream), prepared, observer=_observe_stage)
+            final = pipeline.finalise(_answer(upstream), prepared, observer=observe)
             _track_final(final)
+            _trace_final(root, final)
             if not final.ok:
                 assert final.refusal is not None
                 outcome = "refused"
                 terminal_stage = final.refusal.stage
+                _trace_refusal(stage_spans, final.refusal)
                 self._error(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                     final.refusal.stage,
@@ -531,6 +681,10 @@ class Handler(BaseHTTPRequestHandler):
                 "cited": list(final.report.cited),
                 "dropped_documents": prepared.dropped_documents,
                 "latency_seconds": round(time.monotonic() - started, 6),
+                # Also returned as X-Trace-Id. Present in the body as well so a caller
+                # that only keeps the JSON -- the bench runner, a saved curl output --
+                # can still find the request in Tempo afterwards.
+                "trace_id": root.trace_id if root.sampled else "",
             })
             outcome = "allowed"
             terminal_stage = "none"
@@ -567,6 +721,19 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal", "guardrail service failed")
         finally:
             elapsed = time.monotonic() - started
+            root.end_ns = time.time_ns()
+            root.update({
+                "guardrail.outcome": outcome,
+                "guardrail.terminal_stage": terminal_stage,
+                "guardrail.model": model_label,
+                "http.route": "/v1/chat/completions",
+            })
+            if outcome != "allowed":
+                # Both a refusal and a crash are errors for the trace backend, which is
+                # what makes "show me today's failed requests" a one-click filter in
+                # Tempo. The outcome attribute still separates the two.
+                root.fail(terminal_stage)
+            _tracer.submit(spans)
             _count(outcome, terminal_stage, model_label)
             _telemetry.observe(
                 "guardrail_request_duration_seconds",
@@ -591,6 +758,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        # Returned on refusals and errors too -- those are the responses somebody
+        # actually wants to look up afterwards. Absent on /health and /metrics, which
+        # have no span.
+        trace_id = self._trace_id
+        if trace_id:
+            self.send_header("X-Trace-Id", trace_id)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -615,6 +788,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
+        trace_id = self._trace_id
+        if trace_id:
+            self.send_header("X-Trace-Id", trace_id)
         self.end_headers()
 
         def event(delta: dict[str, Any], finish_reason: str | None = None) -> None:
@@ -635,7 +811,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _metrics(self) -> None:
-        encoded = _telemetry.render()
+        encoded = _telemetry.render() + _trace_metrics()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
         self.send_header("Content-Length", str(len(encoded)))

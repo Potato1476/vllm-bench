@@ -43,6 +43,21 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.existingSecret.name }}
+          {{- if .Values.tracing.enabled }}
+          env:
+            # LiteLLM reads the standard OTLP variables, falling back to its own older
+            # OTEL_ENDPOINT/OTEL_EXPORTER names. Verified against v1.90.2's
+            # OpenTelemetryConfig.from_env rather than assumed, because the protocol
+            # variable defaults to "console" -- an exporter that prints spans into the
+            # pod log and sends nothing, which looks like a collector that is refusing
+            # them. It is set explicitly here even though 1.90.2 would now infer it.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: otlp_http
+            - name: OTEL_SERVICE_NAME
+              value: litellm
+          {{- end }}
           volumeMounts:
             - name: config
               mountPath: /app/config
