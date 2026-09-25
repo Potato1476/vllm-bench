@@ -160,6 +160,7 @@ terraform/cluster/     EKS + node group.                         TÍNH TIỀN TH
 charts/vllm/           Helm chart chạy vLLM, tham số hoá 2 model
 k8s/monitoring/        kube-prometheus-stack + GPU Operator (chỉ DCGM)
 k8s/ingress/           ingress-nginx trên NodePort, mở URL ra ngoài
+k8s/storage/           StorageClass gp3 — CỐ Ý không nằm trong Terraform, xem file
 observability/         PrometheusRule + dashboard Grafana (dạng code)
 bench/                 bộ tạo tải, dataset, script vận hành
 rag/                   truy hồi: BM25 tiếng Việt, RRF, policy metadata, bộ đo
@@ -545,6 +546,43 @@ retrieval      0,693   0,932   ← BM25 làm tốt
 hybrid         0,177   0,425
 reasoning      0,000   0,471   ← BM25 mù hoàn toàn
 ```
+
+---
+
+## 6a. Bẫy chi phí: EC2 tự sinh lại sau `make lab-down`
+
+Triệu chứng: chạy `make lab-down`, instance bị xoá rồi **AWS tạo lại ngay**, lặp mãi.
+
+Không phải AWS lỗi. Node group của EKS là một **autoscaling group**, và ASG có
+`min_size ≥ 1` thì **thay thế bất kỳ instance nào tắt**, trong khoảng một phút. Đó là hành
+vi đúng của ASG. Vấn đề là vì sao node group còn sống sau khi bạn đã bảo destroy.
+
+Chuỗi nguyên nhân:
+
+1. Tầng cluster từng giữ `kubernetes_storage_class_v1` — tài nguyên Kubernetes **duy nhất**
+   trong state đó.
+2. Provider `kubernetes` lấy cấu hình từ output của `module.eks`, nên Terraform phải xoá
+   StorageClass **trước** module EKS, tức phải gọi được API của cụm.
+3. Gọi không được — `allowed_cidrs` cũ sau khi IP nhà đổi (đã xảy ra 6 lần), cụm đã hỏng
+   dở từ lần trước, token hết hạn — thì **destroy dừng trước khi tới node group**.
+4. Node group sống sót. ASG `min_size=1` giữ một instance và thay thế mọi instance bạn tắt
+   bằng tay. Nhìn từ ngoài: "EC2 loop create liên tục".
+
+Cùng một gốc rễ với sự cố `make fix-cidr` deadlock trước đây, chỉ khác là ở đường destroy.
+
+Đã sửa ba lớp:
+
+| | |
+|---|---|
+| StorageClass ra khỏi Terraform → `k8s/storage/gp3.yaml` | destroy **không bao giờ** cần liên lạc với cụm nữa |
+| `min_size = 0` cho node group tooling | không còn gì bị **ép** thay thế |
+| `lab-down` hạ mọi node group về 0 **trước** khi destroy | destroy hỏng thì vẫn 0 instance, tiền ngừng chảy |
+
+Kèm `make teardown-check` (kiểm node group + ASG + EC2, không chỉ EBS như `orphans`) và
+`make kill-nodes` — phanh khẩn cấp khi vòng lặp **đang** xảy ra.
+
+Quan trọng: **tắt instance bằng tay không dừng được vòng lặp** — đó chính là thứ ASG hoàn
+tác. Phải hạ node group về 0.
 
 ---
 

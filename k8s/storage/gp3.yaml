@@ -1,0 +1,45 @@
+# The default StorageClass, applied by `make kubeconfig`.
+#
+# WHY THIS IS A MANIFEST AND NOT A TERRAFORM RESOURCE
+#
+# It used to be kubernetes_storage_class_v1 in terraform/cluster/. That made it the only
+# Kubernetes object in the cluster state, and it dragged a kubernetes provider -- and
+# therefore cluster REACHABILITY -- into every plan, apply and destroy of the tier.
+#
+# The failure that costs money is on destroy. Terraform has to delete this object before
+# module.eks, because the provider reads that module's outputs. Deleting it means calling
+# the Kubernetes API. When that call fails -- a stale allowed_cidrs after the home address
+# changes, which happened six times in one project; a half-destroyed cluster from an
+# earlier attempt; an expired token -- `terraform destroy` ABORTS BEFORE IT REACHES THE
+# NODE GROUPS.
+#
+# What that looks like from the outside is not an error about a StorageClass. It looks
+# like AWS creating EC2 instances in a loop: the node groups survive, their autoscaling
+# groups still want their desired count, and every instance terminated by hand is replaced
+# within a minute. The same root cause had already bitten this project once, in the apply
+# path, where `make fix-cidr` deadlocked trying to reach an API its own stale CIDR blocked.
+#
+# A StorageClass has no state worth reconciling and is two API calls to recreate, so
+# nothing is lost by moving it here -- and the cluster tier now destroys with the AWS API
+# alone, which is reachable whether or not the cluster is healthy.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    # EKS ships a gp2 default: the previous EBS generation, lower baseline throughput and
+    # IOPS tied to volume size. gp3 is cheaper per GiB and faster.
+    #
+    # Two defaults at once makes provisioning ambiguous, so `make kubeconfig` also strips
+    # the annotation from gp2 after applying this.
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+# EBS volumes are zonal. Binding late lets the scheduler place the pod first and create the
+# volume in that node's AZ, instead of stranding a pod against a volume in the wrong zone.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  encrypted: "true"

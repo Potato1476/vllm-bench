@@ -93,7 +93,20 @@ module "eks" {
       instance_types = [var.cpu_instance_type]
       capacity_type  = "ON_DEMAND"
 
-      min_size     = 1
+      # min_size 0, not 1, and this is the difference between a clean teardown and an
+      # instance that will not die.
+      #
+      # A managed node group is an autoscaling group underneath, and an ASG whose minimum
+      # is 1 REPLACES any instance that terminates, within about a minute. That is correct
+      # ASG behaviour and exactly wrong here: when a destroy fails partway -- or when
+      # somebody terminates the box by hand to stop the billing -- AWS quietly launches
+      # another, and the symptom reads as "EC2 keeps creating instances in a loop".
+      #
+      # desired_size still brings one node up on apply, so nothing about normal operation
+      # changes. All min_size=0 gives up is the guarantee that the node comes back by
+      # itself, which for a lab that is torn down every evening was never a guarantee
+      # worth having.
+      min_size     = 0
       max_size     = 2
       desired_size = 1
 

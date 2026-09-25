@@ -6,14 +6,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.60"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.14"
-    }
   }
 
   # Applied at the start of a working session and destroyed at the end. Persistent

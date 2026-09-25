@@ -87,13 +87,13 @@ make lab-up       # tầng cluster: EKS + node group — mỗi đầu phiên
 make kubeconfig   # trỏ kubectl vào cụm
 ```
 
-Lần `apply` đầu tiên cần hai lượt, vì provider `kubernetes` được cấu hình từ output của
-module EKS và không thể cấu hình khi cụm chưa tồn tại:
-
-```bash
-terraform -chdir=terraform/cluster apply -target=module.eks
-terraform -chdir=terraform/cluster apply
-```
+Một lượt `apply` là đủ. Trước đây phải chạy hai lượt vì tầng này khai báo một provider
+`kubernetes` lấy cấu hình từ output của module EKS, mà provider đó không cấu hình được khi
+cụm chưa tồn tại. Tài nguyên Kubernetes duy nhất ở đó — StorageClass `gp3` — nay là
+manifest trong `k8s/storage/`, áp dụng bởi `make kubeconfig`. Xem đầu file đó để biết vì
+sao: ràng buộc ấy còn khiến `terraform destroy` **phải liên lạc được với cụm**, và khi
+không liên lạc được thì destroy bỏ dở trước khi xoá node group — để lại autoscaling group
+tự sinh lại EC2.
 
 Điều khiển node GPU trong ngày làm việc:
 

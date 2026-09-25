@@ -25,7 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
-	snapshot cleanup-volumes orphans datasets datasets-check runner-image model-fetch models-awq \
+	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
 	attacks-build attacks-score defenses-dryrun defenses-eval spotlight-cost \
 	secrets-scan \
@@ -104,9 +104,68 @@ lab-down: ## End a session: snapshot metrics, release volumes, destroy the clust
 	-@$(MAKE) --no-print-directory ingress-down
 	@echo "releasing EBS volumes while the CSI driver still exists..."
 	-@$(MAKE) --no-print-directory cleanup-volumes
+	@echo "scaling every node group to zero BEFORE destroy..."
+	-@$(MAKE) --no-print-directory nodes-zero
 	$(TF) destroy -var cluster_name=$(CLUSTER)
 	@echo; echo "checking for volumes that outlived the cluster:"
 	-@$(MAKE) --no-print-directory orphans
+	-@$(MAKE) --no-print-directory teardown-check
+
+# Scale to zero BEFORE destroying, not as part of it.
+#
+# A managed node group is an autoscaling group underneath, and a destroy that fails
+# partway leaves that ASG behind still wanting its desired count. Terminating those
+# instances by hand achieves nothing -- the ASG replaces them within a minute, which is
+# what "EC2 keeps creating instances in a loop" actually is. Scaling to zero first means a
+# failed destroy leaves nothing running and nothing being replaced: the billing stops even
+# when the cleanup does not finish.
+nodes-zero: ## Scale every node group to 0 and wait for the instances to go
+	@ngs=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
+		--query 'nodegroups' --output text 2>/dev/null); \
+	if [ -z "$$ngs" ]; then echo "  khong co node group nao (cum da xoa?)"; exit 0; fi; \
+	for ng in $$ngs; do \
+		echo "  ha $$ng ve 0 ..."; \
+		aws eks update-nodegroup-config --cluster-name $(CLUSTER) --region $(REGION) \
+			--nodegroup-name "$$ng" --scaling-config minSize=0,desiredSize=0 \
+			--query 'update.status' --output text >/dev/null 2>&1 \
+			|| echo "    (khong ha duoc -- co the dang co update khac chay)"; \
+	done; \
+	echo "  cho instance tat (toi da 5 phut)..."; \
+	for i in $$(seq 1 30); do \
+		n=$$(aws ec2 describe-instances --region $(REGION) \
+			--filters "Name=tag:eks:cluster-name,Values=$(CLUSTER)" \
+				"Name=instance-state-name,Values=running,pending" \
+			--query 'length(Reservations[].Instances[])' --output text 2>/dev/null); \
+		if [ "$$n" = "0" ]; then echo "  khong con instance nao"; break; fi; \
+		printf '  con %s instance...\n' "$$n"; sleep 10; \
+	done
+
+# `orphans` only looks at EBS volumes. The expensive survivor is a node group whose ASG
+# keeps relaunching instances, and nothing checked for that until it had happened.
+teardown-check: ## Verify nothing survived: node group, autoscaling group, EC2
+	@echo "kiem tra sau teardown:"
+	@ng=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
+		--query 'nodegroups' --output text 2>/dev/null); \
+		if [ -z "$$ng" ]; then echo "  node group      : khong con"; \
+		else echo "  node group      : VAN CON -> $$ng"; fi
+	@asg=$$(aws autoscaling describe-auto-scaling-groups --region $(REGION) \
+		--query "AutoScalingGroups[?contains(AutoScalingGroupName,'$(CLUSTER)')].AutoScalingGroupName" \
+		--output text 2>/dev/null); \
+		if [ -z "$$asg" ]; then echo "  autoscaling grp : khong con"; \
+		else echo "  autoscaling grp : VAN CON -> $$asg   <-- thu nay tao lai EC2"; fi
+	@n=$$(aws ec2 describe-instances --region $(REGION) \
+		--filters "Name=tag:eks:cluster-name,Values=$(CLUSTER)" \
+			"Name=instance-state-name,Values=running,pending" \
+		--query 'length(Reservations[].Instances[])' --output text 2>/dev/null); \
+		if [ "$$n" = "0" ]; then echo "  EC2             : khong con"; \
+		else echo "  EC2             : VAN CON $$n instance"; fi
+
+# For when the loop is happening right now and the billing has to stop before anyone
+# works out why. Scaling to zero is the fix; terminating the instances is not, because
+# that is precisely the thing the ASG undoes.
+kill-nodes: ## Phanh khan cap: ha moi node group ve 0 ngay, khong destroy
+	@$(MAKE) --no-print-directory nodes-zero
+	@$(MAKE) --no-print-directory teardown-check
 
 # Scaling goes through the AWS API, not Terraform.
 #
@@ -712,8 +771,19 @@ runner-image: ## Build and push the bench runner to ECR
 	echo "RUNNER_IMAGE=$$reg/vllm-bench/bench-runner:$$tag"
 
 
-kubeconfig: ## Point kubectl at the cluster
+kubeconfig: ## Point kubectl at the cluster and apply the default StorageClass
 	aws eks update-kubeconfig --region $(REGION) --name $(CLUSTER)
+# The gp3 StorageClass used to be a Terraform resource. It was the only Kubernetes object
+# in the cluster state, and it pulled cluster reachability into every destroy -- see the
+# header of k8s/storage/gp3.yaml for what that cost. It lives here now, applied with the
+# AWS-authenticated kubectl this target just configured.
+	kubectl apply -f k8s/storage/gp3.yaml
+# EKS ships gp2 as default. Two defaults at once makes provisioning ambiguous, so stand
+# the old one down rather than leaving both claiming the role.
+	-@kubectl patch storageclass gp2 -p \
+		'{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' \
+		2>/dev/null || true
+	@echo "StorageClass gp3 la default; gp2 da bo danh hieu default."
 
 hooks: ## Install the git pre-commit hooks
 	pre-commit install --install-hooks
