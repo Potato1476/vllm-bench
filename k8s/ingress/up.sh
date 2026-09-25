@@ -24,6 +24,22 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 IP=$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')
 [ -n "$IP" ] || { echo "khong xac dinh duoc IP cong khai"; exit 1; }
 
+# macOS, Windows and most modern Linux clients use IPv6 privacy addresses: the lower
+# 64 bits rotate periodically so an allow-list containing the observed /128 works today
+# and returns 403 tomorrow.  Keep the ISP-assigned /64 instead.  It admits the devices on
+# this one subscriber network, not the provider's wider address pool.  IPv4 remains /32.
+#
+# The public EC2 node itself is IPv4-only.  This IPv6 prefix belongs only in NGINX's
+# source-address allow-list; the EC2 security-group rule below therefore remains IPv4.
+IPV6=$(curl -6 -s --max-time 10 https://api64.ipify.org 2>/dev/null \
+       | tr -d '[:space:]' || true)
+IPV6_CIDR=""
+if [ -n "$IPV6" ]; then
+  IPV6_CIDR=$(python3 -c \
+    'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1] + "/64", strict=False))' \
+    "$IPV6" 2>/dev/null || true)
+fi
+
 # Everyone who is allowed in, as an explicit list. The security group drops everything
 # else before it reaches the node's OS, so this -- not the basic-auth password -- is the
 # lock that matters.
@@ -45,16 +61,18 @@ IP=$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')
 #     finds it gets a login form.
 #   - LiteLLM and vLLM are the expensive endpoints: an open OpenAI-compatible API is
 #     found by scanners within hours and every request is GPU time billed to this
-#     project. Both stay pinned to CLIENT_CIDR even when PUBLIC=1.
+#     project. Both stay pinned to CLIENT_CIDRS even when PUBLIC=1.
 CLIENT_CIDR="$IP/32"
+CLIENT_CIDRS="$CLIENT_CIDR"
+[ -n "$IPV6_CIDR" ] && CLIENT_CIDRS="$CLIENT_CIDRS,$IPV6_CIDR"
 if [ "${PUBLIC:-0}" = "1" ]; then
   RANGES="0.0.0.0/0"
   say "MO CONG KHAI: bat ky ai cung ket noi duoc toi cong $PORT"
   echo "  Grafana       -- co trang dang nhap rieng"
   echo "  Prometheus    -- basic auth (mat khau di qua mang dang cleartext tren HTTP)"
   echo "  Alertmanager  -- basic auth"
-  echo "  LiteLLM       -- VAN khoa ve $CLIENT_CIDR + Bearer key"
-  echo "  vLLM          -- VAN khoa ve $CLIENT_CIDR o tang nginx, khong theo cong khai"
+  echo "  LiteLLM       -- VAN khoa ve $CLIENT_CIDRS + Bearer key"
+  echo "  vLLM          -- VAN khoa ve $CLIENT_CIDRS o tang nginx, khong theo cong khai"
 else
   RANGES="$CLIENT_CIDR"
   [ -n "${EXTRA_CIDRS:-}" ] && RANGES="$RANGES,$EXTRA_CIDRS"
@@ -143,7 +161,7 @@ for cidr in "${CIDRS[@]}"; do
 done
 
 # --- ingresses -------------------------------------------------------------------
-sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CLIENT%%|$CLIENT_CIDR|g" "$TPL" > "$OUT"
+sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CLIENT%%|$CLIENT_CIDRS|g" "$TPL" > "$OUT"
 kubectl apply -f "$OUT" >/dev/null
 say "da tao Ingress"
 
@@ -165,8 +183,8 @@ cat <<EOF
     $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab vllm.da51.lab
 
   Ai vao duoc: $RANGES
-  LiteLLM: chi $CLIENT_CIDR + Bearer key (xem bang 'make creds')
-  vLLM rieng: chi $CLIENT_CIDR (khoa o tang nginx)
+  LiteLLM: chi $CLIENT_CIDRS + Bearer key (xem bang 'make creds')
+  vLLM rieng: chi $CLIENT_CIDRS (khoa o tang nginx)
 
   Dia chi nay thuoc ve node. No doi khi node bi thay -- tuc la sau moi lan lab-up,
   va sau 'make gpu n=0' neu controller dang o node gpu. Chay 'make ingress-url' de xem lai.

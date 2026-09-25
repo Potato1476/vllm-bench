@@ -1,5 +1,7 @@
 # GENERATED FROM A TEMPLATE -- edit ingress.tpl.yaml, never the rendered copy.
-# `make ingress-up` substitutes %%IP%% with the NLB's address.
+# `make ingress-up` substitutes %%IP%% with the node address and %%CLIENT%% with the
+# caller's IPv4 /32 plus its IPv6 /64 when available.  The /64 survives IPv6 privacy
+# address rotation; using the observed /128 makes Postman start returning 403 later.
 #
 # Routing is by HOSTNAME, not by path, and that is a deliberate trade. Path routing
 # (/grafana, /prometheus) would have meant reconfiguring every backend to know it lives

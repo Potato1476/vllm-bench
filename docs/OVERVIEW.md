@@ -427,6 +427,8 @@ Sau `lab-down` là **0 USD/giờ**. Một ngày làm việc ~7 giờ tốn kho�
 Muốn xem dashboard: `make ingress-up` rồi `make ingress-url`. Mật khẩu: `make creds`.
 Ingress mở cổng 30080 chỉ cho IP của người chạy lệnh; thêm người khác bằng
 `make ingress-up EXTRA_CIDRS=<ip>/32`.
+LiteLLM và vLLM tự cho phép thêm IPv6 `/64` của máy chạy lệnh, nếu có, để địa chỉ privacy
+của Postman/browser đổi phần cuối mà không gây 403. IPv4 vẫn bị ghim đúng một `/32`.
 
 ---
 
