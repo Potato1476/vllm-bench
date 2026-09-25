@@ -72,8 +72,12 @@ RESPONSE=$(curl -sS -D "$HEADERS" --max-time 300 \
   --data-binary "$BODY")
 
 STATUS=$(awk 'NR==1{print $2}' "$HEADERS")
-# Header names are case-insensitive and pass through two proxies on the way back.
-TRACE=$(grep -i '^x-trace-id:' "$HEADERS" | tail -1 | tr -d '\r' | awk '{print $2}')
+# Both spellings, because LiteLLM does not pass upstream headers through untouched: it
+# re-emits them with an `llm_provider-` prefix. Matching only `x-trace-id` finds the id
+# when talking to the guardrail directly and silently finds nothing through the gateway,
+# which is the path everybody actually uses.
+TRACE=$(grep -iE '^(llm_provider-)?x-trace-id:' "$HEADERS" \
+        | tail -1 | tr -d '\r' | awk '{print $2}')
 
 say "HTTP $STATUS"
 python3 - "$RESPONSE" <<'PY'

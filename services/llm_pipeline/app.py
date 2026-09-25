@@ -82,6 +82,37 @@ _chunks_by_id = {chunk.chunk_id: chunk for chunk in _chunks}
 _index = bm25.build([(chunk.chunk_id, chunk.text) for chunk in _chunks])
 
 
+class _ResilientDense:
+    """Makes "an embedder that is down costs quality, not the request" actually true.
+
+    The startup path already degraded correctly: no index or no endpoint and the service
+    comes up lexical. The REQUEST path did not, and the difference was invisible until an
+    embeddings pod crash-looped under load. urllib raises URLError, it propagates out of
+    pipeline.prepare, and the handler that catches URLError in do_POST is the one written
+    for a failing vLLM -- so every request returned HTTP 504 "vLLM request failed:
+    Connection refused" while vLLM was healthy and answering in 20ms.
+
+    Two failures there, and the misattribution was the worse one: it pointed diagnosis at
+    the GPU, which is the expensive thing to go looking at.
+
+    rag.retrieve.hybrid fuses the rankings it is given with RRF, and an empty ranking
+    contributes nothing to the fusion -- so returning [] here yields exactly the lexical
+    order the service would have produced with dense switched off. The degradation is
+    silent by construction, which is why it is counted.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    def rank(self, query: str, k: int) -> list[tuple[str, float]]:
+        try:
+            return self.inner.rank(query, k)
+        except Exception as exc:  # noqa: BLE001 -- any embedder fault degrades, none fails
+            _telemetry.inc("guardrail_dense_failures_total",
+                           {"reason": type(exc).__name__})
+            return []
+
+
 def _load_dense() -> Any:
     """Build the dense ranker, or return None and say why on stdout.
 
@@ -101,9 +132,9 @@ def _load_dense() -> Any:
         # DenseIndex.load refuses vectors built by a different model. Letting that through
         # would not raise anything later -- search would return ten confident, wrong
         # neighbours -- so the check belongs at startup, where it is visible.
-        ranker = dense_mod.DenseRankerAdapter(
+        ranker = _ResilientDense(dense_mod.DenseRankerAdapter(
             index, dense_mod.HttpBackend(DENSE_ENDPOINT, timeout=DENSE_TIMEOUT)
-        )
+        ))
         print(f"dense retrieval on: {len(index.ids)} vectors, endpoint {DENSE_ENDPOINT}",
               flush=True)
         return ranker
@@ -205,6 +236,10 @@ class Metrics:
         "guardrail_injection_detections_total": (
             "Prompt-injection detections by source and action.",
             ("source", "action"),
+        ),
+        "guardrail_dense_failures_total": (
+            "Dense-retrieval calls that failed and silently degraded to lexical.",
+            ("reason",),
         ),
         "guardrail_documents_dropped_total": (
             "Retrieved documents excluded from the prompt by reason.",

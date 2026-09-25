@@ -20,7 +20,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 
 .DEFAULT_GOAL := help
 .PHONY: help init fmt validate lint plan kubeconfig hooks \
-	core-plan core-up core-down data-plan data-up lab-up lab-down gpu gpu-l40s cost fix-cidr \
+	core-plan core-up core-down data-plan data-up data-down agent-keys lab-up lab-down gpu gpu-l40s cost fix-cidr \
 	vllm-up vllm-diff vllm-down smoke \
 	guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
@@ -58,7 +58,22 @@ core-down: ## Destroy the long-lived tier. Week 6 only -- this deletes the artif
 data-plan: ## Show pending Aurora changes (stateful tier)
 	$(TFD) plan
 
-data-up: ## Create/update the persistent Aurora PostgreSQL writer + reader
+data-down: ## Destroy the Aurora tier. Runs inside lab-down; virtual keys go with it.
+# docs/litellm-aurora-implementation.md says there is deliberately no data-down, because
+# Aurora holds LiteLLM state and must be protected from an accidental delete. That was the
+# right call for a database meant to outlive the cluster. It is the wrong call here, and
+# the difference is arithmetic: Aurora bills by the hour with no scale-to-zero, so left
+# running it costs ~37 USD over the three weeks left against 182 USD of remaining budget.
+# Session-scoped it costs about 5.
+#
+# What makes that trade safe is bench/scripts/provision_keys.py: the only state worth
+# keeping is seven virtual keys, and they are regenerated from bench/agents.json in one
+# command. If keys ever need to be stable -- a real pilot with DA clients configured
+# against them -- set deletion_protection back to true in terraform/data/terraform.tfvars,
+# drop this from lab-down, and pay the 37 USD.
+	$(TFD) destroy -var-file=terraform.tfvars
+
+data-up: ## Create/update Aurora PostgreSQL (session-scoped; see terraform/data/terraform.tfvars)
 	$(TFD) apply
 	@echo
 	@echo "Aurora is ready. Its password is managed by RDS in Secrets Manager."
@@ -107,6 +122,11 @@ lab-down: ## End a session: snapshot metrics, release volumes, destroy the clust
 	@echo "scaling every node group to zero BEFORE destroy..."
 	-@$(MAKE) --no-print-directory nodes-zero
 	$(TF) destroy -var cluster_name=$(CLUSTER)
+# After the cluster, not before: LiteLLM holds connections to Aurora, and tearing the
+# database out from under a running gateway produces a crash loop rather than a clean
+# stop. Nothing reads the database once the cluster is gone.
+	@echo; echo "destroying the session-scoped Aurora tier..."
+	-@$(MAKE) --no-print-directory data-down
 	@echo; echo "checking for volumes that outlived the cluster:"
 	-@$(MAKE) --no-print-directory orphans
 	-@$(MAKE) --no-print-directory teardown-check
@@ -406,12 +426,18 @@ litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL ov
 			db="postgresql://$$user_uri:$$pass_uri@$$endpoint:$$port/$$name?sslmode=require"; \
 		fi; \
 	fi; \
-	[ -n "$$db" ] || { \
-		echo "DATABASE_URL unavailable -- run 'make data-up' or export DATABASE_URL"; exit 1; \
-	}; \
+	if [ -z "$$db" ] && [ -z "$(ALLOW_NO_DB)" ]; then \
+		echo "DATABASE_URL unavailable -- run 'make data-up' or export DATABASE_URL,"; \
+		echo "or run without one:  make litellm-up ALLOW_NO_DB=1"; \
+		echo "Without a database LiteLLM still routes, authenticates with the master key"; \
+		echo "and exports Prometheus metrics. What is lost: virtual keys, per-agent"; \
+		echo "budgets and spend accounting -- so no per-agent labels either."; \
+		exit 1; \
+	fi; \
 	set -- --from-literal=LITELLM_MASTER_KEY="$$master" \
 		--from-literal=LITELLM_SALT_KEY="$$salt"; \
-	set -- "$$@" --from-literal=DATABASE_URL="$$db"; \
+	if [ -n "$$db" ]; then set -- "$$@" --from-literal=DATABASE_URL="$$db"; \
+	else echo "  chay KHONG co database: mat virtual key, budget va spend tracking"; fi; \
 	kubectl -n llm-serving create secret generic litellm-secrets "$$@" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@echo "LiteLLM secret is ready (existing master/salt keys were preserved)."
@@ -430,6 +456,33 @@ litellm-diff: ## Render LiteLLM without applying it. MODE=shared|solo-a|solo-b
 litellm-down: ## Remove LiteLLM and its in-cluster secrets
 	-helm uninstall litellm -n llm-serving
 	-kubectl delete namespace llm-serving --ignore-not-found
+
+agent-keys: ## Create/refresh one virtual key per agent in bench/agents.json
+# The price of a session-scoped Aurora, and the reason that trade is affordable: the keys
+# die with the database every evening and come back from one file in one command.
+#
+# This is also what the per-agent acceptance criterion actually depends on. LiteLLM
+# v1.90.2 does not fill `end_user` from the OpenAI `user` field -- measured on this
+# deployment -- so no amount of dashboard work produces a per-agent breakdown until the
+# requests arrive under a virtual key.
+	@set -e; \
+	base=$${LITELLM_URL:-}; \
+	if [ -z "$$base" ]; then \
+		if curl -fsS --max-time 2 http://127.0.0.1:4000/health/readiness >/dev/null 2>&1; then \
+			base=http://127.0.0.1:4000; \
+		else \
+			ip=$$(kubectl -n monitoring get ingress grafana \
+				-o jsonpath='{.spec.rules[0].host}' 2>/dev/null \
+				| sed 's/^grafana\.//; s/\.nip\.io$$//'); \
+			[ -n "$$ip" ] || { echo "khong tim thay LiteLLM -- 'make pf' hoac 'make ingress-up'"; exit 1; }; \
+			base=http://llm.$$ip.nip.io:30080; \
+		fi; \
+	fi; \
+	key=$$(kubectl -n llm-serving get secret litellm-secrets \
+		-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d); \
+	[ -n "$$key" ] || { echo "khong doc duoc master key"; exit 1; }; \
+	PYTHONPATH=. python3 bench/scripts/provision_keys.py \
+		--base-url "$$base" --master-key "$$key" $(if $(DRY_RUN),--dry-run,)
 
 litellm-smoke: ## Verify auth, model routing, completion and streaming via LiteLLM
 	@MODEL=$(if $(filter solo-b,$(MODE)),qwen2.5-1.5b,qwen2.5-7b) \

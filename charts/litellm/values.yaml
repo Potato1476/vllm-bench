@@ -45,9 +45,22 @@ service:
 resources:
   requests:
     cpu: 250m
-    memory: 512Mi
+    memory: 768Mi
   limits:
-    memory: 1Gi
+    # 2Gi, and the 1Gi it replaces is a regression that came back because the first fix
+    # never made it into git.
+    #
+    # LiteLLM v1.90.2 is OOMKilled at 1Gi before it finishes starting: exit 137 within six
+    # seconds, the startup probe never gets a connection, and the pod sits in
+    # CrashLoopBackOff looking like a configuration fault rather than a memory one. The
+    # proxy loads its router, the Prometheus callback and the OTEL exporter before it
+    # binds the port, and that peak is above a gigabyte on its own.
+    #
+    # This was diagnosed once before and fixed with a --set against a running cluster.
+    # That cluster is destroyed every evening, so the fix died with it and the same six
+    # seconds were spent diagnosing it again. A change that only exists in a live cluster
+    # is not a change; it is a note nobody wrote down.
+    memory: 2Gi
 
 nodeSelector:
   workload: tooling

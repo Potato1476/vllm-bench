@@ -129,7 +129,13 @@ spec:
 
         - record: litellm:postgres_error_ratio:rate5m
           expr: |
-            sum(rate(litellm_postgres_failed_requests_total[5m]))
+            # `or vector(0)`: litellm_postgres_failed_requests_total is a LABELLED
+            # counter, and a Prometheus client only creates a child series the first time
+            # a label set is observed. With no database failures there are no series at
+            # all, the division yields nothing, and the panel reads "No data" -- which on
+            # a healthy system says the opposite of what it means. Zero failures is a
+            # measurement, not an absence of one.
+            (sum(rate(litellm_postgres_failed_requests_total[5m])) or vector(0))
             /
             clamp_min(sum(rate(litellm_postgres_total_requests_total[5m])), 0.001)
 

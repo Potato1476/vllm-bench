@@ -63,16 +63,34 @@ fi
 #     found by scanners within hours and every request is GPU time billed to this
 #     project. Both stay pinned to CLIENT_CIDRS even when PUBLIC=1.
 CLIENT_CIDR="$IP/32"
+# This machine, on both address families. A v6 privacy address rotates on its own
+# schedule, so pinning only the v4 leaves the gateway rejecting the very laptop that
+# published it.
 CLIENT_CIDRS="$CLIENT_CIDR"
 [ -n "$IPV6_CIDR" ] && CLIENT_CIDRS="$CLIENT_CIDRS,$IPV6_CIDR"
+
+# Plus anyone else who may reach the two EXPENSIVE hosts, llm and vllm, at the nginx
+# layer.
+#
+# EXTRA_CIDRS deliberately does not extend to these -- it opens the node port so other
+# people can read dashboards, and an open LLM endpoint is the one exposure that costs
+# money per request. But "only the machine that ran this script" turned out to be too
+# narrow the moment a second person needed to send a request, and the failure is a silent
+# 403 that looks like a broken gateway.
+#
+# A separate variable from EXTRA_CIDRS on purpose: letting somebody read Grafana and
+# letting them spend GPU time are different decisions.
+#   make ingress-up LLM_CIDRS=203.0.113.7/32
+LLM_ALLOW="$CLIENT_CIDRS"
+[ -n "${LLM_CIDRS:-}" ] && LLM_ALLOW="$LLM_ALLOW,$LLM_CIDRS"
 if [ "${PUBLIC:-0}" = "1" ]; then
   RANGES="0.0.0.0/0"
   say "MO CONG KHAI: bat ky ai cung ket noi duoc toi cong $PORT"
   echo "  Grafana       -- co trang dang nhap rieng"
   echo "  Prometheus    -- basic auth (mat khau di qua mang dang cleartext tren HTTP)"
   echo "  Alertmanager  -- basic auth"
-  echo "  LiteLLM       -- VAN khoa ve $CLIENT_CIDRS + Bearer key"
-  echo "  vLLM          -- VAN khoa ve $CLIENT_CIDRS o tang nginx, khong theo cong khai"
+  echo "  LiteLLM       -- VAN khoa ve $LLM_ALLOW + Bearer key"
+  echo "  vLLM          -- VAN khoa ve $LLM_ALLOW o tang nginx, khong theo cong khai"
 else
   RANGES="$CLIENT_CIDR"
   [ -n "${EXTRA_CIDRS:-}" ] && RANGES="$RANGES,$EXTRA_CIDRS"
@@ -161,7 +179,7 @@ for cidr in "${CIDRS[@]}"; do
 done
 
 # --- ingresses -------------------------------------------------------------------
-sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CLIENT%%|$CLIENT_CIDRS|g" "$TPL" > "$OUT"
+sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CLIENT%%|$LLM_ALLOW|g" "$TPL" > "$OUT"
 kubectl apply -f "$OUT" >/dev/null
 say "da tao Ingress"
 
@@ -183,8 +201,8 @@ cat <<EOF
     $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab vllm.da51.lab
 
   Ai vao duoc: $RANGES
-  LiteLLM: chi $CLIENT_CIDRS + Bearer key (xem bang 'make creds')
-  vLLM rieng: chi $CLIENT_CIDRS (khoa o tang nginx)
+  LiteLLM: chi $LLM_ALLOW + Bearer key (xem bang 'make creds')
+  vLLM rieng: chi $LLM_ALLOW (khoa o tang nginx)
 
   Dia chi nay thuoc ve node. No doi khi node bi thay -- tuc la sau moi lan lab-up,
   va sau 'make gpu n=0' neu controller dang o node gpu. Chay 'make ingress-url' de xem lai.

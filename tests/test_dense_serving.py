@@ -129,5 +129,72 @@ class DenseServingTest(unittest.TestCase):
         self.assertNotEqual(fused, [c.chunk_id for c in lexical.context])
 
 
+class EmbedderFailureTest(unittest.TestCase):
+    """The invariant the module docstring claims, asserted rather than asserted-in-prose.
+
+    It was violated in production before it was tested: an embeddings pod crash-looped,
+    urllib raised URLError inside retrieval, the handler written for a failing vLLM caught
+    it, and every request came back 504 "vLLM request failed: Connection refused" while
+    vLLM was healthy. The misattribution was worse than the outage -- it pointed at the
+    GPU, which is the expensive place to go looking.
+    """
+
+    class _Broken:
+        def __init__(self, exc: Exception) -> None:
+            self.exc = exc
+            self.calls = 0
+
+        def rank(self, query: str, k: int):
+            self.calls += 1
+            raise self.exc
+
+    def test_an_embedder_fault_degrades_to_lexical_instead_of_raising(self) -> None:
+        import urllib.error
+
+        for exc in (urllib.error.URLError("Connection refused"),
+                    TimeoutError("read timed out"),
+                    ValueError("garbage from the embedder")):
+            broken = self._Broken(exc)
+            with self.subTest(exc=type(exc).__name__):
+                self.assertEqual(app._ResilientDense(broken).rank("q", 5), [])
+                self.assertEqual(broken.calls, 1)
+
+    def test_the_failure_is_counted_so_the_degradation_is_not_silent(self) -> None:
+        import urllib.error
+
+        before = app._telemetry.counters.copy()
+        app._ResilientDense(self._Broken(urllib.error.URLError("x"))).rank("q", 5)
+        added = [k for k in app._telemetry.counters if k not in before
+                 or app._telemetry.counters[k] != before.get(k)]
+        self.assertTrue(
+            any(name == "guardrail_dense_failures_total" for name, _ in added),
+            "a silent fallback to lexical has to leave a trace somewhere",
+        )
+
+    @unittest.skipUnless(INDEX.with_suffix(".npy").exists(), "dense index absent")
+    def test_retrieval_still_answers_when_the_embedder_is_down(self) -> None:
+        """End to end: a broken embedder must cost ranking quality, not the request."""
+        from guardrails import pipeline
+        from prompt.build import Session
+        from rag import policy
+        import urllib.error
+
+        question = "Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?"
+        session = Session(agent="t", access_level="internal-demo")
+        kwargs = dict(policy=policy.Policy(access_level="internal-demo"))
+
+        broken = app._ResilientDense(self._Broken(urllib.error.URLError("refused")))
+        degraded = pipeline.prepare(question, app._index, app._chunks_by_id,
+                                    session, dense=broken, **kwargs)
+        lexical = pipeline.prepare(question, app._index, app._chunks_by_id,
+                                   session, **kwargs)
+
+        self.assertTrue(degraded.ok, "a dead embedder must not refuse the request")
+        # And it degrades to exactly lexical -- an empty ranking contributes nothing to
+        # the RRF fusion, so the order is the one dense-off would have produced.
+        self.assertEqual([c.chunk_id for c in degraded.context],
+                         [c.chunk_id for c in lexical.context])
+
+
 if __name__ == "__main__":
     unittest.main()

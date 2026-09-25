@@ -20,6 +20,25 @@ data:
       {{- end }}
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
+      # THE LINE THAT MAKES PER-AGENT ATTRIBUTION WORK AT ALL.
+      #
+      # end_user is the dimension the per-agent dashboard groups by, and nothing else
+      # populates it. Read from litellm_pre_call_utils.py in v1.90.2:
+      #
+      #     user = get_user_from_headers(_headers, general_settings)
+      #     if user is not None:
+      #         if user_api_key_dict.end_user_id is None:
+      #             user_api_key_dict.end_user_id = user
+      #
+      # and get_user_from_headers returns None immediately unless user_header_name is
+      # set here. So the label comes from an HTTP HEADER, not from the OpenAI `user`
+      # field in the body -- sending {"user": "moc-analytics"} labels nothing, which is
+      # what measuring it on this deployment showed: end_user="None" on every series.
+      #
+      # A virtual key is still required (it is what makes the request attributable at
+      # all), but it is not sufficient. Both halves are needed, and they fail
+      # independently and silently.
+      user_header_name: X-Agent-Id
     litellm_settings:
       drop_params: true
       # Load-bearing for tracing, not only for logs. LiteLLM's OTEL callback otherwise

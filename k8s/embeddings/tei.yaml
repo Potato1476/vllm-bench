@@ -75,9 +75,19 @@ spec:
             # error at all. Changing this means rebuilding the index.
             - --model-id=AITeamVN/Vietnamese_Embedding
             - --port=8080
-            # One query per request; batching beyond this buys nothing and costs latency.
+            # One query per request, and a MOC question is tens of tokens. TEI allocates
+            # for the largest batch it is told to expect during warm-up, so the 8192 this
+            # replaces was not a throughput setting -- it was a request for gigabytes of
+            # activation memory that nothing here would ever use. It OOMKilled at a 4Gi
+            # limit before serving anything, eleven seconds into warm-up.
             - --max-concurrent-requests=64
-            - --max-batch-tokens=8192
+            - --max-batch-tokens=1024
+            # Required with a batch smaller than the model's max_input_length, which for
+            # BGE-M3 is 8192: TEI refuses to start otherwise rather than silently
+            # accepting inputs it cannot fit. Truncating is the right call here -- what
+            # gets embedded is one canonicalised MOC question, tens of tokens, and a query
+            # that somehow reached 1024 would be a bug upstream, not a document.
+            - --auto-truncate
           ports:
             - {name: http, containerPort: 8080}
           env:
@@ -102,7 +112,11 @@ spec:
             limits:
               # No CPU limit: throttling here shows up as retrieval latency on every
               # request, and the node has headroom when the GPU node carries the engines.
-              memory: 4Gi
+              #
+              # 6Gi with the smaller batch above. BGE-M3 is 568M parameters and the ONNX
+              # runtime holds weights plus warm-up activations at once; 4Gi was not enough
+              # for either, and raising the limit alone would have bought a slower crash.
+              memory: 6Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

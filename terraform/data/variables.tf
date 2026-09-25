@@ -72,3 +72,15 @@ variable "skip_final_snapshot" {
   type        = bool
   default     = false
 }
+
+variable "delete_automated_backups" {
+  description = "Delete automated backups when the cluster is destroyed. true for a session-scoped lab."
+  type        = bool
+  default     = true
+}
+
+variable "enable_cloudwatch_logs" {
+  description = "Export PostgreSQL logs to CloudWatch. false for a session-scoped lab: the log group outlives the database."
+  type        = bool
+  default     = false
+}

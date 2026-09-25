@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "The MOC copilot agents the platform serves, and the single source of truth for",
+    "provisioning their LiteLLM virtual keys.",
+    "",
+    "WHY THIS FILE EXISTS AT ALL",
+    "Aurora is created and destroyed with the cluster, so the virtual keys do not survive",
+    "the evening. That trade is only acceptable because recreating them is one command",
+    "reading one file -- bench/scripts/provision_keys.py -- rather than an afternoon of",
+    "reissuing credentials by hand. Without this list, session-scoped Aurora would be a",
+    "false economy.",
+    "",
+    "THE NAMES ARE PLACEHOLDERS AND SHOULD BE CONFIRMED",
+    "The brief says 'at least 7 MOC agents' and deliberately does not name them. These",
+    "seven are derived from the document categories that actually exist in the retrieval",
+    "corpus -- metric-catalog, data-dictionary, analysis-playbook, data-governance,",
+    "service-catalog, knowledge-base, daily-operations -- so each has real material to",
+    "answer from rather than being invented wholesale. Ask the mentor for the real roster",
+    "before quoting per-agent numbers in the report.",
+    "",
+    "ACCESS LEVEL IS NOT YET ENFORCED PER AGENT. The guardrail pins access_level to the",
+    "deployment default and never reads it from the request, because reading it from a",
+    "client-supplied field is privilege escalation. Mapping an authenticated virtual key to",
+    "the level below is the work docs/litellm-aurora-implementation.md calls out as still",
+    "needed before production. The values here describe the intent, not current behaviour.",
+    "",
+    "budget_usd is a monthly ceiling per agent. They sum to less than the project budget on",
+    "purpose: one agent looping must not be able to spend everything."
+  ],
+  "agents": [
+    {
+      "id": "moc-analytics",
+      "description": "Metric definitions and how KPIs are calculated",
+      "corpus_focus": "metric-catalog",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-7b", "qwen2.5-1.5b"]
+    },
+    {
+      "id": "moc-datadict",
+      "description": "Table and field lookups against the data dictionary",
+      "corpus_focus": "data-dictionary",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-1.5b"]
+    },
+    {
+      "id": "moc-playbook",
+      "description": "Investigation procedures when a KPI moves",
+      "corpus_focus": "analysis-playbook",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-7b"]
+    },
+    {
+      "id": "moc-governance",
+      "description": "Data governance, retention and access questions",
+      "corpus_focus": "data-governance",
+      "access_level": "internal-demo",
+      "budget_usd": 5,
+      "models": ["qwen2.5-7b"]
+    },
+    {
+      "id": "moc-service",
+      "description": "Service catalogue and ownership lookups",
+      "corpus_focus": "service-catalog",
+      "access_level": "internal-demo",
+      "budget_usd": 5,
+      "models": ["qwen2.5-1.5b"]
+    },
+    {
+      "id": "moc-kb",
+      "description": "General internal knowledge base",
+      "corpus_focus": "knowledge-base",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-7b", "qwen2.5-1.5b"]
+    },
+    {
+      "id": "moc-daily",
+      "description": "Daily operations reports, the bulk of the corpus",
+      "corpus_focus": "daily-operations",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-1.5b"]
+    }
+  ]
+}
