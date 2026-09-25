@@ -485,9 +485,19 @@ def _call_vllm(
 
 def _answer(response: dict[str, Any]) -> str:
     try:
-        content = response["choices"][0]["message"]["content"]
+        message = response["choices"][0]["message"]
+        content = message["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("vLLM response has no assistant content") from exc
+    # A tool call is a well-formed response with content of null, and reporting that as
+    # "empty content" sends whoever passed `tools=[...]` looking for a bug in the engine.
+    # The grounding and PII checks operate on prose; there is nothing for them to read in
+    # a function call, so this platform does not serve one. Say which it is.
+    if message.get("tool_calls"):
+        raise ValueError(
+            "function calling is not supported: the output guardrails check prose for "
+            "citations and PII, and a tool call carries neither"
+        )
     if not isinstance(content, str) or not content.strip():
         raise ValueError("vLLM returned empty assistant content")
     return content
@@ -780,6 +790,38 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "invalid_request",
                     f"model is not routed by guardrail: {model}",
+                )
+                return
+
+            # n > 1 IS A GUARDRAIL BYPASS, not merely an unsupported option.
+            #
+            # pipeline.finalise validates one answer, and the response assembly below
+            # rewrites choices[0]. Everything vLLM puts in choices[1:] is forwarded to the
+            # caller exactly as the model produced it -- never grounded, never scanned for
+            # PII. Measured, not theorised: with n=2 and a planted identity number, the
+            # number reached the client through the second choice while the first was
+            # checked normally.
+            #
+            # Refusing is the right fix rather than validating every choice. The pipeline
+            # is built around a single answer with a single set of citations, and a
+            # request that wants alternatives wants something this platform does not
+            # offer. An explicit 400 is a smaller surprise than silently returning one.
+            if int(payload.get("n") or 1) > 1:
+                terminal_stage = "request"
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_request",
+                    "n > 1 is not supported: only the first choice can be guardrailed, "
+                    "and returning unchecked alternatives would defeat the output checks",
+                )
+                return
+            # Same reasoning, different field: vLLM's best_of generates n candidates and
+            # returns one, which is safe, but any value above 1 combined with n>1 is not.
+            if int(payload.get("best_of") or 1) > 1 and payload.get("n") is not None:
+                terminal_stage = "request"
+                self._error(
+                    HTTPStatus.BAD_REQUEST, "invalid_request",
+                    "best_of with an explicit n is not supported",
                 )
                 return
 

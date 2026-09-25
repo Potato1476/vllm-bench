@@ -18,6 +18,8 @@ class _FakeVllm(BaseHTTPRequestHandler):
     # engine, rather than only checking that the guardrail meant to send it.
     last_traceparent: str | None = None
     last_max_tokens: int | None = None
+    # Set by tests that need the engine to answer in a shape the guardrail must refuse.
+    mode = "normal"
 
     def do_POST(self) -> None:  # noqa: N802
         type(self).calls += 1
@@ -28,6 +30,24 @@ class _FakeVllm(BaseHTTPRequestHandler):
         assert payload["cache_salt"]
         assert payload["messages"][0]["role"] == "system"
         type(self).last_max_tokens = payload.get("max_tokens")
+        if type(self).mode == "tool_call":
+            # A well-formed tool call: content is null and tool_calls carries the payload.
+            message: dict = {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}]}
+            body = json.dumps({
+                "id": "chatcmpl-test", "object": "chat.completion", "created": 1,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = json.dumps({
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -207,6 +227,43 @@ class GuardrailServiceTest(unittest.TestCase):
                 return exc.code, json.loads(exc.read())
             finally:
                 exc.close()
+
+    def test_more_than_one_choice_is_refused_because_only_one_is_checked(self) -> None:
+        """A guardrail bypass, found by pointing the OpenAI SDK at this service.
+
+        pipeline.finalise validates one answer and the response assembly rewrites
+        choices[0]. Anything vLLM returns in choices[1:] would reach the caller exactly as
+        generated -- ungrounded and unscanned. With n=2 and a planted identity number, the
+        number came back through the second choice.
+        """
+        before = _FakeVllm.calls
+        status, body = self._post_raw({
+            "model": "qwen2.5-7b",
+            "messages": [{"role": "user", "content": "Chuyến hoàn thành là gì?"}],
+            "n": 2,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "invalid_request")
+        self.assertIn("n > 1", body["error"]["message"])
+        # Refused before the engine is asked, so it costs no GPU time either.
+        self.assertEqual(_FakeVllm.calls, before)
+
+    def test_a_tool_call_is_refused_by_name_not_as_empty_content(self) -> None:
+        # The check that catches it is a truthiness test on content, so the honest-looking
+        # message was "empty assistant content" -- which sends whoever passed tools=[...]
+        # hunting for a bug in the engine.
+        _FakeVllm.mode = "tool_call"
+        try:
+            status, body = self._post_raw({
+                "model": "qwen2.5-7b",
+                "messages": [{"role": "user", "content": "Chuyến hoàn thành là gì?"}],
+                "tools": [{"type": "function",
+                           "function": {"name": "f", "parameters": {"type": "object"}}}],
+            })
+        finally:
+            _FakeVllm.mode = "normal"
+        self.assertEqual(status, 400)
+        self.assertIn("function calling", body["error"]["message"])
 
     def test_stream_is_emitted_after_the_safe_answer_is_complete(self) -> None:
         request = urllib.request.Request(

@@ -122,6 +122,34 @@ về hỏng hóc chỉ xuất hiện sau nhiều tuần chạy liên tục — r
 node. Dự án **đã từng bị** LiteLLM OOMKill ở giới hạn 1Gi. Những thứ đó phải đo riêng, và
 đo được bằng cách ngoại suy tốc độ tăng RSS chứ không cần chờ nó xảy ra.
 
+### 1c. API tương thích OpenAI — tới mức nào
+
+Có. Đã kiểm bằng **chính SDK `openai` 3.19.2** trỏ thẳng vào dịch vụ, không phải bằng curl.
+
+| | |
+|---|---|
+| `GET /v1/models` | ✅ |
+| `POST /v1/chat/completions` | ✅ |
+| `stream=True` (SSE) | ✅ — nhưng xem cảnh báo dưới |
+| `usage` (đếm token) | ✅ |
+| Lỗi ánh xạ đúng kiểu ngoại lệ SDK | ✅ `BadRequestError`, `NotFoundError` |
+| `POST /v1/completions` (legacy) | ❌ 404 |
+| `POST /v1/embeddings` | ❌ 404 — nay có thể proxy sang TEI |
+| `n > 1` | ❌ **chặn có chủ đích** |
+| Function calling (`tools`) | ❌ chặn, kèm lý do |
+
+**Streaming không phải streaming thật.** Guardrail buộc `stream=False` khi gọi vLLM, chờ
+trọn câu trả lời, chạy kiểm tra đầu ra rồi mới phát SSE. Client thấy đúng định dạng SSE
+nhưng TTFT bằng **toàn bộ thời gian sinh**. Đây là đánh đổi cố ý: phát token thật thì không
+thể rút lại PII hay một trích dẫn bịa sau khi đã gửi.
+
+**`n > 1` từng là lỗ hổng bảo mật, không phải thiếu tính năng.** `pipeline.finalise()` kiểm
+một câu trả lời và chỉ ghi đè `choices[0]`; mọi thứ vLLM trả trong `choices[1:]` đi thẳng
+tới client — **không kiểm căn cứ, không quét PII**. Đo được chứ không phải suy đoán: với
+`n=2` và một số CCCD cài sẵn, số đó ra tới client qua lựa chọn thứ hai. Nay chặn ở tầng
+request, trước cả khi gọi GPU. Chọn chặn thay vì kiểm mọi lựa chọn, vì pipeline được xây
+quanh **một** câu trả lời với **một** bộ trích dẫn.
+
 ---
 
 ## 2. Bản đồ repo
