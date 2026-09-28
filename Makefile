@@ -3,6 +3,7 @@
 AWS_PROFILE ?= default
 REGION      ?= us-east-1
 CLUSTER     ?= da51-lab
+NS          ?= llm-serving
 
 # Both the AWS CLI and Terraform AWS provider inherit this profile in every recipe.
 export AWS_PROFILE
@@ -32,10 +33,12 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	dense-env dense-build dense-eval dense-ablation diagrams \
 	ingress-up ingress-down ingress-url creds \
 	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check \
+	load-smoke load-ramp load-slo load-steady load-soak load-agents load-adversarial load-incluster \
+	audit-on audit-off audit-tail audit-dump dashboard-audit \
 	cache-invalidate cache-clear
 
 help: ## Show this help
-	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-z0-9-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 init: ## terraform init on core, data and cluster tiers
@@ -121,7 +124,16 @@ lab-down: ## End a session: snapshot metrics, release volumes, destroy the clust
 	-@$(MAKE) --no-print-directory cleanup-volumes
 	@echo "scaling every node group to zero BEFORE destroy..."
 	-@$(MAKE) --no-print-directory nodes-zero
-	$(TF) destroy -var cluster_name=$(CLUSTER)
+# -auto-approve here, and only here. The repo's rule is that nothing mutating AWS runs
+# unattended, and this target already honours it: five lines above it prints what is lost
+# and refuses to continue without a typed `yes`.
+#
+# Terraform's own prompt is then a second confirmation of one decision, and it is the
+# reason `echo yes | make lab-down` tore down the ingress, released the volumes, scaled
+# the node groups to zero -- and then aborted at "Do you really want to destroy all
+# resources?" with "error asking for approval: EOF". A half-finished teardown that
+# reports failure is worse than either outcome: the cluster is unusable and still billing.
+	$(TF) destroy -auto-approve -var cluster_name=$(CLUSTER)
 # After the cluster, not before: LiteLLM holds connections to Aurora, and tearing the
 # database out from under a running gateway produces a crash loop rather than a clean
 # stop. Nothing reads the database once the cluster is gone.
@@ -544,15 +556,83 @@ dashboards: ## Load observability/dashboards/*.json into Grafana via ConfigMap
 audit-metrics: ## Confirm every metric the rules depend on exists by name
 	./bench/scripts/audit_metrics.sh
 
+dashboard-audit: ## Tim panel/rule KHONG THE co du lieu. Chay CUNG LUC voi tai.
+# Rong vi chua co tai va rong vi metric khong ton tai trong nhu nhau tren dashboard, va
+# can xu ly nguoc nhau. Chay cai nay trong khi 'make load-incluster SCENARIO=ramp' dang
+# chay thi thu nao con rong la rong vinh vien.
+	@PROM="$(or $(PROM),http://127.0.0.1:9090)" PROM_AUTH="$(PROM_AUTH)" \
+		python3 bench/scripts/audit_panels.py
+
 # --- Tracing ----------------------------------------------------------------
 # Metrics say the p95 moved; a trace says which of the ten guardrail stages moved it, on
 # which request. Tempo is read inside Grafana, so this adds no hostname and no password.
 availability: ## Bao cao availability tu ket qua probe. PROBES=<thu muc hoac tep>
 # Doc nhieu phien cung luc: moi phien lam viec la mot mau, va 14 phien phu duoc 14 ngay
 # lich ma mot lan chay lien tuc 2 tuan khong phu duoc -- no chi phu mot lan trien khai.
-	@test -n "$(PROBES)" || { echo "usage: make availability PROBES=runs/probe/"; exit 1; }
+	@test -n "$(PROBES)" || { echo "usage: make availability PROBES=results/probe/"; exit 1; }
 	@PYTHONPATH=. python3 bench/scripts/availability.py $(PROBES) \
 		$(if $(TARGET),--target $(TARGET),) $(if $(ALL_HOURS),--all-hours,)
+
+# --- Load and stress (k6) ----------------------------------------------------
+# `vllm bench serve` measures the ENGINE and routes around the gateway, the guardrail and
+# the cache. These targets measure the PLATFORM, end to end, and emit the probe records
+# `make availability` reads -- which is what makes "p95 at load" and "uptime >= 99.5%"
+# one experiment instead of two. bench/k6/moc.js explains the division in full.
+#
+# Always run load-smoke first. It costs nothing and it is the difference between finding
+# a broken assertion now and finding it forty minutes into a GPU-hour.
+load-smoke: ## k6: 12 request, mot VU -- kiem tra kich ban truoc khi tieu ton GPU
+	@SCENARIO=smoke ./bench/scripts/k6_load.sh
+
+load-ramp: ## k6: tim diem gay. RAMP_LEVELS=1,2,5,10,20,35,50 LEVEL_SECONDS=90
+	@SCENARIO=ramp ./bench/scripts/k6_load.sh
+
+# Tieu chi nghiem thu, nguyen van: p95 < 3s o 50 req/s. Dat/khong dat, khong phai duong
+# cong. Chay qua load-incluster -- port-forward khong the phat 50 req/s.
+load-slo: ## k6: tieu chi de bai -- 50 req/s, p95 < 3s, dat/khong dat. RPS= DURATION=
+	@SCENARIO=slo ./bench/scripts/k6_load.sh
+
+load-steady: ## k6: mot muc tai, du dai de ket luan availability. RPS= DURATION=
+	@SCENARIO=steady ./bench/scripts/k6_load.sh
+
+load-soak: ## k6: tai thap chay dai -- hanh vi cache va troi trong mot phien
+	@SCENARIO=soak ./bench/scripts/k6_load.sh
+
+load-agents: ## k6: bay tenant cung luc, co trong so -- kiem tra quy nhan theo agent
+	@SCENARIO=agents ./bench/scripts/k6_load.sh
+
+load-adversarial: ## k6: 20% luu luong tan cong -- guardrail co giu duoc khi qua tai?
+	@SCENARIO=adversarial ./bench/scripts/k6_load.sh
+
+load-incluster: ## k6: chay tu node tooling. Bat buoc cho tai > vai req/s. SCENARIO=
+	@./bench/scripts/k6_incluster.sh
+
+# --- Audit log (noi dung that: cau hoi, model, cau tra loi) -------------------
+# TAT mac dinh. tracing.py va turn_off_message_logging co tinh khong ghi noi dung --
+# xem docstring cua _audit trong app.py de biet vi sao, va khi nao duoc bat.
+# Qua Helm, khong qua `kubectl set env`. Mot lan sua truc tiep se cuop quyen so huu field
+# khoi Helm, va `make guardrail-up` lan sau that bai voi field-manager conflict -- da xay
+# ra dung nhu vay voi SEMANTIC_CACHE_ENABLED.
+audit-on: ## Bat audit log noi dung (CHI cho corpus gia lap trong lab)
+	@echo "Bat AUDIT_LOG. Chi dung voi corpus gia lap -- KHONG dung voi cau hoi MOC that."
+	@helm upgrade guardrail charts/guardrail -n $(NS) --reuse-values \
+		--set auditLog=true --wait --timeout 5m
+
+audit-off: ## Tat audit log noi dung
+	@helm upgrade guardrail charts/guardrail -n $(NS) --reuse-values \
+		--set auditLog=false --wait --timeout 5m
+
+audit-tail: ## Xem audit log dang chay. N=50 de gioi han
+	@kubectl -n $(NS) logs -f deploy/guardrail -c guardrail --tail=$(or $(N),20) \
+		| grep --line-buffered '"kind": "audit"' \
+		| python3 -c 'import json,sys;\
+[print(f"\n[{r[\"outcome\"]}/{r[\"stage\"]}] {r[\"model\"]}  {r[\"latency_seconds\"]}s  agent={r[\"agent\"]}  cache={r[\"cache_hit\"]}\n  HOI : {r[\"question\"]}\n  DOC : {r[\"documents\"]}\n  TRA : {(r[\"answer\"] or \"\")[:300]}\n  CITE: {r[\"cited\"]}  usage={r[\"usage\"]}") for r in (json.loads(l) for l in sys.stdin)]'
+
+audit-dump: ## Luu audit log ra file. HOURS=1 OUT=results/audit.jsonl
+	@mkdir -p results
+	@kubectl -n $(NS) logs deploy/guardrail -c guardrail --since=$(or $(HOURS),1)h \
+		| grep '"kind": "audit"' > $(or $(OUT),results/audit.jsonl)
+	@echo "$$(wc -l < $(or $(OUT),results/audit.jsonl)) ban ghi -> $(or $(OUT),results/audit.jsonl)"
 
 embeddings-up: ## Install text-embeddings-inference, the query half of hybrid retrieval
 	kubectl apply -f k8s/embeddings/tei.yaml

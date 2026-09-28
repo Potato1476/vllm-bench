@@ -1,0 +1,92 @@
+# k6 as a Job on the tooling node.
+#
+# WHY THE LOAD GENERATOR CANNOT LIVE ON THE LAPTOP ABOVE A FEW REQ/S
+#
+# Two reasons, and both of them corrupt the measurement rather than merely slowing it.
+#
+#   1. `kubectl port-forward` is a single-threaded TCP proxy in one Go process on a
+#      laptop, tunnelled through the API server. At a couple of requests per second it is
+#      invisible; at fifty it is the bottleneck, and the run measures kubectl.
+#   2. Going the other way, through the ingress, puts home broadband RTT and an ISP's
+#      queueing into every sample, and the SLO being tested is stated in 3 seconds
+#      end-to-end.
+#
+# README.md already warns about a related trap -- a generator sharing a machine with the
+# engine steals CPU and inflates TTFT. That is why this lands on the `tooling` node and
+# not on the GPU node. The GPU node is tainted anyway; the nodeSelector here makes the
+# intent explicit rather than incidental.
+#
+# The Job is applied by bench/scripts/k6_incluster.sh, which builds the ConfigMaps it
+# mounts. Probes come back through `kubectl logs`, because a file written inside this pod
+# dies with it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load
+  namespace: llm-serving
+  labels:
+    app: k6-load
+spec:
+  # A load test is not idempotent and must never be silently retried: a second attempt
+  # would append a fresh run's probes to the first one's, under the same session id, and
+  # the availability arithmetic would treat two different system states as one sample.
+  backoffLimit: 0
+  # Cleaned up by the script on the next run rather than by the cluster, so the logs --
+  # which ARE the results -- stay readable until they have been collected.
+  template:
+    metadata:
+      labels:
+        app: k6-load
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        workload: tooling
+      containers:
+        - name: k6
+          # Pinned for the same reason the LiteLLM tag is: a moving tag makes two runs
+          # incomparable, and comparing runs is the entire point.
+          image: grafana/k6:1.4.2
+          workingDir: /work
+          args:
+            - run
+            - --log-format=raw
+            # stdout, not a file: the pod is gone before anyone could read a file, so the
+            # probe stream has to travel out through the log. The collector filters
+            # JSON lines from k6's own messages and the summary.
+            - --log-output=stdout
+            - bench/k6/moc.js
+          envFrom:
+            - configMapRef:
+                name: k6-config
+          env:
+            - name: MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: LITELLM_MASTER_KEY
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+            limits:
+              # Sized for MAX_VUS. k6 holds a few hundred KB per VU, and an open-loop
+              # executor against a saturated backend keeps every VU it has in flight --
+              # which is exactly the state this Job is built to reach. OOMKilling the
+              # generator mid-ramp destroys the run and looks like a platform failure.
+              memory: 2Gi
+          volumeMounts:
+            # subPath for the single files, so mounting agents.json into /work/bench does
+            # not shadow /work/bench/k6. The container mirrors the repo's layout because
+            # k6's open() resolves relative to the script at init time and cannot be
+            # redirected with an environment variable.
+            - { name: script, mountPath: /work/bench/k6/moc.js, subPath: moc.js }
+            - { name: lib, mountPath: /work/bench/k6/lib }
+            - { name: agents, mountPath: /work/bench/agents.json, subPath: agents.json }
+            - { name: attacks, mountPath: /work/bench/datasets/attacks-v1.jsonl, subPath: attacks-v1.jsonl }
+            - { name: gold, mountPath: /work/data/xanhsm_retrieval_mock/eval/retrieval_eval.jsonl, subPath: retrieval_eval.jsonl }
+      volumes:
+        - { name: script, configMap: { name: k6-script } }
+        - { name: lib, configMap: { name: k6-lib } }
+        - { name: agents, configMap: { name: k6-agents } }
+        - { name: attacks, configMap: { name: k6-attacks } }
+        - { name: gold, configMap: { name: k6-gold } }
