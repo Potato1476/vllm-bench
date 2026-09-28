@@ -34,7 +34,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ingress-up ingress-down ingress-url creds \
 	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check \
 	load-smoke load-ramp load-slo load-steady load-soak load-agents load-adversarial load-incluster \
-	audit-on audit-off audit-tail audit-dump dashboard-audit \
+	audit-on audit-off audit-tail audit-dump audit-export pii-verify dashboard-audit \
 	cache-invalidate cache-clear
 
 help: ## Show this help
@@ -627,6 +627,23 @@ audit-tail: ## Xem audit log dang chay. N=50 de gioi han
 		| grep --line-buffered '"kind": "audit"' \
 		| python3 -c 'import json,sys;\
 [print(f"\n[{r[\"outcome\"]}/{r[\"stage\"]}] {r[\"model\"]}  {r[\"latency_seconds\"]}s  agent={r[\"agent\"]}  cache={r[\"cache_hit\"]}\n  HOI : {r[\"question\"]}\n  DOC : {r[\"documents\"]}\n  TRA : {(r[\"answer\"] or \"\")[:300]}\n  CITE: {r[\"cited\"]}  usage={r[\"usage\"]}") for r in (json.loads(l) for l in sys.stdin)]'
+
+audit-export: ## Day audit log len S3 -- song sot khi cum bi xoa. HOURS= LABEL=
+# Cum bi destroy moi toi va moi ban ghi ben trong di theo. `make snapshot` da lam dieu
+# nay cho Prometheus; audit log truoc day khong co gi ca, nen thu duy nhat tra loi duoc
+# "prompt nao, model nao, ket qua ra sao" chi ton tai den luc teardown.
+	@python3 bench/scripts/audit_export.py --hours "$(or $(HOURS),12)" \
+		--label "$(LABEL)" $(if $(LOCAL_ONLY),--local-only,)
+
+pii-verify: ## Chung minh bo che PII CHAY tren he thong that, kem bang chung
+# Bon phep kiem doc lap: gia tri khong ra dau ra, khong vao audit log, co placeholder
+# trong ban ghi, va counter tang. Chi kiem dau ra thoi se cho qua mot he thong che voi
+# model nhung ghi nguyen ban vao dia.
+	@base=$${LITELLM_URL:-http://127.0.0.1:4000}; \
+	key=$$(kubectl -n $(NS) get secret litellm-secrets \
+		-o jsonpath='{.data.LITELLM_MASTER_KEY}' | base64 -d); \
+	python3 bench/scripts/pii_verify.py --base-url "$$base" --key "$$key" \
+		--namespace $(NS) $(if $(MODEL),--model $(MODEL),)
 
 audit-dump: ## Luu audit log ra file. HOURS=1 OUT=results/audit.jsonl
 	@mkdir -p results

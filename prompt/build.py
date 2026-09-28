@@ -144,7 +144,7 @@ _BASE_RULES = (
     # A decode-time regex was tried instead and rejected: it cut less (58 tokens) and
     # corrupted words to satisfy the pattern, emitting `fraud_confired`. Constraining a
     # model that can follow an instruction costs spelling and buys nothing.
-    "Trả lời bằng ĐÚNG MỘT câu, tối đa 40 từ. Tuyệt đối không dùng gạch đầu dòng, "
+    "Trả lời bằng ĐÚNG MỘT câu, tối đa 30 từ. Tuyệt đối không dùng gạch đầu dòng, "
     "không xuống dòng, không viết câu mở đầu dẫn dắt. Nêu thẳng điều kiện, con số hoặc "
     "định nghĩa được hỏi, rồi kết thúc bằng mã tài liệu. "
     "Ví dụ một câu trả lời đúng: \"Chỉ tính trip COMPLETED, có completed_at, "

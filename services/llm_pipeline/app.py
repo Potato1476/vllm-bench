@@ -246,6 +246,20 @@ class Metrics:
             "Prompt-injection detections by source and action.",
             ("source", "action"),
         ),
+        # Declared here, and the declaration is the whole point: inc() does
+        # `self.COUNTERS[name]`, so an undeclared name raises KeyError inside request
+        # handling and the caller gets HTTP 500. Adding the inc() call without this block
+        # turned every grounding retry into a crash -- two 500s in 1201 requests, which
+        # read as a platform fault and were mine.
+        "guardrail_grounding_retry_total": (
+            "Answers blocked at grounding that were given a second generation.",
+            ("model",),
+        ),
+        "guardrail_grounding_retry_rescued_total": (
+            "Second generations that passed grounding. The ratio to the line above is "
+            "what says whether retrying is worth the GPU time.",
+            ("model",),
+        ),
         "guardrail_dense_failures_total": (
             "Dense-retrieval calls that failed and silently degraded to lexical.",
             ("reason",),
@@ -556,6 +570,11 @@ def _audit(trace_id: str, outcome: str, stage: str, model: str,
             "agent": fields.get("agent"),
             "cache_hit": fields.get("cache_hit", False),
             "question": fields.get("question"),
+            "model_answer": fields.get("model_answer"),
+            "refusal_detail": fields.get("refusal_detail"),
+            "pii_inbound": fields.get("pii_inbound"),
+            "pii_outbound": fields.get("pii_outbound"),
+            "retried": fields.get("retried", False),
             "documents": fields.get("docs"),
             "cited": fields.get("cited"),
             "answer": fields.get("answer"),
@@ -920,7 +939,9 @@ class Handler(BaseHTTPRequestHandler):
         # stay None on the paths that never reach the corresponding stage.
         audit: dict[str, Any] = {"question": None, "answer": None, "docs": None,
                                  "cited": None, "usage": None, "agent": None,
-                                 "cache_hit": False}
+                                 "cache_hit": False, "pii_inbound": None,
+                                 "pii_outbound": None, "retried": False,
+                                 "model_answer": None, "refusal_detail": None}
 
         # Continue the trace LiteLLM started, so one trace covers gateway, guardrail and
         # engine. A caller who sends no traceparent -- curl, the bench runner -- starts a
@@ -1072,7 +1093,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, response)
                 return
 
-            audit["question"] = question
+            # The REDACTED question, never the raw one.
+            #
+            # Writing `question` here was a leak I introduced with this log: pipeline
+            # stage 2 exists to take identity numbers out of the prompt before the model
+            # or any log sees them, and an audit line carrying the original undoes that
+            # for every request.
+            #
+            # Recording the redacted form instead is also the only way the redaction is
+            # verifiable from outside. Before this there was a counter saying PII was
+            # found and no artefact showing what happened to it -- so "does redaction
+            # actually work" could only be answered by trusting the code. Now the log
+            # shows `[CCCD_1]` where the number was, and pii_inbound says what kind was
+            # replaced, without ever storing the value.
+            redacted = checked.inbound_pii
+            audit["question"] = redacted.text if redacted else question
+            audit["pii_inbound"] = (
+                [{"kind": f.kind, "placeholder": f.placeholder} for f in redacted.findings]
+                if redacted else []
+            )
             audit["agent"] = agent
             prepared = pipeline.prepare(
                 question,
@@ -1134,9 +1173,100 @@ class Handler(BaseHTTPRequestHandler):
                 })
             audit["docs"] = [c.document_id for c in prepared.context]
             audit["usage"] = upstream.get("usage")
+
             final = pipeline.finalise(_answer(upstream), prepared, observer=observe)
-            audit["answer"] = final.text
+
+            # ONE SECOND ATTEMPT WHEN GROUNDING BLOCKS. Measured, after getting this
+            # wrong once.
+            #
+            # 2% of benign questions were refused at every load level, which capped
+            # availability at 97.9% against a 99.5% target. The first diagnosis said the
+            # model was returning an empty string and a retry-on-empty was written for
+            # it. That counter never incremented: `final.text` is "" for EVERY refusal
+            # because finalise() sets it, so the log was reporting its own output back.
+            #
+            # What the model actually produces, once the raw answer is logged separately:
+            #
+            #     trích dẫn không có trong ngữ cảnh: METRIC-TRIP-001      7 / 16
+            #     câu trả lời không trích dẫn tài liệu nào                3 / 16
+            #     trích dẫn không có trong ngữ cảnh: FLEET-UTIL-001       2 / 16
+            #
+            # It cites a document it was not given -- a real corpus id that was not among
+            # the retrieved chunks -- or breaks format entirely; one answer emitted a CJK
+            # character and then hallucinated a fresh `user` turn. The guardrail is right
+            # to block all of it. These are not false refusals in the sense of a wrong
+            # verdict; they are correct verdicts on a bad generation.
+            #
+            # Which is why the fix is a retry and not a looser check. The failure is
+            # stochastic, so a second sample usually lands a properly cited answer, and if
+            # it does not the request still refuses. Giving up after one attempt charges
+            # the caller for the model's variance.
+            if (not final.ok and final.refusal is not None
+                    and final.refusal.stage == "grounding"):
+                _telemetry.inc("guardrail_grounding_retry_total", {"model": model_label})
+                retry_span = _tracer.child(root, f"vllm {model} retry", tracing.KIND_CLIENT)
+                spans.append(retry_span)
+                retry_span.set("guardrail.retry_reason", "grounding")
+                try:
+                    retried = _call_vllm(
+                        model,
+                        _upstream_payload(payload, prepared),
+                        traceparent=retry_span.traceparent(),
+                    )
+                    second = pipeline.finalise(_answer(retried), prepared, observer=observe)
+                    if second.ok:
+                        upstream = retried
+                        final = second
+                        audit["usage"] = upstream.get("usage")
+                        audit["retried"] = True
+                        _telemetry.inc("guardrail_grounding_retry_rescued_total",
+                                       {"model": model_label})
+                except Exception:  # noqa: BLE001 -- the first answer already failed
+                    retry_span.fail("retry_failed")
+                finally:
+                    retry_span.end_ns = time.time_ns()
+            # The answer BEFORE stage 10 puts the caller's own values back.
+            #
+            # pipeline.finalise ends by restoring the placeholders this caller supplied,
+            # which is correct -- returning someone their own plate number is not a leak,
+            # and the egress scan runs before it so nothing can be smuggled past. But
+            # `final.text` is therefore the restored text, and writing that here puts the
+            # raw value into the log, undoing stage 2 for every request that carried PII.
+            #
+            # Measured: a question containing 51F-12345 was redacted correctly, reached
+            # the model as [PLATE_1], and came back into the audit line in full.
+            #
+            # Re-applying the mapping in reverse gives the placeholder form, which is what
+            # a log should hold: enough to see the shape of the answer, nothing to leak.
+            def _placeholders(text: str) -> str:
+                if checked.inbound_pii:
+                    for ph, original in checked.inbound_pii.mapping.items():
+                        text = text.replace(original, ph)
+                return text
+
+            audit["answer"] = _placeholders(final.text)
+            # WHAT THE MODEL SAID, separately from what was released.
+            #
+            # finalise() returns FinalAnswer(text="") on every refusal, so `final.text` is
+            # empty for a blocked request BY CONSTRUCTION -- not because the model
+            # produced nothing. Logging only that field made every refusal look like an
+            # empty generation, and I read that back as a diagnosis and built a retry for
+            # a failure mode that was not happening. The giveaway was in the same record:
+            # `answer` empty while `cited` listed documents, which an empty answer cannot
+            # do.
+            #
+            # A log that cannot distinguish "the model said nothing" from "the guardrail
+            # refused what it said" cannot diagnose refusals at all, which is most of what
+            # anyone reads this log for.
+            audit["model_answer"] = _placeholders(_answer(upstream))
+            audit["refusal_detail"] = (
+                list(final.refusal.detail) if (not final.ok and final.refusal) else None
+            )
             audit["cited"] = list(final.report.cited) if final.report else None
+            # Egress findings: identity numbers the model put INTO an answer, which the
+            # output stage blocks. Kind only, never the value -- the point is to prove the
+            # check fired, not to write the leak into the log that reports it.
+            audit["pii_outbound"] = [f.kind for f in final.outbound_pii]
             _track_final(final)
             _trace_final(root, final)
             if not final.ok:
