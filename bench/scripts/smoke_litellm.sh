@@ -64,7 +64,11 @@ chunks=$(curl -sfN "localhost:${PORT}/v1/chat/completions" \
 echo "  SSE chunks: $chunks"
 
 say "6. Prometheus endpoint exposes gateway request, error and latency metrics"
-metrics=$(curl -sf "localhost:${PORT}/metrics" -H "Authorization: Bearer $key")
+# -L, because /metrics answers 307 to /metrics/ on v1.90.2. Without it curl returns an
+# empty body with status 307, -f does not treat that as an error, and every metric below
+# is reported "absent" -- which reads as "the Prometheus callback is not configured" and
+# sends you to the ConfigMap. The callback was always fine; the request never arrived.
+metrics=$(curl -sfL "localhost:${PORT}/metrics" -H "Authorization: Bearer $key")
 for metric in \
   litellm_proxy_total_requests_metric_total \
   litellm_proxy_failed_requests_metric_total \

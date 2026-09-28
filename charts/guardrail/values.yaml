@@ -38,6 +38,22 @@ dense:
 # Safe response cache. Redis is a sidecar reached only through a shared Unix socket: it
 # has no Service and no TCP listener. The cache remains exact-only when embeddingEndpoint
 # is empty; point it at TEI to enable semantic similarity between different phrasings.
+# Content audit log: one JSON line per request carrying the question and the answer.
+#
+# OFF by default, and that default is load-bearing rather than cautious. tracing.py and
+# LiteLLM's turn_off_message_logging both refuse to record content because pipeline stage
+# 2 exists to redact it; see the _audit docstring in app.py for when enabling this is
+# defensible (synthetic lab corpus) and when it is not (any real MOC question).
+#
+# It lives here rather than being flipped with `kubectl set env`, because an imperative
+# edit takes ownership of the field away from Helm and the next `make guardrail-up` then
+# fails with a field-manager conflict -- which is exactly how this value got added.
+auditLog: false
+
+# Models whose output format is constrained at decode time so they must cite a document
+# that is in context. See _force_citation in app.py for the measurement.
+forceCitationModels: "qwen2.5-1.5b"
+
 semanticCache:
   enabled: true
   ttlSeconds: 3600

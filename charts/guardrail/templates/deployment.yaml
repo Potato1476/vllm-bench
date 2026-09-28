@@ -60,6 +60,10 @@ spec:
             - name: DENSE_TIMEOUT_SECONDS
               value: {{ .Values.dense.timeoutSeconds | quote }}
             {{- end }}
+            - name: AUDIT_LOG
+              value: {{ .Values.auditLog | ternary "1" "" | quote }}
+            - name: FORCE_CITATION_MODELS
+              value: {{ .Values.forceCitationModels | quote }}
             {{- if .Values.semanticCache.enabled }}
             - name: SEMANTIC_CACHE_ENABLED
               value: "true"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -47,6 +48,14 @@ DEFAULT_ACCESS_LEVEL = os.getenv("DEFAULT_ACCESS_LEVEL", "internal-demo")
 # than truncating it. A cap set near the expected length would cut correct answers off
 # mid-citation, and a truncated citation is a grounding failure.
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "192"))
+
+# Models that cannot be trusted to cite unaided, and must have the format constrained at
+# decode time. See _force_citation for the measurement behind this default. Set to an
+# empty string to turn the constraint off entirely.
+FORCE_CITATION_MODELS = frozenset(
+    m.strip() for m in os.getenv("FORCE_CITATION_MODELS", "qwen2.5-1.5b").split(",")
+    if m.strip()
+)
 CORPUS_PATH = os.getenv("CORPUS_PATH", str(DEFAULT_CORPUS))
 MODEL_ROUTES = json.loads(os.getenv(
     "MODEL_ROUTES_JSON",
@@ -493,7 +502,129 @@ def _upstream_payload(
         forwarded["max_tokens"] = DEFAULT_MAX_TOKENS
     # LiteLLM-only metadata is not part of vLLM's OpenAI request schema.
     forwarded.pop("metadata", None)
+    _force_citation(forwarded, prepared)
     return forwarded
+
+
+AUDIT_LOG = os.getenv("AUDIT_LOG", "").lower() in ("1", "true", "yes")
+
+
+def _audit(trace_id: str, outcome: str, stage: str, model: str,
+           elapsed: float, fields: dict[str, Any]) -> None:
+    """One JSON line per request, carrying the question and the answer verbatim.
+
+    THIS DELIBERATELY UNDOES THE RULE THE REST OF THE SERVICE KEEPS.
+
+    services/llm_pipeline/tracing.py states it plainly: a span may carry decisions,
+    identifiers and counts, and may never carry prompt text, retrieved passage text or
+    answer text -- because pipeline stage 2 exists to redact exactly that, and a
+    telemetry backend is one more place for it to escape to. LiteLLM is configured the
+    same way with turn_off_message_logging. Those are the right defaults and they stay
+    the defaults.
+
+    They also leave the operator unable to answer "what did the platform actually send,
+    to which model, and what came back", which is not a debugging nicety: without it
+    nobody can audit the system they are accountable for, and every claim about its
+    behaviour rests on trusting whoever ran the test.
+
+    So this is opt-in, off unless AUDIT_LOG is set, and it writes to stdout rather than
+    to the trace backend -- one stream, one retention policy, one thing to turn off.
+
+    WHEN IT IS SAFE TO ENABLE
+        The lab corpus is synthetic (data/xanhsm_retrieval_mock), the questions come
+        from a versioned eval set, and the cluster is destroyed nightly. Content logging
+        here exposes generated text about invented trips.
+
+    WHEN IT IS NOT
+        The moment a real MOC question reaches this service. A real question can carry a
+        customer id, a phone number, a driver name -- the things stage 2 removes before
+        the model sees them, which would then be written here in the clear and shipped
+        wherever the cluster's logs go. Turn it off before real traffic, and say so in
+        the runbook rather than relying on someone remembering.
+    """
+    if not AUDIT_LOG:
+        return
+    try:
+        record = {
+            "kind": "audit",
+            "ts": time.time(),
+            "trace_id": trace_id,
+            "outcome": outcome,
+            "stage": stage,
+            "model": model,
+            "latency_seconds": round(elapsed, 4),
+            "agent": fields.get("agent"),
+            "cache_hit": fields.get("cache_hit", False),
+            "question": fields.get("question"),
+            "documents": fields.get("docs"),
+            "cited": fields.get("cited"),
+            "answer": fields.get("answer"),
+            "usage": fields.get("usage"),
+        }
+        print(json.dumps(record, ensure_ascii=False), flush=True)
+    except Exception:  # noqa: BLE001 -- an audit line must never fail a served request
+        pass
+
+
+def _force_citation(
+    forwarded: dict[str, Any], prepared: pipeline.PreparedRequest
+) -> None:
+    """Constrain a weak model's output so it must cite a document that is in context.
+
+    WHY THIS EXISTS, MEASURED RATHER THAN ASSUMED
+
+    The platform's cost story is that the small model handles simple work. On this
+    corpus it could not: every benign question routed to qwen2.5-1.5b was refused at the
+    grounding stage, so the three agents pinned to it in bench/agents.json were serving
+    nobody.
+
+    The cause was not reasoning and not retrieval. Asked "when does a trip count as
+    completed", the 1.5B returned all four conditions correctly -- the same answer the 7B
+    gave -- and simply omitted `[METRIC-TRIP-001]`. It is an instruction-following
+    failure about output FORMAT, and it is uniform: it happens on the easiest
+    single-document lookup exactly as often as on multi-step reasoning.
+
+    Worse than omitting one: when the 1.5B did emit a citation unprompted, the id was
+    usually not one of the documents it had been given. Over eight single-fact queries,
+    two answers carried a citation and NONE of them carried a valid one. The grounding
+    stage was right to refuse them; a fabricated citation is the failure this whole
+    pipeline exists to prevent.
+
+    Constraining the decode to a regex over the ids actually in context fixes both, and
+    costs nothing in answer quality -- measured on 24 queries, 8 per query type:
+
+        query type   citation      valid id       content overlap
+        retrieval    2/8 -> 8/8    0/8 -> 8/8     58% -> 66%
+        hybrid       6/8 -> 8/8    2/8 -> 8/8     14% -> 20%
+        reasoning    4/8 -> 8/8    2/8 -> 8/8      7% -> 15%
+
+    Overlap goes UP under the constraint in every category, so this is not the usual
+    trade of quality for structure. It also leaves the complexity ladder visible and
+    honest: 66% on single-fact lookups is usable, 20% and 15% are not, which is the
+    evidence for routing by question type rather than by agent.
+
+    Deliberately NOT applied to the 7B, which already cites correctly without help.
+    Constraining a model that does not need it only adds a way to fail.
+    """
+    if not FORCE_CITATION_MODELS:
+        return
+    model = str(forwarded.get("model", ""))
+    if model not in FORCE_CITATION_MODELS:
+        return
+    ids = [doc_id for doc_id in dict.fromkeys(prepared.prompt.cited_ids) if doc_id]
+    if not ids:
+        # No retrieved context means there is nothing legitimate to cite, and forcing a
+        # citation here would be forcing a fabrication.
+        return
+    alternatives = "|".join(re.escape(doc_id) for doc_id in ids)
+    # Prose with no brackets, then one citation drawn from the ids in context. The upper
+    # bound is in CHARACTERS and is kept well inside the token budget: the engine must
+    # satisfy the whole pattern, so a max_tokens cut before the citation would produce
+    # output that matches nothing. 320 characters is roughly 120 Vietnamese tokens
+    # against a 192-token default.
+    forwarded["structured_outputs"] = {
+        "regex": rf"[^\[\]]{{15,320}}\[({alternatives})\]"
+    }
 
 
 def _call_vllm(
@@ -785,6 +916,11 @@ class Handler(BaseHTTPRequestHandler):
         outcome = "error"
         terminal_stage = "internal"
         upstream_elapsed = 0.0
+        # Filled as the request progresses, and read by _audit in the finally block. They
+        # stay None on the paths that never reach the corresponding stage.
+        audit: dict[str, Any] = {"question": None, "answer": None, "docs": None,
+                                 "cited": None, "usage": None, "agent": None,
+                                 "cache_hit": False}
 
         # Continue the trace LiteLLM started, so one trace covers gateway, guardrail and
         # engine. A caller who sends no traceparent -- curl, the bench runner -- starts a
@@ -918,6 +1054,9 @@ class Handler(BaseHTTPRequestHandler):
                     root.set("cache.result", "error")
 
             if cache_hit is not None:
+                audit["cache_hit"] = True
+                audit["answer"] = cache_hit.text
+                audit["cited"] = list(cache_hit.cited)
                 response = _cached_completion(cache_hit, model, started)
                 response["guardrail"]["trace_id"] = root.trace_id if root.sampled else ""
                 root.update({
@@ -933,6 +1072,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, response)
                 return
 
+            audit["question"] = question
+            audit["agent"] = agent
             prepared = pipeline.prepare(
                 question,
                 _index,
@@ -991,7 +1132,11 @@ class Handler(BaseHTTPRequestHandler):
                 _telemetry.inc("guardrail_upstream_requests_total", {
                     "model": model_label, "outcome": upstream_outcome,
                 })
+            audit["docs"] = [c.document_id for c in prepared.context]
+            audit["usage"] = upstream.get("usage")
             final = pipeline.finalise(_answer(upstream), prepared, observer=observe)
+            audit["answer"] = final.text
+            audit["cited"] = list(final.report.cited) if final.report else None
             _track_final(final)
             _trace_final(root, final)
             if not final.ok:
@@ -999,8 +1144,29 @@ class Handler(BaseHTTPRequestHandler):
                 outcome = "refused"
                 terminal_stage = final.refusal.stage
                 _trace_refusal(stage_spans, final.refusal)
+                # 400, not 422, and this is a gateway compatibility fix rather than a
+                # change of opinion about HTTP. 422 is the better description -- the
+                # request was well formed and failed a semantic check downstream -- but
+                # LiteLLM v1.90.2 cannot map it: the refusal body has no `model` field, so
+                # its openai-provider adapter fails to post-process the response, ends
+                # with None, and serves the caller HTTP 200 with a body of `null`.
+                #
+                # Measured through the gateway, not inferred:
+                #   guardrail 400 (injection)  -> LiteLLM 400 + the reason. Correct.
+                #   guardrail 422 (grounding)  -> LiteLLM 200 + `null`.     Silent.
+                #
+                # That is the worst possible failure mode for a guardrail. A refusal
+                # becomes an empty success: the caller sees no error, the reason is
+                # destroyed, and litellm_proxy_total_requests_metric counts it 200 -- so
+                # every dashboard reports the platform as healthy while it answers
+                # nobody. It also breaks the safety measurement, because a refused
+                # injection arrives indistinguishable from an empty reply.
+                #
+                # Every request-stage refusal above already uses 400 and travels
+                # correctly. This makes the response stage consistent with them, and it
+                # matches what OpenAI itself returns for a content-policy refusal.
                 self._error(
-                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    HTTPStatus.BAD_REQUEST,
                     final.refusal.stage,
                     final.refusal.reason,
                     final.refusal.detail,
@@ -1083,6 +1249,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Tempo. The outcome attribute still separates the two.
                 root.fail(terminal_stage)
             _tracer.submit(spans)
+            _audit(root.trace_id, outcome, terminal_stage, model_label, elapsed, audit)
             _count(outcome, terminal_stage, model_label)
             _telemetry.observe(
                 "guardrail_request_duration_seconds",
