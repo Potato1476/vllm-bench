@@ -123,8 +123,32 @@ _BASE_RULES = (
     "Chỉ trả lời dựa trên các tài liệu được cung cấp trong phần dữ liệu tham khảo. "
     "Nếu tài liệu không đủ căn cứ, hãy nói rõ là không đủ thông tin, không suy đoán. "
     "Mỗi khẳng định phải kèm mã tài liệu nguồn theo dạng [MÃ_TÀI_LIỆU]. "
-    "Trả lời ngắn gọn, thường 1-3 câu: nêu đúng điều kiện, con số hoặc định nghĩa được "
-    "hỏi kèm mã nguồn, không chép lại toàn bộ tài liệu và không thêm phần mở đầu."
+    # Directive and with an example, because the polite version measurably did not work.
+    #
+    # The rule this replaces -- "Trả lời ngắn gọn, thường 1-3 câu ... không thêm phần mở
+    # đầu" -- reads like it asks for the right thing and was ignored. Measured over 2002
+    # answers during a load ramp:
+    #
+    #     thực tế   p50 71   p90 120   p95 146   max 192 token
+    #     giả định  p50 32   p90 44              max 54
+    #
+    # Two to three times the length the SLO budget was built on, and p95 146 against a
+    # 192 cap means answers were being truncated rather than finishing. Decode dominates
+    # latency here, so over half the p95 budget was going into words nobody asked for.
+    #
+    # What the model actually produced was a preamble plus a bullet list; what the gold
+    # answers do is state the conditions in one line. So the fix names the two things to
+    # stop doing, and shows one finished answer. Measured on 14 queries against the same
+    # prompt without it: 76 -> 46 tokens (-39%), and citations 13/14 -> 14/14.
+    #
+    # A decode-time regex was tried instead and rejected: it cut less (58 tokens) and
+    # corrupted words to satisfy the pattern, emitting `fraud_confired`. Constraining a
+    # model that can follow an instruction costs spelling and buys nothing.
+    "Trả lời bằng ĐÚNG MỘT câu, tối đa 40 từ. Tuyệt đối không dùng gạch đầu dòng, "
+    "không xuống dòng, không viết câu mở đầu dẫn dắt. Nêu thẳng điều kiện, con số hoặc "
+    "định nghĩa được hỏi, rồi kết thúc bằng mã tài liệu. "
+    "Ví dụ một câu trả lời đúng: \"Chỉ tính trip COMPLETED, có completed_at, "
+    "distance > 0,2 km và không phải test/fraud. [METRIC-TRIP-001]\""
 )
 
 
