@@ -91,10 +91,24 @@ spec:
             histogram_quantile(0.95,
               sum by (le, requested_model) (rate(litellm_llm_api_latency_metric_bucket[2m])))
 
-        - record: litellm:ttft_seconds:p95
-          expr: |
-            histogram_quantile(0.95,
-              sum by (le, requested_model) (rate(litellm_llm_api_time_to_first_token_metric_bucket[2m])))
+        # litellm:ttft_seconds:p95 DA BI XOA, va day la ly do -- de khong ai them lai.
+        #
+        # Nguon cua no la litellm_llm_api_time_to_first_token_metric, ma LiteLLM chi ghi
+        # khi request duoc STREAM. services/llm_pipeline/app.py ep stream=False len vLLM
+        # de output guardrail kiem tra tron cau tra loi truoc khi phat mot byte nao, nen
+        # LiteLLM khong bao gio quan sat duoc token dau tien. Rule nay do do khong phai
+        # "chua co du lieu" ma la KHONG THE co du lieu.
+        #
+        # Do tren toan bo stack: 37 recording rule, 24 alert, 56 metric trong dashboard --
+        # day la thu duy nhat rong vinh vien. Mot panel luon trong khong vo hai: no day
+        # nguoi doc di tim su co khong ton tai, va lam quen mat viec panel trong la bat
+        # thuong -- dung luc mot panel that su hong thi khong ai nhin nua.
+        #
+        # TTFT that cua engine van do duoc va van co rule: vllm:ttft_seconds:p95/p99 o
+        # tren, lay tu vllm:time_to_first_token_seconds do chinh vLLM phat ra.
+        #
+        # Chi them lai neu guardrail chuyen sang stream that -- va do la danh doi voi
+        # kha nang rut lai PII hay trich dan bia, xem docstring dau app.py.
 
         - record: litellm:queue_seconds:p95
           expr: |

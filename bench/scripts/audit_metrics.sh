@@ -60,7 +60,6 @@ NEEDED=(
 # absence is reported, but does not fail an otherwise healthy idle installation.
 AFTER_TRAFFIC=(
   litellm_llm_api_latency_metric_bucket
-  litellm_llm_api_time_to_first_token_metric_bucket
   litellm_request_queue_time_seconds_bucket
   litellm_overhead_latency_metric_bucket
   litellm_deployment_total_requests_total
