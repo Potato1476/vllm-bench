@@ -106,9 +106,33 @@ module "eks" {
       # changes. All min_size=0 gives up is the guarantee that the node comes back by
       # itself, which for a lab that is torn down every evening was never a guarantee
       # worth having.
+      # desired_size 2, and the 1 it replaces is a regression that came back because the
+      # first fix was only ever an `aws eks update-nodegroup-config` against a live
+      # cluster. That cluster is destroyed every evening, so the fix died with it -- the
+      # same mistake charts/litellm/values.yaml documents for the 1Gi memory limit, made
+      # a second time in the same repo.
+      #
+      # READ THIS BEFORE EDITING desired_size AND EXPECTING AN APPLY TO DO ANYTHING.
+      # The upstream module sets
+      #     ignore_changes = [scaling_config[0].desired_size]
+      # on the node group, so this value is honoured ONLY when the group is created. On a
+      # live cluster an apply reports no change and the count does not move; scale it with
+      # `aws eks update-nodegroup-config` instead, which is why `make gpu` uses the CLI
+      # rather than Terraform. Committing it here is still the fix rather than a formality,
+      # because this cluster tier is destroyed and recreated every session -- so creation
+      # is the only moment that matters.
+      #
+      # One t3.large is 2 vCPU, and the tooling node carries Prometheus, Grafana, Tempo,
+      # LiteLLM, the guardrail and TEI. It ran out of CPU four times in one session.
+      #
+      # It is now load-bearing for correctness, not just comfort: bench/k6 runs as a Job
+      # with nodeSelector workload=tooling and requests a full CPU. On a single 2-vCPU
+      # node the load generator would contend with the gateway it is measuring through --
+      # README.md's warning about a generator stealing CPU and inflating the latency it
+      # reports, except self-inflicted and on the client side.
       min_size     = 0
-      max_size     = 2
-      desired_size = 1
+      max_size     = 3
+      desired_size = 2
 
       labels = {
         workload = "tooling"
