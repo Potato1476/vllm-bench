@@ -457,7 +457,7 @@ litellm-down: ## Remove LiteLLM and its in-cluster secrets
 	-helm uninstall litellm -n llm-serving
 	-kubectl delete namespace llm-serving --ignore-not-found
 
-agent-keys: ## Create/refresh one virtual key per agent in bench/agents.json
+agent-keys: ## Configure shared 3000 RPM team and refresh agent virtual keys
 # The price of a session-scoped Aurora, and the reason that trade is affordable: the keys
 # die with the database every evening and come back from one file in one command.
 #

@@ -141,6 +141,10 @@ LiteLLM
 
 Redis và response cache đang được bỏ qua theo yêu cầu. Vì không có Redis để chia sẻ
 router/quota state giữa nhiều pod, chart giới hạn LiteLLM ở `replicaCount: 1`.
+`make agent-keys` tạo/cập nhật team `moc-shared` có `rpm_limit: 3000` và gắn mọi key
+trong `bench/agents.json` vào team. Giới hạn tính chung cho các key đó, trên LiteLLM
+proxy một replica. Master key, key không thuộc team và request gọi trực tiếp vLLM không
+được tính vào RPM của team.
 
 ### LiteLLM Helm chart
 

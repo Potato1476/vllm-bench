@@ -27,6 +27,7 @@
     "budget_usd is a monthly ceiling per agent. They sum to less than the project budget on",
     "purpose: one agent looping must not be able to spend everything."
   ],
+  "rate_limit": {"team_id": "moc-shared", "rpm_limit": 3000},
   "agents": [
     {
       "id": "moc-analytics",

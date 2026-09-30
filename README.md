@@ -312,6 +312,11 @@ make data-up
 make litellm-up
 ```
 
+`make agent-keys` tạo/cập nhật team `moc-shared` với `rpm_limit: 3000` rồi gắn mọi
+virtual key trong `bench/agents.json` vào team này. Đây là giới hạn RPM dùng chung cho
+các key được cấp bởi script, không phải 3.000 RPM cho từng key. Master key, key cũ không
+thuộc team và đường gọi thẳng tới vLLM không nằm trong giới hạn này.
+
 Luồng lab là LiteLLM → guardrail service → vLLM. Guardrail chạy `prepare` trước khi sinh
 và `finalise` trước khi phát câu trả lời; request streaming vì vậy được buffer cho đến khi
 output checks pass. Guardrail chart chạy Redis sidecar qua Unix socket để cache câu trả lời

@@ -38,6 +38,7 @@ import argparse
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,42 @@ def load_agents(path: Path) -> list[dict]:
     return agents
 
 
+def load_rate_limit(path: Path) -> dict:
+    limit = json.loads(path.read_text(encoding="utf-8"))["rate_limit"]
+    if not limit.get("team_id") or not isinstance(limit.get("rpm_limit"), int) or limit["rpm_limit"] <= 0:
+        raise SystemExit("agents.json rate_limit needs a team_id and a positive rpm_limit")
+    return limit
+
+
+def ensure_rate_limit_team(base: str, master: str, limit: dict,
+                           agents: list[dict], dry_run: bool = False) -> str:
+    """Create or update one team whose RPM counter is shared by every agent key."""
+    if dry_run:
+        return "would configure"
+    team_id = limit["team_id"]
+    members = [{"role": "user", "user_id": agent["id"]} for agent in agents]
+    path = "/team/info?" + urllib.parse.urlencode({"team_id": team_id})
+    try:
+        team = _call(base, master, path, method="GET")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        exc.close()
+        _call(base, master, "/team/new", {**limit, "members_with_roles": members})
+        return "created"
+    team_info = team["team_info"]
+    changed = False
+    if team_info.get("rpm_limit") != limit["rpm_limit"]:
+        _call(base, master, "/team/update", limit)
+        changed = True
+    existing_members = {member.get("user_id") for member in team_info.get("members_with_roles", [])}
+    for member in members:
+        if member["user_id"] not in existing_members:
+            _call(base, master, "/team/member_add", {"team_id": team_id, "member": member})
+            changed = True
+    return "updated" if changed else "unchanged"
+
+
 def existing_aliases(base: str, master: str) -> dict[str, str]:
     """Map key_alias -> token for keys already in the database."""
     try:
@@ -93,7 +130,8 @@ def existing_aliases(base: str, master: str) -> dict[str, str]:
 
 
 def provision(base: str, master: str, agents: list[dict],
-              dry_run: bool = False, rotate: bool = False) -> list[tuple[str, str, str]]:
+              dry_run: bool = False, rotate: bool = False,
+              team_id: str | None = None) -> list[tuple[str, str, str]]:
     have = {} if dry_run else existing_aliases(base, master)
     if rotate and have:
         # Delete first, so every alias comes back through /key/generate and every key in
@@ -122,6 +160,7 @@ def provision(base: str, master: str, agents: list[dict],
                          "description": agent.get("description", ""),
                          "access_level": agent.get("access_level", "internal-demo")},
             "models": agent.get("models", []),
+            "team_id": team_id,
             "max_budget": agent.get("budget_usd"),
             "budget_duration": "30d",
         }
@@ -156,6 +195,7 @@ def main() -> int:
     args = parser.parse_args()
 
     agents = load_agents(args.agents)
+    limit = load_rate_limit(args.agents)
     print(f"  {len(agents)} agent trong {args.agents.name}")
 
     try:
@@ -172,8 +212,17 @@ def main() -> int:
         print("  CANH BAO: LiteLLM bao khong co database.")
         print("  Virtual key can Aurora -- chay 'make data-up' truoc.")
 
+    try:
+        team_status = ensure_rate_limit_team(args.base_url, args.master_key, limit, agents,
+                                             dry_run=args.dry_run)
+    except urllib.error.HTTPError as exc:
+        print(f"  khong cau hinh duoc team rate limit ({exc.code}): "
+              f"{exc.read().decode(errors='replace')[:160]}", file=sys.stderr)
+        return 1
+    print(f"  team {limit['team_id']}: {team_status}, {limit['rpm_limit']} RPM shared")
+
     results = provision(args.base_url, args.master_key, agents, args.dry_run,
-                        rotate=args.rotate)
+                        rotate=args.rotate, team_id=limit["team_id"])
 
     print()
     print(f"  {'agent':18} {'trang thai':12} key")
