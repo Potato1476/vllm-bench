@@ -34,7 +34,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ingress-up ingress-down ingress-url creds \
 	availability embeddings-up embeddings-down tracing-up tracing-down trace tracing-check \
 	load-smoke load-ramp load-slo load-steady load-soak load-agents load-adversarial load-incluster \
-	audit-on audit-off audit-tail audit-dump audit-export pii-verify dashboard-audit \
+	audit-on audit-off audit-tail audit-dump audit-export pii-verify dashboard-audit s3-index \
 	cache-invalidate cache-clear
 
 help: ## Show this help
@@ -628,6 +628,11 @@ audit-tail: ## Xem audit log dang chay. N=50 de gioi han
 		| grep --line-buffered '"kind": "audit"' \
 		| python3 -c 'import json,sys;\
 [print(f"\n[{r[\"outcome\"]}/{r[\"stage\"]}] {r[\"model\"]}  {r[\"latency_seconds\"]}s  agent={r[\"agent\"]}  cache={r[\"cache_hit\"]}\n  HOI : {r[\"question\"]}\n  DOC : {r[\"documents\"]}\n  TRA : {(r[\"answer\"] or \"\")[:300]}\n  CITE: {r[\"cited\"]}  usage={r[\"usage\"]}") for r in (json.loads(l) for l in sys.stdin)]'
+
+s3-index: ## Sinh lai INDEX.md tren bucket bang chung, de nguoi khac doc duoc
+# Mot bucket toan timestamp khong phai bang chung chia se duoc: nguoi mo ra thay tam
+# prefix va phai tai ve moi biet cai nao tra loi cau hoi nao.
+	@python3 bench/scripts/s3_index.py
 
 audit-export: ## Day audit log len S3 -- song sot khi cum bi xoa. HOURS= LABEL=
 # Cum bi destroy moi toi va moi ban ghi ben trong di theo. `make snapshot` da lam dieu
