@@ -15,12 +15,18 @@ pod sẵn sàng. Mỗi Deployment dùng rolling update `maxUnavailable: 0` và P
    `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`. LiteLLM đọc bốn biến này để chia sẻ
    rate limit và router state; guardrail dùng URL cho response cache. Cấp quyền kết nối
    Redis từ các node/pod serving và quản lý Secret ngoài Git.
-3. Có ít nhất 2 node tooling ở 2 AZ, đủ CPU/RAM để đặt 6 pod serving cộng monitoring.
+3. Có **ít nhất 3 node tooling** — bằng số replica — ở 2 AZ, đủ CPU/RAM cho 6 pod
+   serving cộng monitoring. Ba, không phải hai: với 2 node thì 3 replica **vẫn lên
+   được** (2+1 là skew 1) và rollout vẫn xanh, nhưng khi drain một trong hai node, pod
+   bị đuổi không xuống được đâu cả — chỉ còn 1 domain, dưới `minDomains: 2`, nên
+   scheduler lấy mức tối thiểu toàn cục là 0 và mọi chỗ đặt đều vượt `maxSkew`. Pod nằm
+   Pending cho tới khi có node mới. Đó là profile HA kẹt đúng lúc cần đến nó.
+
    Cấu hình đề xuất khi **tạo cluster mới** là `cpu_desired=3` và `node_subnet_count=2`
    trong `terraform/cluster/terraform.tfvars`. Với cluster đang chạy, EKS module bỏ qua
-   thay đổi `desired_size` khi `terraform apply`; cập nhật node group qua EKS rồi xác
-   nhận số node và AZ trước khi rollout. Profile yêu cầu trải pod qua ít nhất 2 hostname,
-   nên rollout sẽ chờ nếu chỉ có một node hợp lệ.
+   thay đổi `desired_size` khi `terraform apply`, nên sửa tfvars **không có tác dụng**;
+   cập nhật node group trực tiếp qua `aws eks update-nodegroup-config`. `make
+   ha-preflight HA=1` kiểm tra cả Secret lẫn số node và in đúng lệnh cần chạy.
 4. Thực hiện migration database một lần trước khi rollout nhiều proxy. Nếu là database
    mới, `make litellm-up MODE=shared` với một replica sẽ thực hiện lần khởi tạo đầu;
    sau đó mới chọn `HA=1`. Khi nâng version LiteLLM, chạy migration riêng trước khi
@@ -36,7 +42,7 @@ ví dụ `kubectl -n llm-serving create secret generic serving-redis
 Sau khi Redis, database và node đã sẵn sàng:
 
 ```bash
-kubectl -n llm-serving get secret serving-redis
+make ha-preflight HA=1
 make guardrail-diff HA=1
 make litellm-diff HA=1
 make litellm-up HA=1 MODE=shared

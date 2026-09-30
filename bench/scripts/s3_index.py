@@ -166,7 +166,15 @@ def main() -> int:
     index.parent.mkdir(parents=True, exist_ok=True)
     index.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    code, _ = sh(["aws", "s3", "cp", str(index), f"s3://{bucket}/INDEX.md"], timeout=180)
+    # text/plain, not text/markdown, and the reason is the S3 console.
+    #
+    # Clicking an object there shows its properties, never its contents; "Open" hands the
+    # browser the object with its stored content type. Chrome downloads text/markdown
+    # instead of rendering it, so an index uploaded correctly reads as an empty page --
+    # "an vao thi khong co gi" -- and looks like a permissions fault when it is a MIME
+    # one. text/plain renders inline, which is the whole point of putting it there.
+    code, _ = sh(["aws", "s3", "cp", str(index), f"s3://{bucket}/INDEX.md",
+                  "--content-type", "text/plain; charset=utf-8"], timeout=180)
     if code != 0:
         print(f"  viet xong {index.relative_to(ROOT)} nhung upload that bai", file=sys.stderr)
         return 1

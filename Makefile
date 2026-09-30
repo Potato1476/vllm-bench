@@ -23,7 +23,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 .PHONY: help init fmt validate lint plan kubeconfig hooks \
 	core-plan core-up core-down data-plan data-up data-down agent-keys lab-up lab-down gpu gpu-l40s cost fix-cidr \
 	vllm-up vllm-diff vllm-down smoke \
-	guardrail-image guardrail-up guardrail-diff guardrail-down \
+	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
@@ -393,8 +393,51 @@ guardrail-image: ## Build and push the guardrail service image to the core ECR r
 	docker push "$$repo:$(GUARDRAIL_TAG)"; \
 	echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"
 
-guardrail-up: ## Install/upgrade the OpenAI-compatible guardrail service
-	@if [ -n "$(HA)" ]; then kubectl -n llm-serving get secret serving-redis >/dev/null || { echo "HA requires secret llm-serving/serving-redis (REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD)"; exit 1; }; fi
+ha-preflight: ## Check the conditions docs/ha-serving.md lists before HA=1 can mean anything
+# Without HA this is a no-op, so both install targets can depend on it unconditionally.
+#
+# The Redis check was already here. The node check is the one that was missing, and its
+# absence is worse than it looks: the HA profile spreads pods with
+#
+#     topologyKey: kubernetes.io/hostname, maxSkew 1, minDomains 2, DoNotSchedule
+#
+# and on two tooling nodes three replicas still SCHEDULE (2+1 is skew 1). It installs, the
+# rollout goes green, and nothing says the profile is degraded. The failure only appears
+# when it is needed: drain one of the two nodes and the evicted pod cannot land anywhere,
+# because one remaining domain is below minDomains, so the scheduler takes the global
+# minimum as 0 and every placement exceeds maxSkew. The pod stays Pending until a node
+# comes back -- an HA profile that is stuck by the event it exists for.
+#
+# cpu_desired defaults to 2, and terraform/cluster/eks.tf carries
+# ignore_changes = [scaling_config[0].desired_size], so raising it in tfvars does NOTHING
+# to a running cluster. Two nodes is therefore the state an existing lab is actually in,
+# not a corner case, which is why this refuses rather than warns.
+#
+# Zones are only warned about: the chart spreads by hostname, so one AZ is a working
+# configuration -- just not one that survives losing an AZ. Failing on it would block a
+# deliberate single-AZ HA test; saying nothing would let "HA" be claimed for it.
+	@test -n "$(HA)" || exit 0; \
+	kubectl -n llm-serving get secret serving-redis >/dev/null 2>&1 || { \
+		echo "HA can secret llm-serving/serving-redis (REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD)"; \
+		echo "  xem docs/ha-serving.md muc 2"; exit 1; }; \
+	want=$$(awk '/^replicaCount:/{print $$2}' charts/guardrail/values-ha.yaml); \
+	have=$$(kubectl get nodes -l workload=tooling --no-headers 2>/dev/null \
+		| awk '$$2 == "Ready"' | wc -l | tr -d ' '); \
+	[ "$$have" -ge "$${want:-3}" ] || { \
+		echo "HA can >= $${want:-3} node tooling o trang thai Ready, hien co $$have."; \
+		echo "  Voi $$have node, ba replica van len duoc nhung se KET khi drain mot node"; \
+		echo "  (minDomains 2 + DoNotSchedule). Xem docs/ha-serving.md muc 3."; \
+		echo "  eks.tf bo qua desired_size khi apply -- sua node group truc tiep:"; \
+		echo "    aws eks update-nodegroup-config --cluster-name <ten> --nodegroup-name <ten> \\"; \
+		echo "      --scaling-config minSize=0,maxSize=3,desiredSize=$${want:-3}"; \
+		exit 1; }; \
+	zones=$$(kubectl get nodes -l workload=tooling \
+		-o jsonpath='{range .items[*]}{.metadata.labels.topology\.kubernetes\.io/zone}{"\n"}{end}' \
+		2>/dev/null | sort -u | grep -c . || echo 0); \
+	[ "$$zones" -ge 2 ] || echo "  luu y: $$have node tooling nam tren $$zones AZ -- mat AZ do la mat ca ba replica"; \
+	echo "  ha-preflight: $$have node tooling / $$zones AZ, secret serving-redis co."
+
+guardrail-up: ha-preflight ## Install/upgrade the OpenAI-compatible guardrail service
 	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
 		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
@@ -459,8 +502,7 @@ litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL ov
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@echo "LiteLLM secret is ready (existing master/salt keys were preserved)."
 
-litellm-up: litellm-secret guardrail-up ## Install guardrail + LiteLLM. MODE=shared|solo-a|solo-b
-	@if [ -n "$(HA)" ]; then kubectl -n llm-serving get secret serving-redis >/dev/null || { echo "HA requires secret llm-serving/serving-redis (REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD)"; exit 1; }; fi
+litellm-up: ha-preflight litellm-secret guardrail-up ## Install guardrail + LiteLLM. MODE=shared|solo-a|solo-b
 	helm upgrade --install litellm charts/litellm \
 		-n llm-serving --create-namespace --set mode=$(MODE) \
 		$(if $(HA),-f charts/litellm/values-ha.yaml) \

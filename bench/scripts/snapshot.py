@@ -43,6 +43,27 @@ SERIES = [
     'sum(kube_pod_container_resource_requests{resource="nvidia_com_gpu"})',
     # the pods' own CPU, to prove a latency number was not a throttling artefact
     'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="inference"}[2m]))',
+
+    # THE GATEWAY PATH, WHICH WAS MISSING AND MAY HAVE COST A CONCLUSION.
+    #
+    # Only `inference` was exported, so every snapshot measured the engine and nothing in
+    # front of it. That is not a gap in coverage; it is a gap that changes answers. The
+    # 40 -> 50 req/s knee was attributed to GPU decode bandwidth on the evidence that
+    # vllm:num_requests_waiting stayed at 0 -- but a queue cannot form in vLLM for
+    # requests that never reach it, so an empty vLLM queue is equally what a saturated
+    # guardrail looks like from downstream. The export could not tell the two apart.
+    #
+    # The ceiling to watch for is 1.0, not the node's core count. services/llm_pipeline
+    # runs ONE process under ThreadingHTTPServer, and its per-request work -- PII regex
+    # over a ~1300-token prompt, then the grounding overlap check -- is pure Python, so
+    # the GIL caps it near a single core no matter how many the node has.
+    'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="llm-serving"}[2m]))',
+
+    # Throttling is expected to be flat, because neither chart sets a CPU limit. Exported
+    # anyway: "saturated at 1 core" and "throttled below 1 core" are different diagnoses
+    # with different fixes, and distinguishing them after teardown needs this series to
+    # exist rather than to be argued about.
+    'sum by (pod) (rate(container_cpu_cfs_throttled_seconds_total{namespace="llm-serving"}[2m]))',
 ]
 
 
