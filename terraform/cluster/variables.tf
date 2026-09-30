@@ -75,13 +75,21 @@ variable "gpu_instance_type" {
 }
 
 variable "gpu_desired" {
-  description = "L4 nodes. 0 outside a measurement window, 1 for normal work, 3 for the scale-verification session."
+  description = "L4 nodes. 0 outside a measurement window, 1 for normal work, 4 for the scale-verification session."
   type        = number
   default     = 0
 
+  # 4, not 3. The G-family quota is 16 vCPU and a g6.xlarge is 4, so four nodes is exactly
+  # what the account allows -- the old ceiling of 3 gave away a quarter of the available
+  # capacity, and it did so at a layer no error message pointed at: the node group
+  # max_size was also 3, so raising one and not the other still fails.
+  #
+  # The real ceiling is the `gpu_quota` check in eks.tf, which counts BOTH node groups
+  # against var.gpu_vcpu_quota. That is the one that should refuse a plan; this bound only
+  # catches a typo.
   validation {
-    condition     = var.gpu_desired >= 0 && var.gpu_desired <= 3
-    error_message = "gpu_desired must be between 0 and 3."
+    condition     = var.gpu_desired >= 0 && var.gpu_desired <= 4
+    error_message = "gpu_desired must be between 0 and 4 (16 vCPU quota / 4 vCPU per g6.xlarge)."
   }
 }
 

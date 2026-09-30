@@ -325,7 +325,7 @@ MODE ?= shared
 # throughput figure from 4-bit weights is not comparable with one from FP16.
 QUANT ?= awq
 
-vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b  QUANT=awq|none
+vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLICAS=n
 # `terraform output -raw` on a destroyed tier exits 0 and prints a "No outputs found"
 # warning, in colour, to stdout. So neither `|| echo PLACEHOLDER` nor a plain -z test
 # fires: the variable ends up holding ANSI escape sequences, which reach the chart and
@@ -344,6 +344,7 @@ vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b  QUANT=awq|none
 		-n inference --create-namespace \
 		--set mode=$(MODE) \
 		--set quantization=$(QUANT) \
+		$(if $(REPLICAS),--set replicaCount=$(REPLICAS),) \
 		--set artifactsBucket="$$bkt" \
 		--set roleArn="$$arn" \
 		--wait --timeout 25m

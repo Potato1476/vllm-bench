@@ -22,7 +22,14 @@ metadata:
     vllm-bench/quantization: {{ $root.Values.quantization | quote }}
     vllm-bench/weights: {{ include "vllm.s3Prefix" (dict "root" $root "key" $key) | quote }}
 spec:
-  replicas: 1
+  # One pod per GPU. Each pod requests nvidia.com/gpu: 1 and each g6.xlarge has exactly
+  # one L4, so the scheduler spreads replicas across nodes without needing anti-affinity:
+  # a second pod cannot land on a node whose only GPU is already claimed.
+  #
+  # Hard-coded to 1 until now, which meant a cluster scaled to four GPU nodes ran one
+  # engine and left three cards idle -- the scale-out path existed in Terraform and had no
+  # counterpart in the chart.
+  replicas: {{ $m.replicas | default $root.Values.replicaCount | default 1 }}
   # One physical GPU. A rolling update would ask the scheduler to place a second pod
   # while the first still holds its GPU slot, so it would hang on Pending forever.
   strategy:
@@ -42,6 +49,29 @@ spec:
       # The taint keeps everything else off the GPU node; the nodeSelector keeps vLLM off
       # every other node. Both halves are needed -- a toleration alone would still let
       # vLLM land on the tooling node and quietly measure a CPU-only run.
+      {{- if eq $root.Values.mode "split" }}
+      # One model per node, enforced by the scheduler rather than by convention.
+      #
+      # `shared` puts both engines on one L4 by splitting gpu-memory-utilization 0.65/0.25.
+      # That was the only way to run two models on one card, and it costs both of them:
+      # model A gets 14.6 GiB instead of 20.3, which measured out as 5.19 GiB of KV cache
+      # instead of roughly 11 -- about 73 concurrent sequences at this corpus's 1300-token
+      # prompts instead of ~154.
+      #
+      # requiredDuringScheduling, not preferred. If there is only one GPU node the second
+      # engine stays Pending and says so, which is the honest outcome: a preference would
+      # silently co-schedule them and hand back the shared-mode numbers under a name that
+      # claims otherwise.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: ["vllm-server"]
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
       nodeSelector:
         {{- toYaml $root.Values.nodeSelector | nindent 8 }}
       tolerations:

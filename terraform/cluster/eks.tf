@@ -164,7 +164,10 @@ module "eks" {
       ami_type = "AL2023_x86_64_NVIDIA"
 
       min_size     = 0
-      max_size     = 3
+      # 4, because the approved quota is 16 vCPU for G instances and a g6.xlarge is 4.
+      # Three was the old ceiling and it silently capped the scale test one node below
+      # what the account actually allows.
+      max_size     = 4
       desired_size = var.gpu_desired
 
       cloudinit_pre_nodeadm = local.gpu_cloudinit

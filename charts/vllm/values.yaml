@@ -35,6 +35,11 @@ mode: shared
 # available rather than being overwritten.
 quantization: awq
 
+# Engines per model. 1 for ordinary work; raise it for a scale-verification session, and
+# make sure the GPU node group has at least that many nodes -- a replica with no free GPU
+# sits Pending, it does not share.
+replicaCount: 1
+
 # Total memory on the card, as nvidia-smi reports it for the L4 in a g6.xlarge (23034
 # MiB). vLLM's --gpu-memory-utilization is a fraction of this total, weights included,
 # which is why the fit check below multiplies rather than subtracts.

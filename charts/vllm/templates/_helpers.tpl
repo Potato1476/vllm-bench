@@ -3,7 +3,9 @@ Which model keys run in the current mode.
   shared -> both;  solo-a -> only a;  solo-b -> only b
 */}}
 {{- define "vllm.activeModels" -}}
-{{- if eq .Values.mode "shared" -}}
+{{- if eq .Values.mode "split" -}}
+a b
+{{- else if eq .Values.mode "shared" -}}
 a b
 {{- else if eq .Values.mode "solo-a" -}}
 a
@@ -23,6 +25,9 @@ gpu-memory-utilization for one model under the current mode.
 {{- if eq $root.Values.mode "shared" -}}
 {{- index $root.Values.gpuMemory.shared $key -}}
 {{- else -}}
+{{/* split and solo both give a model the whole card: in split the anti-affinity
+     guarantees it is alone on that node, so the shared fractions would leave
+     two thirds of each GPU unused. */}}
 {{- index $root.Values.gpuMemory.solo $key -}}
 {{- end -}}
 {{- end -}}
