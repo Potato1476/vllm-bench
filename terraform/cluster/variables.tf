@@ -67,6 +67,17 @@ variable "cpu_instance_type" {
   default     = "m7i.large"
 }
 
+variable "cpu_desired" {
+  description = "Tooling nodes for gateway, guardrail and monitoring. Use 3 for the three-replica HA profile."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.cpu_desired >= 1 && var.cpu_desired <= 3 && floor(var.cpu_desired) == var.cpu_desired
+    error_message = "cpu_desired must be an integer between 1 and 3."
+  }
+}
+
 # --- GPU node groups --------------------------------------------------------
 variable "gpu_instance_type" {
   description = "Main measurement GPU. g6.xlarge is L4 24GB at $0.8048/hr -- 25% cheaper than g5.xlarge, and Ada so it has native FP8."

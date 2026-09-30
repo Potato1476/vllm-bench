@@ -394,16 +394,19 @@ guardrail-image: ## Build and push the guardrail service image to the core ECR r
 	echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"
 
 guardrail-up: ## Install/upgrade the OpenAI-compatible guardrail service
+	@if [ -n "$(HA)" ]; then kubectl -n llm-serving get secret serving-redis >/dev/null || { echo "HA requires secret llm-serving/serving-redis (REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD)"; exit 1; }; fi
 	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
 		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
 	helm upgrade --install guardrail charts/guardrail \
 		-n llm-serving --create-namespace \
+		$(if $(HA),-f charts/guardrail/values-ha.yaml) \
 		--set image.repository="$$repo" --set image.tag="$(GUARDRAIL_TAG)" \
 		--wait --timeout 5m
 
 guardrail-diff: ## Render guardrail manifests without applying them
 	helm template guardrail charts/guardrail -n llm-serving \
+		$(if $(HA),-f charts/guardrail/values-ha.yaml) \
 		--set image.repository=PLACEHOLDER --set image.tag=$(GUARDRAIL_TAG)
 
 guardrail-down: ## Remove the guardrail release but keep the namespace
@@ -413,6 +416,7 @@ guardrail-down: ## Remove the guardrail release but keep the namespace
 # Master/salt keys stay in a Kubernetes Secret and never pass through Helm values or
 # git. DATABASE_URL can override the Aurora URL resolved from the data-tier outputs.
 litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL override)
+	@if [ -n "$(HA)" ] && [ -n "$(ALLOW_NO_DB)" ]; then echo "HA requires Aurora/PostgreSQL; remove ALLOW_NO_DB=1"; exit 1; fi
 	@kubectl create namespace llm-serving --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@master=$$(kubectl -n llm-serving get secret litellm-secrets \
 		-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d || true); \
@@ -456,15 +460,18 @@ litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL ov
 	@echo "LiteLLM secret is ready (existing master/salt keys were preserved)."
 
 litellm-up: litellm-secret guardrail-up ## Install guardrail + LiteLLM. MODE=shared|solo-a|solo-b
+	@if [ -n "$(HA)" ]; then kubectl -n llm-serving get secret serving-redis >/dev/null || { echo "HA requires secret llm-serving/serving-redis (REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD)"; exit 1; }; fi
 	helm upgrade --install litellm charts/litellm \
 		-n llm-serving --create-namespace --set mode=$(MODE) \
+		$(if $(HA),-f charts/litellm/values-ha.yaml) \
 		--wait --timeout 5m
 	@echo
 	@echo "LiteLLM routes mode=$(MODE) through guardrail:8080 to the matching vLLM service."
 	@echo "Run 'make litellm-smoke' after the matching vLLM deployment is ready."
 
 litellm-diff: ## Render LiteLLM without applying it. MODE=shared|solo-a|solo-b
-	helm template litellm charts/litellm -n llm-serving --set mode=$(MODE)
+	helm template litellm charts/litellm -n llm-serving --set mode=$(MODE) \
+		$(if $(HA),-f charts/litellm/values-ha.yaml)
 
 litellm-down: ## Remove LiteLLM and its in-cluster secrets
 	-helm uninstall litellm -n llm-serving

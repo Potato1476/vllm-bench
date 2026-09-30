@@ -160,15 +160,20 @@ _semantic_cache_configured = os.getenv(
 
 
 def _load_semantic_cache() -> SemanticResponseCache | None:
-    """Connect to the pod-local Redis sidecar, or leave serving uncached."""
+    """Connect to shared Redis or the local sidecar; failures leave serving uncached."""
     if not _semantic_cache_configured:
         return None
     try:
         import redis
 
+        url = os.getenv("REDIS_URL", "").strip()
         socket = os.getenv("REDIS_UNIX_SOCKET", "/run/redis/redis.sock")
-        client = redis.Redis(unix_socket_path=socket, socket_timeout=0.2,
-                             socket_connect_timeout=0.2)
+        if url:
+            client = redis.Redis.from_url(url, socket_timeout=0.2,
+                                          socket_connect_timeout=0.2)
+        else:
+            client = redis.Redis(unix_socket_path=socket, socket_timeout=0.2,
+                                 socket_connect_timeout=0.2)
         client.ping()
         embedder = None
         cache_embedding_endpoint = os.getenv(
@@ -190,7 +195,9 @@ def _load_semantic_cache() -> SemanticResponseCache | None:
             similarity_threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.96")),
             max_candidates=int(os.getenv("SEMANTIC_CACHE_MAX_CANDIDATES", "256")),
         )
-        print(f"semantic cache on: redis unix socket {socket}", flush=True)
+        # Never print REDIS_URL: it may contain a password.
+        print(f"semantic cache on: {'external Redis' if url else 'redis unix socket ' + socket}",
+              flush=True)
         return cache
     except Exception as exc:  # cache availability must not become serving availability
         print(f"semantic cache unavailable ({type(exc).__name__}: {exc}); disabled", flush=True)

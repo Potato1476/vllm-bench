@@ -27,6 +27,10 @@ spec:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
       tolerations:
         {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -67,8 +71,16 @@ spec:
             {{- if .Values.semanticCache.enabled }}
             - name: SEMANTIC_CACHE_ENABLED
               value: "true"
+            {{- if eq .Values.semanticCache.redis.mode "external" }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.semanticCache.redis.existingSecret.name }}
+                  key: {{ .Values.semanticCache.redis.existingSecret.key }}
+            {{- else }}
             - name: REDIS_UNIX_SOCKET
               value: /run/redis/redis.sock
+            {{- end }}
             - name: SEMANTIC_CACHE_TTL_SECONDS
               value: {{ .Values.semanticCache.ttlSeconds | quote }}
             - name: SEMANTIC_CACHE_THRESHOLD
@@ -105,7 +117,7 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.semanticCache.enabled }}
+          {{- if and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
           volumeMounts:
             - name: redis-socket
               mountPath: /run/redis
@@ -130,7 +142,7 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-        {{- if .Values.semanticCache.enabled }}
+        {{- if and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
         - name: redis
           image: {{ .Values.semanticCache.redis.image | quote }}
           args:
@@ -168,7 +180,7 @@ spec:
             - name: redis-socket
               mountPath: /run/redis
         {{- end }}
-      {{- if .Values.semanticCache.enabled }}
+      {{- if and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
       volumes:
         - name: redis-socket
           emptyDir:

@@ -62,6 +62,10 @@ semanticCache:
   embeddingEndpoint: ""
   embeddingTimeoutSeconds: 0.3
   redis:
+    mode: sidecar
+    existingSecret:
+      name: ""
+      key: REDIS_URL
     image: redis:7.4.5-alpine
     maxMemory: 192mb
     resources:
@@ -95,6 +99,8 @@ nodeSelector:
   workload: tooling
 
 tolerations: []
+
+topologySpreadConstraints: []
 
 podDisruptionBudget:
   enabled: false

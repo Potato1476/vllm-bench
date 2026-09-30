@@ -3,13 +3,37 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
+import types
 import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from services.llm_pipeline import app
+
+
+class ExternalRedisConfigTest(unittest.TestCase):
+    def test_external_url_is_used_instead_of_pod_socket(self) -> None:
+        calls: list[str] = []
+
+        class FakeClient:
+            def ping(self) -> bool:
+                return True
+
+        fake_redis = types.SimpleNamespace(Redis=types.SimpleNamespace(
+            from_url=lambda url, **_kwargs: (calls.append(url), FakeClient())[1],
+        ))
+        with (mock.patch.object(app, "_semantic_cache_configured", True),
+              mock.patch.object(app, "DENSE_ENDPOINT", ""),
+              mock.patch.dict(os.environ, {"REDIS_URL": "rediss://redis.example:6380/0",
+                                           "SEMANTIC_CACHE_EMBEDDING_ENDPOINT": ""}),
+              mock.patch.dict(sys.modules, {"redis": fake_redis})):
+            self.assertIsNotNone(app._load_semantic_cache())
+        self.assertEqual(calls, ["rediss://redis.example:6380/0"])
 
 
 class _FakeVllm(BaseHTTPRequestHandler):

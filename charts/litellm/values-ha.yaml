@@ -1,0 +1,19 @@
+# Apply on top of values.yaml after provisioning shared Redis and enough tooling nodes.
+replicaCount: 3
+database:
+  disableSchemaUpdate: true
+redis:
+  enabled: true
+  existingSecret:
+    name: serving-redis
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+topologySpreadConstraints:
+  - maxSkew: 1
+    minDomains: 2
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: litellm

@@ -12,6 +12,9 @@ owner        = "bao"
 allowed_cidrs = ["203.0.113.10/32", "203.0.113.11/32"]
 
 cpu_instance_type = "m7i.large"
+# For the 3-replica serving profile: cpu_desired=3 and node_subnet_count=2.
+cpu_desired = 2
+node_subnet_count = 1
 
 # L4 24GB, $0.8048/hr. Ada, so FP8 is available.
 gpu_instance_type = "g6.xlarge"

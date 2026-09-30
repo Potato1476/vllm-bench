@@ -1,4 +1,4 @@
-"""Administrative commands for the pod-local semantic response cache."""
+"""Administrative commands for the semantic response cache."""
 
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ def main() -> int:
 
     import redis
 
-    client = redis.Redis(
+    url = os.getenv("REDIS_URL", "").strip()
+    client = (redis.Redis.from_url(url, socket_timeout=2) if url else redis.Redis(
         unix_socket_path=os.getenv("REDIS_UNIX_SOCKET", "/run/redis/redis.sock"),
         socket_timeout=2,
-    )
+    ))
     cache = SemanticResponseCache(client)
     if args.command == "invalidate":
         removed = cache.invalidate_document(args.document_id)

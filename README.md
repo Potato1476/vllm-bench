@@ -287,6 +287,10 @@ tải bù từ HuggingFace — một lần tải bù là một phép đo dùng m
 
 ## Triển khai LiteLLM gateway
 
+Profile 3 replica cho LiteLLM và guardrail: [docs/ha-serving.md](docs/ha-serving.md).
+Profile này cần Redis dùng chung và node tooling ở nhiều AZ; triển khai bằng
+`make litellm-up HA=1` sau khi hoàn tất các điều kiện trong tài liệu.
+
 Tài liệu chi tiết về các thay đổi, Aurora và cách đọc/sử dụng Makefile nằm tại
 [`docs/litellm-aurora-implementation.md`](docs/litellm-aurora-implementation.md).
 

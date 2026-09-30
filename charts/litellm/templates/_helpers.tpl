@@ -16,8 +16,17 @@ b
 {{- if not .Values.existingSecret.name -}}
 {{- fail "existingSecret.name is required; create it with `make litellm-secret`" -}}
 {{- end -}}
-{{- if gt (int .Values.replicaCount) 1 -}}
-{{- fail "this phase has no Redis; replicaCount must stay at 1 so quota/router state is not split across pods" -}}
+{{- if lt (int .Values.replicaCount) 1 -}}
+{{- fail "replicaCount must be at least 1" -}}
+{{- end -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.redis.enabled) -}}
+{{- fail "multiple LiteLLM replicas require shared Redis (redis.enabled=true)" -}}
+{{- end -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.database.disableSchemaUpdate) -}}
+{{- fail "multiple LiteLLM replicas require database.disableSchemaUpdate=true and a one-time migration before rollout" -}}
+{{- end -}}
+{{- if and .Values.redis.enabled (not .Values.redis.existingSecret.name) -}}
+{{- fail "redis.existingSecret.name is required when Redis is enabled" -}}
 {{- end -}}
 {{- if and (eq .Values.service.type "NodePort") (not .Values.service.nodePort) -}}
 {{- fail "service.nodePort is required when service.type=NodePort" -}}

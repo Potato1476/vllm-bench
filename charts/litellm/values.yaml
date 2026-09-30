@@ -4,6 +4,17 @@ mode: shared
 
 replicaCount: 1
 
+# Use an external, shared Redis before increasing replicaCount. The Secret contains
+# REDIS_URL, REDIS_HOST, REDIS_PORT and REDIS_PASSWORD (never put credentials in values).
+redis:
+  enabled: false
+  existingSecret:
+    name: ""
+
+# With multiple replicas, run database migrations once before rollout.
+database:
+  disableSchemaUpdate: false
+
 image:
   repository: ghcr.io/berriai/litellm
   # Pinned: a moving tag makes rollback and benchmark lineage impossible to reproduce.
@@ -68,7 +79,6 @@ nodeSelector:
 tolerations: []
 
 podDisruptionBudget:
-  # Kept for the future Redis-backed HA profile. This phase deliberately runs one pod.
   enabled: false
   minAvailable: 1
 

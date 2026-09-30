@@ -1,0 +1,19 @@
+# Apply on top of values.yaml after provisioning shared Redis and enough tooling nodes.
+replicaCount: 3
+semanticCache:
+  redis:
+    mode: external
+    existingSecret:
+      name: serving-redis
+      key: REDIS_URL
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+topologySpreadConstraints:
+  - maxSkew: 1
+    minDomains: 2
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: guardrail
