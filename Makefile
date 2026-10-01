@@ -208,24 +208,31 @@ kill-nodes: ## Phanh khan cap: ha moi node group ve 0 ngay, khong destroy
 # worst possible failure for the one command that controls the project's largest cost.
 #
 # Because Terraform ignores the field, changing it out of band creates no drift.
-gpu: ## Scale the L4 node group: make gpu n=0|1|3
+# Both scaling targets send desiredSize ALONE, and deliberately do not resend min/max.
+#
+# They used to pass minSize=0,maxSize=3 and minSize=0,maxSize=1, which made the Makefile a
+# second, silent source of truth for a bound eks.tf already owns -- and the two had already
+# drifted: eks.tf allowed four L4 nodes while `make gpu` quietly reset the ceiling to three
+# on every call. Sending desiredSize alone leaves Terraform the only place a ceiling is
+# written, and a desiredSize above it is refused by AWS loudly instead of being clamped.
+gpu: ## Scale the L4 node group: make gpu n=0..4 (ceiling lives in eks.tf)
 	@test -n "$(n)" || { echo "usage: make gpu n=0|1|3"; exit 1; }
 	@ng=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
 		--query "nodegroups[?starts_with(@,'gpu-2')]|[0]" --output text); \
 	echo "scaling $$ng to $(n) ..."; \
 	aws eks update-nodegroup-config --cluster-name $(CLUSTER) --region $(REGION) \
-		--nodegroup-name "$$ng" --scaling-config minSize=0,maxSize=3,desiredSize=$(n) \
+		--nodegroup-name "$$ng" --scaling-config desiredSize=$(n) \
 		--query 'update.status' --output text
 	@echo "a new node needs ~3-4 min to join, plus 1-3 min to sync weights from S3."
 	@echo "watch: kubectl get nodes -l workload=inference -w"
 
-gpu-l40s: ## Scale the L40S comparison node group: make gpu-l40s n=0|1
-	@test -n "$(n)" || { echo "usage: make gpu-l40s n=0|1"; exit 1; }
+gpu-l40s: ## Scale the L40S node group: make gpu-l40s n=0..4 (ceiling lives in eks.tf)
+	@test -n "$(n)" || { echo "usage: make gpu-l40s n=0..4"; exit 1; }
 	@ng=$$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) \
 		--query "nodegroups[?starts_with(@,'gpu-l40s')]|[0]" --output text); \
 	echo "scaling $$ng to $(n) ..."; \
 	aws eks update-nodegroup-config --cluster-name $(CLUSTER) --region $(REGION) \
-		--nodegroup-name "$$ng" --scaling-config minSize=0,maxSize=1,desiredSize=$(n) \
+		--nodegroup-name "$$ng" --scaling-config desiredSize=$(n) \
 		--query 'update.status' --output text
 
 fmt: ## Rewrite Terraform files to canonical format
@@ -325,7 +332,7 @@ MODE ?= shared
 # throughput figure from 4-bit weights is not comparable with one from FP16.
 QUANT ?= awq
 
-vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLICAS=n
+vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLICAS=n CARD=l4|l40s
 # `terraform output -raw` on a destroyed tier exits 0 and prints a "No outputs found"
 # warning, in colour, to stdout. So neither `|| echo PLACEHOLDER` nor a plain -z test
 # fires: the variable ends up holding ANSI escape sequences, which reach the chart and
@@ -345,6 +352,7 @@ vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLI
 		--set mode=$(MODE) \
 		--set quantization=$(QUANT) \
 		$(if $(REPLICAS),--set replicaCount=$(REPLICAS),) \
+		$(if $(CARD),-f charts/vllm/values-$(CARD).yaml,) \
 		--set artifactsBucket="$$bkt" \
 		--set roleArn="$$arn" \
 		--wait --timeout 25m

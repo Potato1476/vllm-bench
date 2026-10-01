@@ -86,6 +86,23 @@ const LEVEL_SECONDS = Number(__ENV.LEVEL_SECONDS || 90);
 // gets smeared into a gentle slope that looks like headroom.
 const DRAIN_SECONDS = Number(__ENV.DRAIN_SECONDS || 45);
 
+// A warm-up level that is MEASURED AND THEN THROWN AWAY, because the drain above only
+// separates levels from each other and nothing separated the FIRST level from a cold
+// engine.
+//
+// What that cost: the four-L4 ramp reported p95 1665ms at 10 req/s against 2190ms at
+// 40 -- the lowest load looking worse than four times the load, which reads as a broken
+// measurement and took a per-10s breakdown to explain. The first seconds of a run pay for
+// CUDA graph capture, an empty prefix cache (82.6% hit once warm) and torch autotuning,
+// and at 10 req/s those seconds are a large share of the level.
+//
+// It runs as its own scenario rather than as a lower first level, because every metric is
+// tagged by scenario name: `served_latency{scenario:warmup}` is simply a different series,
+// so no threshold, no report line and no probe aggregate can pick it up by accident. That
+// is the difference between discarding data and hoping nobody averages it in.
+const WARMUP_SECONDS = Number(__ENV.WARMUP_SECONDS || 60);
+const WARMUP_RPS = Number(__ENV.WARMUP_RPS || 3);
+
 const RPS = Number(__ENV.RPS || 2);
 const DURATION = __ENV.DURATION || '10m';
 const ATTACK_MIX = Number(__ENV.ATTACK_MIX || 0);
@@ -123,11 +140,29 @@ function vus(rate) {
 
 function arrival(name, rate, duration, startTime, extra) {
   const size = vus(rate);
+
+  // k6 requires an INTEGER rate, so a fractional one is expressed by stretching timeUnit
+  // instead: 0.5 req/s becomes 1 per 2s. Without this, `SCENARIO=soak` could not start at
+  // all -- its default is 0.5 req/s, and k6 rejected the options with
+  //
+  //     json: cannot unmarshal number 0.5 into Go struct field ... rate of type int64
+  //
+  // pointed at a line of unrelated TLS config, so `make load-soak` has never once run.
+  // Found by inspecting every scenario rather than by running the one being used today;
+  // a target that cannot start is not visible until something tries to start it.
+  let unitSeconds = 1;
+  let perUnit = rate;
+  if (!Number.isInteger(rate)) {
+    unitSeconds = Math.ceil(1 / (rate - Math.floor(rate) || 1));
+    perUnit = Math.round(rate * unitSeconds);
+    if (perUnit < 1) { perUnit = 1; unitSeconds = Math.round(1 / rate); }
+  }
+
   return Object.assign(
     {
       executor: 'constant-arrival-rate',
-      rate,
-      timeUnit: '1s',
+      rate: perUnit,
+      timeUnit: `${unitSeconds}s`,
       duration,
       startTime,
       preAllocatedVUs: size.pre,
@@ -157,6 +192,11 @@ if (SCENARIO === 'smoke') {
   OFFERED.smoke = 0;
 } else if (SCENARIO === 'ramp') {
   let offset = 0;
+  if (WARMUP_SECONDS > 0 && WARMUP_RPS > 0) {
+    scenarios.warmup = arrival('warmup', WARMUP_RPS, `${WARMUP_SECONDS}s`, '0s');
+    OFFERED.warmup = WARMUP_RPS;
+    offset += WARMUP_SECONDS + DRAIN_SECONDS;
+  }
   for (const rate of RAMP_LEVELS) {
     const name = `ramp_${String(rate).replace('.', '_')}`;
     scenarios[name] = arrival(name, rate, `${LEVEL_SECONDS}s`, `${offset}s`);

@@ -111,13 +111,19 @@ variable "gpu_l40s_instance_type" {
 }
 
 variable "gpu_l40s_desired" {
-  description = "L40S nodes. 1 only during the four-hour comparison session in week 2; 0 the rest of the project."
+  description = "L40S nodes. 0 for ordinary sessions; up to 4 when L40S is the serving card under test."
   type        = number
   default     = 0
 
+  # 4, not 1. The old bound encoded an assumption rather than a limit: L40S was only ever
+  # going to be one node for one comparison session. Then the measured 40 req/s ceiling on
+  # four L4s left TC1's 50 req/s out of reach, and the 16 vCPU quota allows no fifth L4 --
+  # while g6e.xlarge is also 4 vCPU, so four L40S fit the same quota. The card stopped
+  # being a comparison and became the candidate, and `<= 1` was then one of four separate
+  # places that had to be widened to find that out.
   validation {
-    condition     = var.gpu_l40s_desired >= 0 && var.gpu_l40s_desired <= 1
-    error_message = "gpu_l40s_desired must be 0 or 1."
+    condition     = var.gpu_l40s_desired >= 0 && var.gpu_l40s_desired <= 4
+    error_message = "gpu_l40s_desired must be between 0 and 4 (16 vCPU quota / 4 vCPU per g6e.xlarge)."
   }
 }
 

@@ -1,0 +1,30 @@
+# Card constants for g6e.xlarge (1x L40S 48GB), applied with `make vllm-up CARD=l40s`.
+#
+# WHY THIS FILE EXISTS
+#
+# values.yaml carries four numbers that describe the HARDWARE rather than the workload --
+# gpuMemoryGiB, nodeAllocatableCpu, nodeAllocatableMemoryGiB, minKvCacheGiB -- and they
+# were L4 numbers with no label saying so. The `vllm.validate` helper does real arithmetic
+# with them to refuse a configuration that cannot start, so on an L40S that arithmetic was
+# silently wrong: it would reason about a 22.5 GiB card while vLLM was handed 0.90 of a
+# 45 GiB one. Wrong in the safe direction, which is the kind that survives a long time.
+#
+# Only the validation arithmetic reads these. gpuMemory stays a FRACTION passed through to
+# --gpu-memory-utilization, so vLLM measures the real card either way.
+#
+# The L4 values stay in values.yaml as the default because that is the lab's normal card.
+
+# nvidia-smi total, in GiB: 46068 MiB / 1024 = 44.99. Same convention as the L4 value
+# (23034 MiB -> 22.5), so the two are comparable.
+gpuMemoryGiB: 45.0
+
+# g6e.xlarge is 4 vCPU like g6.xlarge, so CPU allocatable is unchanged. Memory is 32 GiB
+# against 16, and EKS reserves ~6% of the extra, which is where 29.0 comes from.
+#
+# CONFIRM BEFORE TRUSTING, with the node up:
+#   kubectl get node -l gpu-type=l40s -o jsonpath='{.items[0].status.allocatable.memory}'
+# Only the shared-mode checks read this, and shared mode is not what this card is for, so
+# a wrong value here cannot affect a solo-a measurement. It is still a number that should
+# come from the node rather than from arithmetic about a different instance type.
+nodeAllocatableCpu: 3.7
+nodeAllocatableMemoryGiB: 29.0

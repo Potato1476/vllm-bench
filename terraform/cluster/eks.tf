@@ -203,9 +203,11 @@ module "eks" {
       }
     }
 
-    # Used for exactly one four-hour session in week 2, to get dollars-per-req/s for L40S
-    # against L4. That single number is what the production hardware choice rests on, so
-    # it is worth 7.44 USD. Left at 0 for the rest of the project.
+    # Began as one four-hour comparison session in week 2 to get dollars-per-req/s against
+    # L4. It is now the candidate serving card: four L4s measured 40 req/s against TC1's
+    # 50, the 16 vCPU quota allows no fifth L4, and g6e.xlarge is also 4 vCPU -- so four
+    # L40S fit the quota that four L4s already fill. Still 0 by default; this group costs
+    # 1.861 USD/hr per node.
     gpu-l40s = {
       name           = "gpu-l40s"
       subnet_ids     = local.node_subnet_ids
@@ -214,8 +216,18 @@ module "eks" {
 
       ami_type = "AL2023_x86_64_NVIDIA"
 
-      min_size     = 0
-      max_size     = 1
+      min_size = 0
+      # 4 to match the quota, not 1. See the note on var.gpu_l40s_desired: this was one of
+      # four ceilings that each had to be widened before a second L40S could exist, and
+      # three of them failed silently.
+      #
+      # Capacity, not just the ceiling, is why node_subnet_count matters here. A week-2
+      # apply died on InsufficientInstanceCapacity for g6e.xlarge in us-east-1a, and with
+      # the group pinned to one subnet there was no second AZ for the ASG to try. The
+      # instance type is OFFERED in four us-east-1 AZs; being offered is not being
+      # available, and the only configuration that can react to that is more than one
+      # subnet.
+      max_size     = 4
       desired_size = var.gpu_l40s_desired
 
       cloudinit_pre_nodeadm = local.gpu_cloudinit

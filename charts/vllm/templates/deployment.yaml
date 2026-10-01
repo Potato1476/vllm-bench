@@ -49,28 +49,52 @@ spec:
       # The taint keeps everything else off the GPU node; the nodeSelector keeps vLLM off
       # every other node. Both halves are needed -- a toleration alone would still let
       # vLLM land on the tooling node and quietly measure a CPU-only run.
-      {{- if eq $root.Values.mode "split" }}
-      # One model per node, enforced by the scheduler rather than by convention.
-      #
-      # `shared` puts both engines on one L4 by splitting gpu-memory-utilization 0.65/0.25.
-      # That was the only way to run two models on one card, and it costs both of them:
-      # model A gets 14.6 GiB instead of 20.3, which measured out as 5.19 GiB of KV cache
-      # instead of roughly 11 -- about 73 concurrent sequences at this corpus's 1300-token
-      # prompts instead of ~154.
-      #
-      # requiredDuringScheduling, not preferred. If there is only one GPU node the second
-      # engine stays Pending and says so, which is the honest outcome: a preference would
-      # silently co-schedule them and hand back the shared-mode numbers under a name that
-      # claims otherwise.
+      # requiredDuringScheduling, not preferred, in both rules below. If there is not a
+      # node for every pod the extra one stays Pending and says so, which is the honest
+      # outcome: a preference would silently co-schedule and hand back numbers under a
+      # name that claims otherwise.
+      {{- if or (eq $root.Values.mode "split") (gt (int ($m.replicas | default $root.Values.replicaCount | default 1)) 1) }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
+            {{- if gt (int ($m.replicas | default $root.Values.replicaCount | default 1)) 1 }}
+            # NEVER two replicas of the SAME model on one node, in any mode.
+            #
+            # This rule was missing, and the reason it was missing is that nothing needed
+            # it until replicaCount could exceed 1. It is not a redundancy with the
+            # resource request: the GPU operator is configured with time-slicing
+            # replicas: 2 (k8s/monitoring/gpu-operator-values.yaml), so each physical card
+            # advertises nvidia.com/gpu: 2. Four replicas asking for one GPU each therefore
+            # FIT on two cards, and the scheduler is free to pack them that way -- two
+            # engines sharing one card's bandwidth while another card sits idle.
+            #
+            # That would not fail. It would return a per-card capacity number that is
+            # roughly half the truth, with no error anywhere to say so. The four-L4 scale
+            # test did land one pod per card (8060/8044/7977/7939 requests, 1.5% spread),
+            # but nothing in the chart required it -- that run was luck, and a measurement
+            # that depends on scheduler luck is not a measurement.
+            - labelSelector:
+                matchExpressions:
+                  - key: model-class
+                    operator: In
+                    values: [{{ $key | quote }}]
+              topologyKey: kubernetes.io/hostname
+            {{- end }}
+            {{- if eq $root.Values.mode "split" }}
+            # One model CLASS per node, which is what split means.
+            #
+            # `shared` puts both engines on one L4 by splitting gpu-memory-utilization
+            # 0.65/0.25. That was the only way to run two models on one card, and it costs
+            # both of them: model A gets 14.6 GiB instead of 20.3, which measured out as
+            # 5.19 GiB of KV cache instead of roughly 11 -- about 73 concurrent sequences
+            # at this corpus's 1300-token prompts instead of ~154.
             - labelSelector:
                 matchExpressions:
                   - key: app
                     operator: In
                     values: ["vllm-server"]
               topologyKey: kubernetes.io/hostname
+            {{- end }}
       {{- end }}
       nodeSelector:
         {{- toYaml $root.Values.nodeSelector | nindent 8 }}
