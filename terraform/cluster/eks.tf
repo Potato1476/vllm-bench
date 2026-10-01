@@ -174,7 +174,7 @@ module "eks" {
 
       labels = {
         workload         = "inference"
-        gpu-type         = "l4"
+        gpu-type         = local.gpu_type
         "nvidia.com/gpu" = "true"
       }
 
@@ -234,7 +234,7 @@ module "eks" {
 
       labels = {
         workload         = "inference"
-        gpu-type         = "l40s"
+        gpu-type         = local.gpu_alt_type
         "nvidia.com/gpu" = "true"
       }
 
