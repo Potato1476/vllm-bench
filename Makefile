@@ -332,7 +332,16 @@ MODE ?= shared
 # throughput figure from 4-bit weights is not comparable with one from FP16.
 QUANT ?= awq
 
-vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLICAS=n CARD=l4|l40s
+# REPLICAS sets both models; REPLICAS_A / REPLICAS_B size them separately, which is what
+# an uneven split needs. `mode=split REPLICAS_A=3 REPLICAS_B=1` is three cards of
+# qwen2.5-7b and one of qwen2.5-1.5b: the large model gets the capacity because it is the
+# one TC1's 50 req/s is measured against, while the small model stays served, because the
+# brief asks for a multi-model cluster and one model on four cards is not one.
+#
+# Verify a new passthrough with `make -n vllm-up ...` before trusting it. A variable the
+# recipe does not reference is not an error -- make expands it to nothing and the install
+# proceeds with the old value, which has already happened twice in this Makefile.
+vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b|split QUANT=awq|none REPLICAS[_A|_B]=n CARD=l4|l40s
 # `terraform output -raw` on a destroyed tier exits 0 and prints a "No outputs found"
 # warning, in colour, to stdout. So neither `|| echo PLACEHOLDER` nor a plain -z test
 # fires: the variable ends up holding ANSI escape sequences, which reach the chart and
@@ -352,6 +361,8 @@ vllm-up: ## Install/upgrade vLLM. MODE=shared|solo-a|solo-b QUANT=awq|none REPLI
 		--set mode=$(MODE) \
 		--set quantization=$(QUANT) \
 		$(if $(REPLICAS),--set replicaCount=$(REPLICAS),) \
+		$(if $(REPLICAS_A),--set models.a.replicas=$(REPLICAS_A),) \
+		$(if $(REPLICAS_B),--set models.b.replicas=$(REPLICAS_B),) \
 		$(if $(CARD),-f charts/vllm/values-$(CARD).yaml,) \
 		--set artifactsBucket="$$bkt" \
 		--set roleArn="$$arn" \
