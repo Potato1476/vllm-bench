@@ -1040,8 +1040,34 @@ class Handler(BaseHTTPRequestHandler):
             cache_variant = _cache_variant(
                 payload, checked.canonical.scope if checked.canonical is not None else None
             )
+            # X-Bypass-Cache: a caller saying "answer this from the engine, not from
+            # Redis". It exists because a capacity measurement cannot be made against a
+            # cache, and CLEARING the cache first does not achieve that.
+            #
+            # The eval corpus is 144 questions -- 36 base questions with 4 paraphrases
+            # each -- and the semantic threshold is 0.96, close enough that the paraphrases
+            # match each other. So a cleared cache refills from the corpus itself within
+            # the first couple of hundred requests: at 50 req/s that is about four seconds,
+            # after which every request is a hit. Measured on exactly that: a 15,000
+            # request run at 50 req/s reached the engine 191 times, and the gateway's
+            # blended p95 read 9ms while vLLM's own p95 was 4656ms. Both numbers were
+            # correct; only one of them was about the system.
+            #
+            # A header, not a chart value, because the alternative is `helm upgrade
+            # --set semanticCache.enabled=false` from a bench script -- which restarts the
+            # guardrail, mutates cluster state for a measurement, and leaves the platform
+            # in a different configuration than the one being reported on if the run dies
+            # partway.
+            #
+            # Safe for a client to set: it can only make a request SLOWER and more
+            # expensive, never reveal anything. That is the opposite of access_level
+            # above, which is refused from the request for exactly that asymmetry.
+            bypass_cache = (self.headers.get("X-Bypass-Cache") or "").strip().lower() in (
+                "1", "true", "yes",
+            )
             cache_eligible = (
                 checked.ok
+                and not bypass_cache
                 and checked.inbound_pii is not None
                 and not checked.inbound_pii.findings
                 and payload.get("n", 1) == 1

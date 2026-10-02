@@ -39,6 +39,20 @@ data:
       # all), but it is not sufficient. Both halves are needed, and they fail
       # independently and silently.
       user_header_name: X-Agent-Id
+      # Without this, a header the client sets never reaches the guardrail. LiteLLM builds
+      # its own request to the upstream and forwards nothing from the original by default,
+      # so X-Bypass-Cache was accepted, dropped, and the run came back with cache_hit=True
+      # and no error anywhere -- which is exactly the failure mode the header exists to
+      # prevent. Verified against v1.90.2 rather than assumed:
+      #
+      #   litellm_pre_call_utils.py:916   general_settings.get("forward_client_headers_to_llm_api") is True
+      #   litellm_pre_call_utils.py:726   header.lower().startswith("x-") and not "x-stainless"
+      #
+      # so the flag is the gate and any `x-` header passes it. Safe here because the only
+      # one the guardrail honours is X-Bypass-Cache, which can make a request slower and
+      # more expensive but cannot reveal anything -- unlike access_level, which app.py
+      # refuses from the request for that exact asymmetry.
+      forward_client_headers_to_llm_api: true
     litellm_settings:
       drop_params: true
       # Load-bearing for tracing, not only for logs. LiteLLM's OTEL callback otherwise

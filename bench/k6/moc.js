@@ -103,6 +103,15 @@ const DRAIN_SECONDS = Number(__ENV.DRAIN_SECONDS || 45);
 const WARMUP_SECONDS = Number(__ENV.WARMUP_SECONDS || 60);
 const WARMUP_RPS = Number(__ENV.WARMUP_RPS || 3);
 
+// Which scenarios send X-Bypass-Cache, i.e. which ones are measuring the engine rather
+// than the platform-with-cache. Overridable so the cached path can still be measured on
+// purpose: BYPASS_CACHE=0 restores the old behaviour, and the cache_hit thresholds below
+// then report what it costs.
+const CAPACITY_SCENARIOS = ['ramp', 'slo', 'steady', 'warmup'];
+const BYPASS_CACHE = __ENV.BYPASS_CACHE !== undefined && __ENV.BYPASS_CACHE !== ''
+  ? __ENV.BYPASS_CACHE === '1' || __ENV.BYPASS_CACHE === 'true'
+  : CAPACITY_SCENARIOS.includes(SCENARIO);
+
 const RPS = Number(__ENV.RPS || 2);
 const DURATION = __ENV.DURATION || '10m';
 const ATTACK_MIX = Number(__ENV.ATTACK_MIX || 0);
@@ -180,6 +189,8 @@ const scenarios = {};
 // Scenario name -> the rate it offered, so each probe can be tagged with the load it was
 // taken under. availability.py groups by exactly this field.
 const OFFERED = {};
+// Filled by the ramp branch, which is the only place its level names exist.
+const rampCacheThresholds = {};
 
 if (SCENARIO === 'smoke') {
   scenarios.smoke = {
@@ -201,6 +212,20 @@ if (SCENARIO === 'smoke') {
     const name = `ramp_${String(rate).replace('.', '_')}`;
     scenarios[name] = arrival(name, rate, `${LEVEL_SECONDS}s`, `${offset}s`);
     OFFERED[name] = rate;
+    // One per level, because the level names are not known until here.
+    //
+    // LATENCY thresholds stay off the ramp on purpose -- its upper levels are MEANT to
+    // fail and a red threshold there would report a successful knee-finding run as a
+    // broken one. A cache threshold is the opposite case: a ramp served from Redis has
+    // not found a knee at all, it has measured Redis, and the run is invalid rather than
+    // informative. `slo` had this guard and the ramp did not, which is how a ramp that
+    // was 99.8% cache hits -- 38 of 22,686 requests reaching the engine -- came back with
+    // a pretty curve and no complaint.
+    //
+    // With X-Bypass-Cache now sent for capacity scenarios this should read 0%, so the
+    // threshold doubles as a check that the header is understood: an older guardrail
+    // image ignores it silently and the only symptom is a number that looks too good.
+    rampCacheThresholds[`cache_hit{scenario:${name}}`] = ['rate<0.25'];
     offset += LEVEL_SECONDS + DRAIN_SECONDS;
   }
 } else if (SCENARIO === 'adversarial') {
@@ -284,6 +309,8 @@ export const options = {
     // offered, so the denominator is wrong and the result cannot be quoted. Re-run with
     // a larger MAX_VUS or from a machine that can keep up.
     'dropped_iterations{scenario:steady}': ['count<1'],
+    'cache_hit{scenario:steady}': ['rate<0.25'],
+    ...rampCacheThresholds,
   },
 };
 
@@ -310,6 +337,16 @@ export function request() {
       Authorization: `Bearer ${key}`,
       // The header, not the body field. See the ConfigMap comment.
       'X-Agent-Id': agent.id,
+      // Capacity scenarios answer "what can the ENGINE do", so they must not be answered
+      // from Redis. Clearing the cache beforehand does not achieve that: the corpus is
+      // 36 base questions with 4 paraphrases, the semantic threshold is 0.96, and the
+      // paraphrases match each other -- so a cleared cache refills from the corpus within
+      // a couple of hundred requests. Measured: 15,000 requests at 50 req/s reached the
+      // engine 191 times.
+      //
+      // `soak` is deliberately absent. Cache behaviour over a long session is what that
+      // scenario is for, and bypassing the cache there would remove its subject.
+      ...(BYPASS_CACHE ? { 'X-Bypass-Cache': '1' } : {}),
     },
     timeout: TIMEOUT,
     tags: { rps: String(rps), kind: draw.kind },

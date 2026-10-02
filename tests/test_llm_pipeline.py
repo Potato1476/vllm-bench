@@ -120,7 +120,8 @@ class GuardrailServiceTest(unittest.TestCase):
         cls.upstream.shutdown()
         cls.upstream.server_close()
 
-    def _post(self, question: str) -> tuple[int, dict[str, object]]:
+    def _post(self, question: str,
+              headers: dict[str, str] | None = None) -> tuple[int, dict[str, object]]:
         request = urllib.request.Request(
             f"{self.base}/v1/chat/completions",
             data=json.dumps({
@@ -128,7 +129,7 @@ class GuardrailServiceTest(unittest.TestCase):
                 "messages": [{"role": "user", "content": question}],
                 "max_tokens": 100,
             }).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **(headers or {})},
             method="POST",
         )
         try:
@@ -172,6 +173,61 @@ class GuardrailServiceTest(unittest.TestCase):
             self.assertFalse(first["guardrail"]["cache"]["hit"])
             self.assertTrue(second["guardrail"]["cache"]["hit"])
             self.assertEqual(second["guardrail"]["cache"]["kind"], "exact")
+        finally:
+            app._semantic_cache = saved
+
+    def test_bypass_cache_header_reaches_the_engine_and_does_not_populate(self) -> None:
+        """X-Bypass-Cache must skip the LOOKUP and also skip the STORE.
+
+        Skipping only the lookup would be worse than doing nothing: the first capacity run
+        would still fill Redis from the corpus and poison every run after it, while
+        reporting a clean cache_hit rate of its own. Both halves are asserted here because
+        only one of them is visible in a single run's output.
+        """
+        from services.llm_pipeline.semantic_cache import SemanticResponseCache
+        from tests.test_semantic_cache import MemoryRedis
+
+        saved = app._semantic_cache
+        app._semantic_cache = SemanticResponseCache(MemoryRedis(), embedder=None)
+        try:
+            question = "Chuyến xe hoàn thành cần những điều kiện nào?"
+            bypass = {"X-Bypass-Cache": "1"}
+
+            before = _FakeVllm.calls
+            first_status, first = self._post(question, bypass)
+            second_status, second = self._post(question, bypass)
+            # Two identical requests, two generations: the cache answered neither.
+            self.assertEqual((first_status, second_status), (200, 200))
+            self.assertEqual(_FakeVllm.calls, before + 2)
+            self.assertFalse(first["guardrail"]["cache"]["hit"])
+            self.assertFalse(second["guardrail"]["cache"]["hit"])
+
+            # And nothing was written, so an ordinary request still misses afterwards.
+            third_status, third = self._post(question)
+            self.assertEqual(third_status, 200)
+            self.assertFalse(third["guardrail"]["cache"]["hit"])
+            self.assertEqual(_FakeVllm.calls, before + 3)
+        finally:
+            app._semantic_cache = saved
+
+    def test_bypass_cache_header_is_off_unless_asked_for(self) -> None:
+        """The header must be opt-in, or it silently disables the cache in production."""
+        from services.llm_pipeline.semantic_cache import SemanticResponseCache
+        from tests.test_semantic_cache import MemoryRedis
+
+        saved = app._semantic_cache
+        app._semantic_cache = SemanticResponseCache(MemoryRedis(), embedder=None)
+        try:
+            question = "Điều kiện nào xác định một chuyến đã hoàn thành?"
+            for value in ("", "0", "false", "no"):
+                app._semantic_cache = SemanticResponseCache(MemoryRedis(), embedder=None)
+                headers = {} if value == "" else {"X-Bypass-Cache": value}
+                self._post(question, headers)
+                _, second = self._post(question, headers)
+                self.assertTrue(
+                    second["guardrail"]["cache"]["hit"],
+                    f"X-Bypass-Cache={value!r} should not have disabled the cache",
+                )
         finally:
             app._semantic_cache = saved
 
