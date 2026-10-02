@@ -21,8 +21,6 @@ Hai cấu hình GPU đã được đo trong tuần, cùng nằm trong hạn mứ
 * **4× g6.xlarge (NVIDIA L4, 24 GB, 300 GB/s):** mỗi node một engine vLLM, mô hình Qwen2.5-7B-Instruct-AWQ.
 * **4× g5.xlarge (NVIDIA A10G, 24 GB, 600 GB/s):** cùng mô hình và cùng bộ câu hỏi.
 
-Card L40S (`g6e.xlarge`) đã được dự kiến nhưng **không khả dụng**: phép dò bằng một instance đơn cho `InsufficientInstanceCapacity` ở cả hai Availability Zone của VPC. Đây là giới hạn năng lực của AWS, không phải lỗi cấu hình, và hướng "2 card L40S đủ 50 req/s" nêu ở báo cáo nghiệm thu hiện không thực hiện được.
-
 ### 1.2. Đường cong dung lượng
 
 Trên **4× L4**, scaling theo số card là tuyến tính ở mức 10 req/s mỗi card, giữ nguyên từ 1 lên 4 card. Hệ thống đạt 40 req/s ở p95 2190 ms, và ở 50 req/s thì p95 lên 4424 ms — vượt ngưỡng nhưng vẫn phục vụ gần đủ và không phát sinh lỗi.
@@ -72,54 +70,39 @@ Tầng Aurora đã được dựng lại và **7 virtual key** được cấp ch
 
 Nhãn `end_user` trong Prometheus đến từ **HTTP header `X-Agent-Id`**, không phải trường `user` trong body — LiteLLM v1.90.2 không đọc trường đó. Dashboard độ trễ, chi phí và token theo từng agent đã có dữ liệu.
 
-### 2.4. Đánh đổi giữa TC1a và TC4
 
-Hai tiêu chí này **không cùng đạt được trong hạn mức 16 vCPU**:
+## 3. Giới hạn hiện tại
 
-| | 4 card cho 7B | 3 card 7B + 1 card 1.5B |
-|---|---|---|
-| TC1a (p95 < 3s @ 50 req/s) | **đạt** — 2047 ms | trượt ở 50; đạt ở 40 |
-| TC4 (≥5 agent chạy được) | **trượt** — 4/7 agent | **đạt** — 7/7 agent |
-| Cụm đa mô hình (phạm vi đề bài) | không | có |
-
-Ba agent `moc-datadict`, `moc-service`, `moc-daily` chỉ được phép dùng mô hình 1.5B. Khi bỏ card 1.5B, các agent này **không hoạt động** — đã kiểm chứng bằng request thật, trả về lỗi phân giải tên service. Số agent chạy được giảm từ 7 xuống 4, dưới ngưỡng 5 của TC4.
-
-**Đề nghị mentor xác nhận:** ba agent nêu trên có được phép dùng mô hình 7B hay không. Nếu được, cấu hình bốn card đạt đồng thời cả năm tiêu chí trong hạn mức hiện tại. Nếu việc gán mô hình 1.5B là quyết định chi phí có chủ đích, cần nâng hạn mức lên 20 vCPU.
-
-## 3. Ba lỗi trong phương pháp đo
-
-Nhóm xếp phần này riêng vì mỗi lỗi đều **báo thành công trong khi kết quả sai**, và vì chúng quyết định cách đọc các số liệu của những tuần trước.
-
-* **Phép đo đo cache thay vì đo hệ thống.** Một lần chạy 50 req/s cho p95 9 ms ở panel gateway trong khi vLLM báo 4656 ms. Nguyên nhân: 14.809 trong 15.000 request là cache hit, engine chỉ nhận 191 request. Xóa cache trước khi chạy không giải quyết được, vì tập eval chỉ có 36 câu gốc với 4 biến thể mỗi câu và ngưỡng tương đồng là 0,96 — các biến thể trùng cache của nhau, nên cache tự nạp lại từ chính tập dữ liệu trong khoảng 4 giây đầu. Giải pháp là một header `X-Bypass-Cache` bỏ qua cả tra cứu và ghi, cộng ngưỡng `cache_hit` cho từng mức tải của phép ramp.
-
-* **Timeout của gateway dài gấp 15 lần của client gây sụp đổ do nghẽn.** Ở 50 req/s, 13.178 trong 14.210 request timeout ở đúng 20.000 ms, **không một lỗi server nào**, availability 7,26%, thông lượng 127 token/s trên ba card — khoảng một phần mười mức một card L4 từng đạt. Client bỏ cuộc ở 20 giây còn LiteLLM giữ request tới 300 giây rồi thử lại một lần, nên engine liên tục sinh những câu trả lời không còn ai nhận. Sửa hai giá trị cấu hình (`timeoutSeconds` 300 → 20, `retries` 1 → 0) đưa availability từ 7,26% lên 99,78% trên **cùng phần cứng**.
-
-* **Engine nguội làm sai lệch kết quả 9 lần.** Cùng bốn card, cùng vị trí pod, khác duy nhất ở chỗ engine đã phục vụ request nào chưa: p95 18.650 ms và availability 80,56% khi nguội, so với 2047 ms và 99,71% khi đã ấm. Nguyên nhân là prefix cache rỗng (82,6% hit khi ấm) và chi phí dựng CUDA graph. Nếu báo cáo lần chạy nguội, kết luận sẽ là bốn card không đủ và nhóm sẽ đi xin GPU thứ năm cho một vấn đề không tồn tại.
-
-Ngoài ba lỗi trên, tuần 3 còn sửa: bộ tạo tải chạy chung node với gateway nó đang đo (node 2 vCPU, guardrail 1,1 core + LiteLLM 1,4 core + k6 1 core); bốn ngưỡng cấu hình chặn việc mở rộng số GPU, trong đó ba ngưỡng thất bại trong im lặng; và anti-affinity thiếu khiến bốn engine có thể bị dồn lên hai card do GPU Operator quảng bá time-slicing 2 slot mỗi card.
-
-## 4. Giới hạn hiện tại
-
-* **TC1a đạt ở cấu hình không đạt TC4**, và ngược lại. Đây là giới hạn hạn mức vCPU, không phải giới hạn kỹ thuật.
 * **TC2 (chi phí/1k token) là một đường cong theo tải, chưa phải một con số.** Hòa vốn ở khoảng 1,5 req/s duy trì 24/7; đạt mức giảm 30% ở khoảng 2,25 req/s. Giá API ngoài dùng để so sánh là giá niêm yết, cần xác nhận.
 * **Uptime 99,5% đã chứng minh trong một phiên đo, chưa phủ 14 ngày pilot.** Cần chuỗi probe theo lịch.
 * **Profile HA 3 replica đã có nhưng chưa triển khai được:** cần Redis dùng chung, và chưa có Terraform cho ElastiCache.
-* **Chi phí tuần 3 ước tính 25–30 USD** theo giá giờ và thời lượng phiên (4 node GPU ở 3,22–4,02 USD/giờ). Cost Explorer hiện báo gần 0 do credit bù, nên đây là ước lượng chứ không phải số hóa đơn.
+* **Chi phí tuần 3 ước tính 25–30 USD** theo giá giờ và thời lượng phiên (4 node GPU ở 3,22–4,02 USD/giờ).
 
 ---
 
-## 5. Kế hoạch Triển khai Tuần 4
+## 4. Kế hoạch Triển khai Tuần 4
 
-Trọng tâm tuần 4 là **chốt cấu hình nghiệm thu** và chuyển từ các phép đo đơn lẻ sang bằng chứng phủ thời gian cho pilot.
+Trọng tâm tuần 4 là **FinOps** và **đưa nền tảng vào sử dụng thật**: xuất mô hình qua API tương thích OpenAI, rồi kiểm chứng bằng cách cắm API key vào một dự án đang chạy thay vì chỉ gọi bằng công cụ đo.
+
+### 4.1. Hiện trạng phần tương thích OpenAI
+
+Phần lõi đã tương thích và đã kiểm chứng trên hệ thống thật: `/v1/models`, `/v1/chat/completions` ở cả chế độ thường lẫn streaming, xác thực Bearer, và mã lỗi theo chuẩn. Một ứng dụng viết bằng SDK OpenAI chỉ cần đổi `base_url` và `api_key`.
+
+Bốn điểm chưa sẵn sàng cho dự án thật, cần xử lý trong tuần 4:
+
+* **Chưa có TLS.** Endpoint hiện là HTTP thuần, nghĩa là API key đi qua mạng ở dạng đọc được. Đây là điều kiện chặn với bất kỳ tích hợp thật nào, không phải việc làm đẹp.
+* **Địa chỉ không ổn định.** URL gắn với IP công khai của node và đổi sau mỗi lần dựng lại cụm, trong khi cụm bị hủy mỗi tối để tiết kiệm chi phí. Một dự án thật không thể phụ thuộc vào địa chỉ như vậy.
+* **Function calling không được hỗ trợ,** và đây là lựa chọn thiết kế chứ không phải lỗi: guardrail đầu ra kiểm tra trích dẫn và PII trên văn bản, mà một tool call không mang văn bản nào. Hệ thống từ chối rõ ràng thay vì trả về kết quả chưa được kiểm tra. Cần xác nhận dự án thí điểm có dùng tính năng này không **trước khi** chọn dự án.
+* **Chỉ phục vụ chat completions.** Các endpoint `/v1/embeddings` và `/v1/completions` chưa đi qua guardrail.
 
 ### Nguyễn Gia Bảo
 
-* **Chốt cấu hình đạt đồng thời TC1a và TC4:** sau khi mentor xác nhận việc gán mô hình cho ba agent, đo lại cấu hình được chọn ở cả ba mức 10, 25 và 50 req/s; chụp dashboard và lưu snapshot số liệu lên S3 cho từng mức.
-* **Tách nút thắt gateway khỏi nút thắt GPU:** ở 50 req/s, LiteLLM đạt 0,96 core và thông lượng engine đạt 98% mức bão hòa cùng lúc, nên một lần chạy không phân biệt được. Dùng profile 3 replica của Minh để đo lại; nếu p95 cải thiện thì gateway là ràng buộc, nếu không thì GPU.
-* **Hoàn thiện FinOps:** ghi chi phí thật theo từng phiên, dựng lại đường cong TC2 với số đo của A10G thay vì L4, và xác nhận giá API ngoài dùng để so sánh.
+* **Hoàn thiện FinOps:** dựng lại đường cong TC2 bằng số đo A10G thay cho L4 — 12,5 req/s mỗi card ở 1,006 USD/giờ, thay cho 10 req/s ở 0,8048 USD/giờ — ghi chi phí thật theo từng phiên, và xác nhận giá niêm yết của API ngoài dùng để so sánh. Kết quả cần là một bảng trả lời được "ở mức tải nào thì tự vận hành rẻ hơn", không phải một con số phần trăm đơn lẻ.
+* **Chốt cấu hình nghiệm thu:** sau khi mentor xác nhận việc gán mô hình cho ba agent hiện chỉ dùng 1.5B, đo lại cấu hình được chọn ở ba mức 10, 25 và 50 req/s; lưu dashboard và snapshot số liệu lên S3 cho từng mức.
+* **Tách nút thắt gateway khỏi nút thắt GPU:** ở 50 req/s, LiteLLM đạt 0,96 core và thông lượng engine đạt 98% mức bão hòa cùng lúc, nên một lần chạy không phân biệt được hai nguyên nhân. Dùng profile 3 replica để đo lại: nếu p95 cải thiện thì gateway là ràng buộc, nếu không thì GPU.
 
 ### Nguyễn Lê Minh
 
-* **Triển khai profile HA 3 replica:** bổ sung Terraform cho Redis dùng chung, dựng và kiểm chứng rollout, xác nhận hạn mức và router state được chia sẻ giữa các pod sau khi chủ động xóa một pod.
-* **Chuỗi probe phủ thời gian cho TC1b:** thiết lập probe định kỳ ghi kết quả ra ngoài cụm để availability được tính trên nhiều ngày thay vì một phiên, phục vụ yêu cầu pilot hai tuần.
-* **Đối soát số liệu và tổng hợp báo cáo:** dựng bảng kết quả theo từng mức tải cho báo cáo nghiệm thu, đối chiếu số liệu k6 với metric của gateway, guardrail và vLLM, và tách rõ panel độ trễ có trộn cache với panel chỉ tính request được engine phục vụ.
+* **Đưa endpoint lên mức dùng được thật:** bổ sung TLS và một địa chỉ ổn định không đổi theo từng phiên, rồi xác định khung giờ phục vụ mà dự án thí điểm có thể dựa vào — hoặc chấp nhận cụm chạy liên tục trong tuần tích hợp và tính chi phí tương ứng.
+* **Tích hợp vào một dự án thật:** chọn một ứng dụng đang chạy, cấp cho nó một virtual key riêng, và chỉ đổi `base_url` cùng `api_key` chứ không sửa mã nguồn. Ghi lại mọi chỗ hành vi khác với OpenAI: định dạng lỗi, cách đếm token, hành vi streaming, và các tính năng bị guardrail từ chối.
+* **Triển khai profile HA 3 replica:** bổ sung Terraform cho Redis dùng chung, kiểm chứng hạn mức và router state được chia sẻ giữa các pod sau khi chủ động xóa một pod. Đây cũng là điều kiện để endpoint chịu được một lần cập nhật mà không đứt với dự án đang dùng.
