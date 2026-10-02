@@ -41,6 +41,34 @@ spec:
       restartPolicy: Never
       nodeSelector:
         workload: tooling
+      # The load generator must not share a node with the gateway it is measuring.
+      #
+      # README already states this for the GPU node -- "nếu bộ tạo tải chạy cùng máy thì
+      # nó tranh CPU với engine" -- and the same reasoning applies one hop earlier, which
+      # nobody had noticed. A tooling node is an m7i.large: 2 vCPU. A 50 req/s run put
+      # guardrail at 1.1 cores and LiteLLM at 1.4 on the SAME node as k6, which asks for
+      # one core of its own. Three processes wanting 3.5 cores on a 2-core machine.
+      #
+      # The damage is not a slower run, it is a wrong one, and wrong in the direction
+      # that matters: the gateway gets starved exactly when load is highest, so the
+      # platform is reported as weaker than it is, and the shortfall is blamed on GPUs
+      # that were not the constraint. It also grows with load, so it bends the curve
+      # rather than shifting it -- it cannot be subtracted out afterwards.
+      #
+      # preferred, not required: with one tooling node this must still schedule, because
+      # a run that does not start teaches nothing. The 'make ha-preflight' node count is
+      # the place that enforces a real minimum.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["litellm", "guardrail"]
       containers:
         - name: k6
           # Pinned for the same reason the LiteLLM tag is: a moving tag makes two runs

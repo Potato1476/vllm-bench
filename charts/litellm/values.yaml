@@ -41,8 +41,29 @@ models:
 
 router:
   strategy: simple-shuffle
-  retries: 1
-  timeoutSeconds: 300
+  # 0, not 1, and 20s, not 300s. THESE TWO CAUSED A CONGESTION COLLAPSE.
+  #
+  # Measured at 50 req/s with the cache bypassed: 13,178 of 14,210 requests failed, every
+  # one of them a client timeout at exactly 20,000ms, and NOT ONE server error. Useful
+  # throughput was 127 output token/s across three A10G cards -- about a tenth of the
+  # ~438 token/s per card an L4 had already produced. The engine was not slow; it was
+  # busy on work nobody was waiting for.
+  #
+  # The mechanism is the gap. k6 abandons a request at 20s; LiteLLM kept it alive for up
+  # to 300s and then retried it once. So every timed-out request left the engine holding
+  # a generation whose result could no longer be delivered, and the retry queued a second
+  # one. vLLM showed 377 sequences running and 237 WAITING -- a real scheduler queue,
+  # unlike the four-L4 run where waiting stayed at 0 -- while the KV cache sat at 29%.
+  # Capacity was not the binding constraint; abandoned work was.
+  #
+  # A gateway timeout longer than its caller's is wrong as a matter of design, not only
+  # under test: it can only produce results that cannot be delivered. And a retry cannot
+  # help a request whose deadline has already passed -- it doubles the load at the exact
+  # moment the system can least afford it. Retrying a FAST failure (connection refused in
+  # 50ms) is still worth doing; distinguishing the two is the production answer and needs
+  # more than this one number.
+  retries: 0
+  timeoutSeconds: 20
 
 service:
   # Lab traffic arrives through ingress-nginx. ClusterIP also avoids colliding with the

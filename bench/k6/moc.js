@@ -244,7 +244,29 @@ if (SCENARIO === 'smoke') {
   // and five minutes is long enough for a queue to build and for the KV cache to reach
   // steady state. Twelve seconds would also give 600 samples and would measure a burst.
   const rate = Number(__ENV.RPS || 50);
-  scenarios.slo = arrival('slo', rate, __ENV.DURATION || '5m', '0s');
+  // The warm-up belongs here MORE than it belongs on the ramp, and it was only on the
+  // ramp. `slo` is the scenario whose exit code is quoted as the acceptance verdict, and
+  // it was the one measuring a cold engine.
+  //
+  // Measured, same four cards and same pod placement, the only difference being whether
+  // the engines had served anything yet:
+  //
+  //     cold   p95 18650ms   availability 80.56%   5654 of 15000 offered
+  //     warm   p95  2047ms   availability 99.71%  15001 of 15000 offered
+  //
+  // A factor of nine, from an empty prefix cache (82.6% hit once warm) and CUDA graph
+  // capture. Reporting the cold run would have failed TC1a and sent us to ask for a GPU
+  // to fix a problem that did not exist.
+  //
+  // Its own scenario, so `served_latency{scenario:slo}` and every threshold see only the
+  // measured window. Set WARMUP_SECONDS=0 to measure a cold start deliberately.
+  let start = 0;
+  if (WARMUP_SECONDS > 0 && WARMUP_RPS > 0) {
+    scenarios.warmup = arrival('warmup', WARMUP_RPS, `${WARMUP_SECONDS}s`, '0s');
+    OFFERED.warmup = WARMUP_RPS;
+    start = WARMUP_SECONDS + DRAIN_SECONDS;
+  }
+  scenarios.slo = arrival('slo', rate, __ENV.DURATION || '5m', `${start}s`);
   OFFERED.slo = rate;
 } else if (SCENARIO === 'agents') {
   scenarios.agents = arrival('agents', RPS, DURATION, '0s');
