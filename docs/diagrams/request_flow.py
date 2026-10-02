@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the request flow implemented by the current EKS deployment.
+"""Render the request flow for the three-replica HA serving profile.
 
 Semantic response caching and serving-time dense retrieval are wired into serving; TEI is
 optional and the known-answer detector remains off.
@@ -53,8 +53,8 @@ def main() -> None:
     OUT.with_suffix(".png").unlink(missing_ok=True)
 
     with Diagram(
-        "Luồng request hiện tại — LiteLLM → Guardrail → vLLM\n"
-        "Redis response cache sau preflight · streaming chỉ phát sau output checks",
+        "Luồng request HA — LiteLLM ×3 → Guardrail ×3 → vLLM\n"
+        "Redis dùng chung · streaming chỉ phát sau output checks",
         filename=str(OUT),
         outformat="png",
         show=False,
@@ -79,11 +79,11 @@ def main() -> None:
 
                 with Cluster("namespace llm-serving · request"):
                     litellm_in = Pod(
-                        "LiteLLM gateway · 1 replica\n"
+                        "LiteLLM gateway · 3 replicas\n"
                         "Bearer / virtual key\nquota · model permissions · routing"
                     )
                     prepare = Pod(
-                        "Guardrail · preflight + prepare\n"
+                        "Guardrail · 3 replicas · preflight + prepare\n"
                         "1  direct injection\n"
                         "2  redact inbound PII\n"
                         "3  canonicalise\n"
@@ -107,7 +107,7 @@ def main() -> None:
                         "fail → safe rejection"
                     )
                     litellm_out = Pod(
-                        "LiteLLM response\nusage + spend accounting\n"
+                        "LiteLLM response · 3 replicas\nusage + spend accounting\n"
                         "release buffered stream"
                     )
 
@@ -115,16 +115,18 @@ def main() -> None:
                     ingress_out = Ingress("Response qua ingress\nJSON hoặc SSE")
 
                 corpus = Rack("Corpus index\n798 chunks + metadata\nBM25 loaded at startup")
-                response_cache = Redis(
-                    "Redis sidecar · Unix socket\n"
-                    "safe answers only · TTL 1h\nreverse index by document_id"
-                )
                 tei = Pod("TEI embeddings · optional\nsemantic cache + dense query")
                 metrics = Prometheus("Prometheus\nscrape LiteLLM\nGuardrail · vLLM")
                 policy = Rack(
                     "Serving policy\naccess_level = internal-demo\n"
                     "dense: optional · known-answer: off\nsemantic threshold = 0.96"
                 )
+
+            response_cache = Redis(
+                "Shared Redis · multi-AZ\n"
+                "LiteLLM router / rate limit\n"
+                "safe answers only · TTL 1h"
+            )
 
         weights = S3("Amazon S3\nmodel weights")
 
@@ -141,6 +143,7 @@ def main() -> None:
         ingress_out >> flow("JSON / buffered SSE") >> receiver
 
         litellm_in >> data("key + quota") >> aurora
+        litellm_in >> data("router / rate limit") >> response_cache
         litellm_out >> data("spend") >> aurora
         prepare >> data("BM25 search") >> corpus
         prepare >> data("lookup / safe store") >> response_cache

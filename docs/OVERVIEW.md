@@ -13,6 +13,7 @@ Tài liệu chi tiết cho từng mảng:
 | [`TRACING.md`](TRACING.md) | Xem một request cụ thể đi qua 10 stage: Tempo, span model, và vì sao span không chứa nội dung |
 | [`metric-names.md`](metric-names.md) | Từng metric của LiteLLM và guardrail: type, label, ý nghĩa |
 | [`diagrams/request_flow.png`](diagrams/request_flow.png) | Sơ đồ luồng một request, cả nhánh cache HIT lẫn MISS |
+| [`architecture.png`](architecture.png) | Kiến trúc serving HA với 3 replica LiteLLM và 3 replica guardrail (nguồn: `diagrams/architecture.py`; triển khai bằng `HA=1`) |
 
 ---
 

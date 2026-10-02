@@ -889,8 +889,9 @@ secrets-scan: ## Check staged changes for anything that must not reach a public 
 
 # Picks whichever interpreter actually has `diagrams` installed. It lives in the system
 # python on one machine and in .venv-embed on another, and hard-coding either one breaks
-# the target for whoever is using the other.
-diagrams: ## Re-render docs/diagrams/*.py (needs Graphviz + the diagrams package)
+# the target for whoever is using the other. architecture.py also rasterizes SVG with
+# rsvg-convert (or ImageMagick) for its fixed, compact layout.
+diagrams: ## Re-render docs/diagrams/*.py (needs Graphviz + diagrams + rsvg-convert/ImageMagick)
 	@command -v dot >/dev/null || { echo "needs Graphviz: brew install graphviz"; exit 1; }
 	@py=""; \
 		for cand in python3 $(EMBED_PY); do \
