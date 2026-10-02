@@ -272,7 +272,17 @@ if (SCENARIO === 'smoke') {
   scenarios.agents = arrival('agents', RPS, DURATION, '0s');
   OFFERED.agents = RPS;
 } else {
-  scenarios.steady = arrival('steady', RPS, DURATION, '0s');
+  // Same warm-up as `slo`, for the same measured reason, and it matters MORE here:
+  // `steady` is what gets run once per load level to produce a comparison table, and a
+  // cold first level makes the whole table wrong in one cell. The cold-vs-warm gap
+  // measured on four cards was p95 18650ms against 2047ms.
+  let start = 0;
+  if (WARMUP_SECONDS > 0 && WARMUP_RPS > 0) {
+    scenarios.warmup = arrival('warmup', WARMUP_RPS, `${WARMUP_SECONDS}s`, '0s');
+    OFFERED.warmup = WARMUP_RPS;
+    start = WARMUP_SECONDS + DRAIN_SECONDS;
+  }
+  scenarios.steady = arrival('steady', RPS, DURATION, `${start}s`);
   OFFERED.steady = RPS;
 }
 
