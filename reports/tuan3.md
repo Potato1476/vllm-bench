@@ -97,12 +97,14 @@ Bốn điểm chưa sẵn sàng cho dự án thật, cần xử lý trong tuần
 
 ### Nguyễn Gia Bảo
 
-* **Hoàn thiện FinOps:** dựng lại đường cong TC2 bằng số đo A10G thay cho L4 — 12,5 req/s mỗi card ở 1,006 USD/giờ, thay cho 10 req/s ở 0,8048 USD/giờ — ghi chi phí thật theo từng phiên, và xác nhận giá niêm yết của API ngoài dùng để so sánh. Kết quả cần là một bảng trả lời được "ở mức tải nào thì tự vận hành rẻ hơn", không phải một con số phần trăm đơn lẻ.
-* **Chốt cấu hình nghiệm thu:** sau khi mentor xác nhận việc gán mô hình cho ba agent hiện chỉ dùng 1.5B, đo lại cấu hình được chọn ở ba mức 10, 25 và 50 req/s; lưu dashboard và snapshot số liệu lên S3 cho từng mức.
+* **Hoàn thiện FinOps:** dựng lại đường cong TC2 bằng số đo A10G thay cho L4 — 12,5 req/s mỗi card ở 1,006 USD/giờ, thay cho 10 req/s ở 0,8048 USD/giờ — ghi chi phí thật theo từng phiên, và xác nhận giá niêm yết của API ngoài dùng để so sánh.
+
+* **Tích hợp vào một dự án thật:** chọn một ứng dụng đang chạy, cấp cho nó một virtual key riêng, và chỉ đổi `base_url` cùng `api_key` chứ không sửa mã nguồn. Ghi lại mọi chỗ hành vi khác với OpenAI: định dạng lỗi, cách đếm token, hành vi streaming, và các tính năng bị guardrail từ chối.
+
 * **Tách nút thắt gateway khỏi nút thắt GPU:** ở 50 req/s, LiteLLM đạt 0,96 core và thông lượng engine đạt 98% mức bão hòa cùng lúc, nên một lần chạy không phân biệt được hai nguyên nhân. Dùng profile 3 replica để đo lại: nếu p95 cải thiện thì gateway là ràng buộc, nếu không thì GPU.
 
 ### Nguyễn Lê Minh
 
 * **Đưa endpoint lên mức dùng được thật:** bổ sung TLS và một địa chỉ ổn định không đổi theo từng phiên, rồi xác định khung giờ phục vụ mà dự án thí điểm có thể dựa vào — hoặc chấp nhận cụm chạy liên tục trong tuần tích hợp và tính chi phí tương ứng.
-* **Tích hợp vào một dự án thật:** chọn một ứng dụng đang chạy, cấp cho nó một virtual key riêng, và chỉ đổi `base_url` cùng `api_key` chứ không sửa mã nguồn. Ghi lại mọi chỗ hành vi khác với OpenAI: định dạng lỗi, cách đếm token, hành vi streaming, và các tính năng bị guardrail từ chối.
+
 * **Triển khai profile HA 3 replica:** bổ sung Terraform cho Redis dùng chung, kiểm chứng hạn mức và router state được chia sẻ giữa các pod sau khi chủ động xóa một pod. Đây cũng là điều kiện để endpoint chịu được một lần cập nhật mà không đứt với dự án đang dùng.
