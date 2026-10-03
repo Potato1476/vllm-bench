@@ -82,29 +82,57 @@ Nhãn `end_user` trong Prometheus đến từ **HTTP header `X-Agent-Id`**, khô
 
 ## 4. Kế hoạch Triển khai Tuần 4
 
-Trọng tâm tuần 4 là **FinOps** và **đưa nền tảng vào sử dụng thật**: xuất mô hình qua API tương thích OpenAI, rồi kiểm chứng bằng cách cắm API key vào một dự án đang chạy thay vì chỉ gọi bằng công cụ đo.
+Trọng tâm tuần 4 là **FinOps** và **đưa nền tảng vào tay người dùng thật**: một nhóm Data Analyst của GreenSM dùng nó cho công việc của họ, thay vì nền tảng chỉ được gọi bằng công cụ đo.
 
 ### 4.1. Hiện trạng phần tương thích OpenAI
 
 Phần lõi đã tương thích và đã kiểm chứng trên hệ thống thật: `/v1/models`, `/v1/chat/completions` ở cả chế độ thường lẫn streaming, xác thực Bearer, và mã lỗi theo chuẩn. Một ứng dụng viết bằng SDK OpenAI chỉ cần đổi `base_url` và `api_key`.
 
-Bốn điểm chưa sẵn sàng cho dự án thật, cần xử lý trong tuần 4:
+Năm giới hạn còn lại, và chúng định hình việc chọn người dùng thí điểm:
 
-* **Chưa có TLS.** Endpoint hiện là HTTP thuần, nghĩa là API key đi qua mạng ở dạng đọc được. Đây là điều kiện chặn với bất kỳ tích hợp thật nào, không phải việc làm đẹp.
-* **Địa chỉ không ổn định.** URL gắn với IP công khai của node và đổi sau mỗi lần dựng lại cụm, trong khi cụm bị hủy mỗi tối để tiết kiệm chi phí. Một dự án thật không thể phụ thuộc vào địa chỉ như vậy.
-* **Function calling không được hỗ trợ,** và đây là lựa chọn thiết kế chứ không phải lỗi: guardrail đầu ra kiểm tra trích dẫn và PII trên văn bản, mà một tool call không mang văn bản nào. Hệ thống từ chối rõ ràng thay vì trả về kết quả chưa được kiểm tra. Cần xác nhận dự án thí điểm có dùng tính năng này không **trước khi** chọn dự án.
+* **Chưa có TLS.** Endpoint hiện là HTTP thuần. Analyst đăng nhập bằng mật khẩu, nên đây là điều kiện chặn chứ không phải việc làm đẹp.
+* **Địa chỉ không ổn định.** URL gắn với IP công khai của node và đổi sau mỗi lần dựng lại cụm.
+* **Function calling không được hỗ trợ,** và đây là lựa chọn thiết kế chứ không phải lỗi: guardrail đầu ra kiểm tra trích dẫn và PII trên văn bản, mà một tool call không mang văn bản nào. Hệ thống từ chối rõ ràng thay vì trả về kết quả chưa được kiểm tra.
+* **Streaming không chạy chữ.** Guardrail đệm toàn bộ câu trả lời rồi mới phát SSE, vì không thể thu hồi một PII hay một trích dẫn bịa đã gửi đi. Hệ quả là thời gian tới token đầu tiên bằng thời gian sinh cả câu trả lời — công cụ đo không quan tâm, người dùng thật sẽ báo đó là lag.
 * **Chỉ phục vụ chat completions.** Các endpoint `/v1/embeddings` và `/v1/completions` chưa đi qua guardrail.
+
+### 4.2. Ràng buộc lớn nhất: corpus hiện là dữ liệu giả lập
+
+`data/xanhsm_retrieval_mock/manifest.json` ghi rõ không có chính sách hay con số nào trong bộ dữ liệu đại diện cho dữ liệu nội bộ thật của Xanh SM, và **720 trên 798 bản ghi là báo cáo vận hành sinh tự động** theo seed, cho các thành phố có thật.
+
+Tầng grounding không phát hiện được điều đó, và đây không phải khiếm khuyết của nó: nó kiểm câu trả lời có dựa trên tài liệu được cung cấp hay không, chứ không có khái niệm tài liệu đó có đúng hay không. Một câu hỏi về doanh thu một thành phố sẽ nhận một con số, trích dẫn đúng một mã tài liệu có thật trong corpus, qua sạch mọi lớp kiểm tra — và là số bịa. Chính trích dẫn là thứ tạo ra lòng tin, nên một câu trả lời sai mà tự tin còn tệ hơn không trả lời: analyst mang con số đó vào báo cáo thật là đã bị nền tảng dẫn sai.
+
+Biện pháp đã triển khai trong tuần: mọi câu trả lời được **chèn cảnh báo dữ liệu giả lập ở tầng guardrail**, tất định, tại mọi đường phục vụ kể cả cache và streaming. Không đặt trong system prompt, vì sinh văn bản là ngẫu nhiên, và một biện pháp bảo vệ báo cáo thật của đồng nghiệp thì không được phép ngẫu nhiên.
+
+Cần nói rõ thêm: **thay corpus không phải là việc đổi file**. Guardrail hiện ghim access level theo cấu hình triển khai cho mọi caller, nên tài liệu nội bộ thật sẽ đọc được bằng bất kỳ virtual key nào, cho tới khi ánh xạ key → access level được thực thi.
+
+### 4.3. Hai pilot, và tuần 4 làm cái thứ nhất
+
+* **Pilot A — DA dùng thật, nhưng đề bài là đánh giá nền tảng.** Mọi câu trả lời kèm cảnh báo dữ liệu giả lập. Đo ba thứ: độ trễ dưới traffic người thật, tỷ lệ guardrail chặn oan trên câu hỏi thật (đối chiếu với 0% trên 144 câu gold), và tỷ lệ câu hỏi corpus không trả lời được.
+* **Pilot B — có giá trị nghiệp vụ thật.** Cần tài liệu GreenSM thật, ánh xạ key → access level, và index lại. Phụ thuộc vào việc xin được tài liệu nên khởi động ngay ngày đầu, nhưng không đặt trong phạm vi tuần 4.
+
+Sản phẩm chính của Pilot A là **danh sách tài liệu cần xin cho Pilot B**, có bằng chứng thay vì phỏng đoán. Để đo được điều đó, tuần này đã bổ sung counter `guardrail_answers_declined_total`: trước đó một câu trả lời kiểu "tài liệu không đề cập điều này" đi qua grounding với verdict `ok` và được đếm là thành công, **không phân biệt được với một câu trả lời hữu ích**. Counter này không chứa chữ nào của câu hỏi — đó chính là điều kiện để nó bật trong khi audit log phải tắt, vì câu hỏi của người thật có thể mang số điện thoại khách hàng hoặc tên tài xế.
+
+### 4.4. Ngân sách và hình dạng phiên
+
+Traffic người thật vào khoảng 0,01 req/s, nên dung lượng card không còn là ràng buộc: **một node g6.xlarge (L4) là đủ**, và rẻ hơn A10G khoảng 20%. Tổng hạ tầng khoảng **1,31 USD/giờ**.
+
+Ngân sách còn lại dưới 40 USD, nên pilot được bố trí thành **ba buổi 4 giờ, hủy cụm giữa các buổi — khoảng 16 USD**, chừa lại ~24 USD cho nghiệm thu tuần 5–6. Analyst **không cầm API key**: chat UI giữ key ở phía server, nên việc Aurora bị hủy mỗi tối chỉ là một thao tác làm mới cấu hình UI chứ không làm gián đoạn người dùng.
 
 ### Nguyễn Gia Bảo
 
 * **Hoàn thiện FinOps:** dựng lại đường cong TC2 bằng số đo A10G thay cho L4 — 12,5 req/s mỗi card ở 1,006 USD/giờ, thay cho 10 req/s ở 0,8048 USD/giờ — ghi chi phí thật theo từng phiên, và xác nhận giá niêm yết của API ngoài dùng để so sánh.
 
-* **Tích hợp vào một dự án thật:** chọn một ứng dụng đang chạy, cấp cho nó một virtual key riêng, và chỉ đổi `base_url` cùng `api_key` chứ không sửa mã nguồn. Ghi lại mọi chỗ hành vi khác với OpenAI: định dạng lỗi, cách đếm token, hành vi streaming, và các tính năng bị guardrail từ chối.
+* **Làm cho hạn mức chi tiêu có hiệu lực:** chưa có `input_cost_per_token`/`output_cost_per_token` nào được cấu hình cho model self-hosted, nên LiteLLM tính spend bằng 0 và **`budget_usd` của cả bảy agent hiện không ràng buộc được gì**. Đặt hai giá trị này cũng chính là việc làm TC2 tính được bên trong LiteLLM thay vì trên bảng tính.
+
+* **Chạy Pilot A và lập danh sách tài liệu thiếu:** ba buổi, thu tỷ lệ decline, tỷ lệ chặn oan trên câu hỏi thật, và phân phối câu hỏi thật so với bộ gold. Ghi lại mọi chỗ hành vi khác với OpenAI mà người dùng gặp phải.
 
 * **Tách nút thắt gateway khỏi nút thắt GPU:** ở 50 req/s, LiteLLM đạt 0,96 core và thông lượng engine đạt 98% mức bão hòa cùng lúc, nên một lần chạy không phân biệt được hai nguyên nhân. Dùng profile 3 replica để đo lại: nếu p95 cải thiện thì gateway là ràng buộc, nếu không thì GPU.
 
 ### Nguyễn Lê Minh
 
-* **Đưa endpoint lên mức dùng được thật:** bổ sung TLS và một địa chỉ ổn định không đổi theo từng phiên, rồi xác định khung giờ phục vụ mà dự án thí điểm có thể dựa vào — hoặc chấp nhận cụm chạy liên tục trong tuần tích hợp và tính chi phí tương ứng.
+* **Đưa endpoint lên mức dùng được thật:** bổ sung TLS và một địa chỉ ổn định không đổi theo từng phiên, rồi nới allowlist cho dải IP egress của văn phòng GreenSM. Việc cuối cần hỏi bộ phận IT nên có thời gian chờ không tự kiểm soát được — khởi động sớm.
 
-* **Triển khai profile HA 3 replica:** bổ sung Terraform cho Redis dùng chung, kiểm chứng hạn mức và router state được chia sẻ giữa các pod sau khi chủ động xóa một pod. Đây cũng là điều kiện để endpoint chịu được một lần cập nhật mà không đứt với dự án đang dùng.
+* **Triển khai chat UI cho analyst:** giao diện tương thích OpenAI, giữ virtual key ở phía server, có tài khoản người dùng riêng để mỗi người xem được lịch sử của chính mình. Lịch sử hội thoại nằm ở đây chứ không nằm trong log hạ tầng, vì đó là nơi người gõ câu hỏi nhìn thấy và kiểm soát được nội dung của mình.
+
+* **Triển khai profile HA 3 replica:** bổ sung Terraform cho Redis dùng chung, kiểm chứng hạn mức và router state được chia sẻ giữa các pod sau khi chủ động xóa một pod. Đây cũng là điều kiện để endpoint chịu được một lần cập nhật mà không đứt với người đang dùng.
