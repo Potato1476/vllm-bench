@@ -49,6 +49,40 @@ DEFAULT_ACCESS_LEVEL = os.getenv("DEFAULT_ACCESS_LEVEL", "internal-demo")
 # mid-citation, and a truncated citation is a grounding failure.
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "192"))
 
+# EVERY SERVED ANSWER SAYS THE CORPUS IS SYNTHETIC, AND THE PROMPT IS NOT ALLOWED TO.
+#
+# data/xanhsm_retrieval_mock/manifest.json states it outright -- "No synthetic policy or
+# figure in this dataset represents actual Xanh SM internal data" -- and 720 of its 798
+# records are generated daily operations figures (seed=20260921) for real GreenSM cities.
+#
+# The grounding stage cannot catch that, and this is not a gap in it. grounding.py asks
+# whether an answer is supported by the retrieved document; it has no notion of whether
+# the document is true. So a question about GBV in Da Nang comes back with a figure, cited
+# to a document that really is in the corpus, passing every check -- and it is fiction.
+# A well-grounded answer over a synthetic corpus is indistinguishable from one over a real
+# corpus, because the citation is the thing that manufactures the trust. That makes a
+# confident fake strictly worse than no answer: an analyst who carries the number into a
+# real report has been actively misled by the platform.
+#
+# Which is why this is not a line in the system prompt. Generation is stochastic -- the
+# model summarises, and will sometimes keep the figure while dropping the "giả lập" that
+# the source text carries. A measure whose job is to protect a colleague's real report
+# cannot be sampled. It lives here, past the guardrails, where it is deterministic.
+#
+# Prepended rather than appended: a long answer gets read halfway, copied in part, or
+# truncated by a client, and the tail is the part that disappears. Prepending also puts it
+# first on the wire for a streamed response, so it is on screen while the answer arrives.
+#
+# Set ANSWER_NOTICE="" to serve answers bare. That is correct ONLY once the indexed corpus
+# is real, and real documents are not a drop-in swap: access is pinned to
+# DEFAULT_ACCESS_LEVEL for every caller (see do_POST), so internal documents would be
+# readable by any key until per-key access levels are enforced.
+DEFAULT_ANSWER_NOTICE = (
+    "⚠️ Dữ liệu demo: corpus đang dùng là dữ liệu giả lập, không phải dữ liệu nội bộ "
+    "Xanh SM. Không dùng số liệu trong câu trả lời này cho báo cáo thật."
+)
+ANSWER_NOTICE = os.getenv("ANSWER_NOTICE", DEFAULT_ANSWER_NOTICE).strip()
+
 # Models that cannot be trusted to cite unaided, and must have the format constrained at
 # decode time. See _force_citation for the measurement behind this default. Set to an
 # empty string to turn the constraint off entirely.
@@ -279,6 +313,14 @@ class Metrics:
             "Grounding checks by verdict.",
             ("verdict",),
         ),
+        "guardrail_answers_declined_total": (
+            "Answers that declined instead of asserting -- the corpus did not cover the "
+            "question. Counted as allowed everywhere else, so this is the only signal "
+            "that a question went unanswered. Carries no question text. Excludes cache "
+            "hits, which return before the grounding report is read: divide by "
+            "guardrail_upstream_requests_total{outcome=\"success\"}, not by all requests.",
+            ("model",),
+        ),
         "guardrail_citations_total": (
             "Citation observations by validity.",
             ("kind",),
@@ -375,6 +417,7 @@ class Metrics:
                 }, 0, count=False)
             self.observe("guardrail_upstream_duration_seconds", {"model": model}, 0, count=False)
             self.observe("guardrail_documents_retrieved", {"model": model}, 0, count=False)
+            self.inc("guardrail_answers_declined_total", {"model": model}, 0)
         for stage in (
             "injection_user", "pii_ingress", "canonicalise", "retrieval", "policy",
             "injection_document", "known_answer", "prompt", "grounding", "pii_egress",
@@ -695,6 +738,25 @@ def _answer(response: dict[str, Any]) -> str:
     return content
 
 
+def _served(text: str) -> str:
+    """The answer as a caller sees it: approved text, plus the demo-data notice.
+
+    Called at every point that EMITS an answer and at no point that stores one. The
+    semantic cache and the audit log both keep bare text on purpose: a cache that stored
+    the served form would hand back an answer carrying two notices, and an audit log that
+    stored it would put the banner into every answer-analysis script downstream.
+
+    Refusals never reach here -- do_POST answers those through _error() and returns -- so
+    the notice cannot end up attached to a message that makes no claim about the world.
+    """
+    if not ANSWER_NOTICE or not text:
+        return text
+    # Idempotent, so a serve path that is added later and double-wraps is harmless.
+    if text.startswith(ANSWER_NOTICE):
+        return text
+    return f"{ANSWER_NOTICE}\n\n{text}"
+
+
 def _cached_completion(hit: CacheHit, model: str, started: float) -> dict[str, Any]:
     """An OpenAI-compatible response for a request that never reached the engine."""
     return {
@@ -704,7 +766,7 @@ def _cached_completion(hit: CacheHit, model: str, started: float) -> dict[str, A
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": hit.text},
+            "message": {"role": "assistant", "content": _served(hit.text)},
             "finish_reason": "stop",
         }],
         # No inference happened.  Keeping explicit zeroes prevents a cache hit from being
@@ -782,9 +844,14 @@ def _track_prepared(prepared: pipeline.PreparedRequest, model: str) -> None:
             })
 
 
-def _track_final(final: pipeline.FinalAnswer) -> None:
+def _track_final(final: pipeline.FinalAnswer, model_label: str) -> None:
     report = final.report
     _telemetry.inc("guardrail_grounding_verdicts_total", {"verdict": report.verdict})
+    # Only when the answer was actually served. A declined answer that then fails the
+    # egress PII scan is a refusal, and counting it here as well would make the two
+    # numbers overlap and stop summing to the request total.
+    if report.declined and final.ok:
+        _telemetry.inc("guardrail_answers_declined_total", {"model": model_label})
     _telemetry.observe(
         "guardrail_grounding_overlap_ratio", {"verdict": report.verdict}, report.overlap
     )
@@ -1300,7 +1367,7 @@ class Handler(BaseHTTPRequestHandler):
             # output stage blocks. Kind only, never the value -- the point is to prove the
             # check fired, not to write the leak into the log that reports it.
             audit["pii_outbound"] = [f.kind for f in final.outbound_pii]
-            _track_final(final)
+            _track_final(final, model_label)
             _trace_final(root, final)
             if not final.ok:
                 assert final.refusal is not None
@@ -1336,7 +1403,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            upstream["choices"][0]["message"]["content"] = final.text
+            # The cache store below and audit["answer"] above both keep `final.text`
+            # bare; only what goes out to the caller is wrapped.
+            upstream["choices"][0]["message"]["content"] = _served(final.text)
             upstream.setdefault("guardrail", {})
             upstream["guardrail"].update({
                 "verdict": final.report.verdict,
@@ -1461,6 +1530,11 @@ class Handler(BaseHTTPRequestHandler):
         }})
 
     def _sse(self, upstream: dict[str, Any], text: str, model: str) -> None:
+        # Applied here rather than at the two call sites so that every streaming path --
+        # including one added later -- carries the notice without anyone remembering to.
+        # `upstream` contributes only id and created below, so a body whose content field
+        # was already served does not double-wrap.
+        text = _served(text)
         completion_id = str(upstream.get("id") or f"chatcmpl-{uuid.uuid4().hex}")
         created = int(upstream.get("created") or time.time())
         self.send_response(HTTPStatus.OK)

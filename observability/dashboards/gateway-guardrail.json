@@ -678,6 +678,127 @@
       }
     },
     {
+      "id": 21,
+      "type": "row",
+      "title": "Corpus coverage — questions the documents could not answer",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "panels": []
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Decline rate",
+      "description": "Share of generated answers that declined -- the retrieved documents did not cover the question. The platform counts these as successes (verdict ok, outcome allowed), so this is the only place a miss is visible. Denominator is generated answers, NOT questions asked: a cache hit returns before grounding is read and can neither produce nor count a decline.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(guardrail_answers_declined_total[30m])) / clamp_min(sum(rate(guardrail_upstream_requests_total{outcome=\"success\"}[30m])), 0.001)",
+          "legendFormat": "declined"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Declines vs answers generated",
+      "description": "Read the two together. Declines rising while generation is flat means the questions moved outside the corpus, which is a documents problem. Both rising together is just more traffic. Each decline is a candidate document to go and ask for -- the question text is deliberately not here, it lives in the chat UI where the person who typed it can see their own history.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (rate(guardrail_answers_declined_total[5m]))",
+          "legendFormat": "declined / {{model}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (model) (rate(guardrail_upstream_requests_total{outcome=\"success\"}[5m]))",
+          "legendFormat": "answers generated / {{model}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (model) (rate(guardrail_requests_total{outcome=\"refused\",stage=\"grounding\"}[5m]))",
+          "legendFormat": "grounding blocks / {{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 13,
       "type": "row",
       "title": "Dependencies and usage — routing, Aurora, tokens and spend",
@@ -686,7 +807,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 39
       },
       "panels": []
     },
@@ -702,7 +823,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 40
       },
       "targets": [
         {
@@ -761,7 +882,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 31
+        "y": 40
       },
       "targets": [
         {
@@ -809,7 +930,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 48
       },
       "targets": [
         {
@@ -858,7 +979,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 48
       },
       "targets": [
         {
@@ -902,7 +1023,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 56
       },
       "targets": [
         {
@@ -946,7 +1067,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 56
       },
       "targets": [
         {

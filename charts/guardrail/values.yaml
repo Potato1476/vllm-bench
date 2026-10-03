@@ -54,6 +54,21 @@ auditLog: false
 # that is in context. See _force_citation in app.py for the measurement.
 forceCitationModels: "qwen2.5-1.5b"
 
+# Prepended to every answer the platform serves, because the indexed corpus is synthetic:
+# 720 of its 798 records are generated daily operations figures for real GreenSM cities,
+# and grounding cannot tell a true document from a plausible one. See the ANSWER_NOTICE
+# block in services/llm_pipeline/app.py for why this is not a system-prompt instruction.
+#
+# Turn `enabled` off ONLY when the indexed corpus is real documents -- and note that
+# swapping the corpus is not sufficient on its own, because access is pinned to
+# defaultAccessLevel for every caller, so internal documents would be readable by any key
+# until per-key access levels are enforced.
+#
+# `text` empty keeps app.py's built-in Vietnamese default. Set it to override the wording.
+answerNotice:
+  enabled: true
+  text: ""
+
 semanticCache:
   enabled: true
   ttlSeconds: 3600

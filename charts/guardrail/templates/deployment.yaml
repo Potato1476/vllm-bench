@@ -68,6 +68,19 @@ spec:
               value: {{ .Values.auditLog | ternary "1" "" | quote }}
             - name: FORCE_CITATION_MODELS
               value: {{ .Values.forceCitationModels | quote }}
+            # Three states, because "unset" and "empty" mean opposite things here: an
+            # absent ANSWER_NOTICE lets app.py use its built-in Vietnamese default, while
+            # an explicitly empty one turns the warning off. Helm cannot tell those apart
+            # from one string field, so the switch is a boolean and the text is optional.
+            {{- if .Values.answerNotice.enabled }}
+            {{- with .Values.answerNotice.text }}
+            - name: ANSWER_NOTICE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- else }}
+            - name: ANSWER_NOTICE
+              value: ""
+            {{- end }}
             {{- if .Values.semanticCache.enabled }}
             - name: SEMANTIC_CACHE_ENABLED
               value: "true"

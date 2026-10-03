@@ -25,7 +25,23 @@
     "needed before production. The values here describe the intent, not current behaviour.",
     "",
     "budget_usd is a monthly ceiling per agent. They sum to less than the project budget on",
-    "purpose: one agent looping must not be able to spend everything."
+    "purpose: one agent looping must not be able to spend everything. NOTE that this is",
+    "currently decorative: LiteLLM derives spend from its model-pricing map, and the chart",
+    "configures no input_cost_per_token/output_cost_per_token for the self-hosted models, so",
+    "accounted spend stays at zero and no budget can ever trip. Setting those two values is",
+    "the same work that makes TC2 computable inside LiteLLM instead of in a spreadsheet.",
+    "",
+    "moc-da-pilot IS NOT AN AGENT, and it is the one entry here that serves humans.",
+    "It is the key the chat UI holds server-side for the GreenSM data analyst pilot, so that",
+    "the analysts never handle a credential and a nightly Aurora teardown costs them nothing",
+    "-- only the UI's config is refreshed. Pinned to the 7B model alone: the 1.5B needs",
+    "decode-time citation forcing to stay grounded, which is an acceptable trade for an",
+    "automated agent and not for a colleague reading the answer as advice.",
+    "",
+    "It is also NOT what TC4 counts. TC4's '>=5 DA' is five digital agents, already met by",
+    "the seven above; the analysts in this pilot are the real-project integration goal, a",
+    "separate thing. Per-person attribution for them lives in the UI's own logs, not in the",
+    "end_user Prometheus label, which stays one series for the whole UI."
   ],
   "rate_limit": {"team_id": "moc-shared", "rpm_limit": 3000},
   "agents": [
@@ -84,6 +100,14 @@
       "access_level": "internal-demo",
       "budget_usd": 10,
       "models": ["qwen2.5-1.5b"]
+    },
+    {
+      "id": "moc-da-pilot",
+      "description": "Chat UI for the GreenSM data analyst pilot. Humans, not an agent.",
+      "corpus_focus": "all",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": ["qwen2.5-7b"]
     }
   ]
 }

@@ -47,6 +47,18 @@ class GroundingReport:
     overlap: float
     verdict: str            # "ok" | "flag" | "block"
     notes: list[str] = field(default_factory=list)
+    # The answer declined instead of asserting: "the documents do not cover this".
+    #
+    # Recorded because it is a SUCCESS to the rest of the system and a MISS to whoever
+    # asked. _is_refusal is already consulted below, to spare a decline the citation
+    # requirement it cannot meet, and the result was then thrown away -- so a question the
+    # corpus cannot answer came out of grounding with verdict "ok", counted as allowed,
+    # and left no trace anywhere. For a pilot whose main output is "which documents are
+    # missing", that is the one number worth having, and it was the one number invisible.
+    #
+    # A counter, never the text: it answers "how often" without logging what was asked,
+    # which is what lets this stay on while AUDIT_LOG is off for real traffic.
+    declined: bool = False
 
     @property
     def blocked(self) -> bool:
@@ -79,6 +91,10 @@ def check(answer: str, context: list[Chunk], *,
 
     notes: list[str] = []
     verdict = "ok"
+    # Computed up front rather than inside the elif below, where short-circuiting left it
+    # unevaluated whenever the answer cited anything. The verdict logic is unchanged --
+    # _is_refusal is pure -- but the flag is now set on every path.
+    declined = _is_refusal(answer)
     if fabricated:
         verdict = "block"
         notes.append(f"trích dẫn không có trong ngữ cảnh: {', '.join(fabricated)}")
@@ -87,7 +103,7 @@ def check(answer: str, context: list[Chunk], *,
     # cite. Checking `cited` before `is_refusal` blocked exactly the behaviour the system
     # prompt asks for, which would have taught the model that hedging is punished and
     # guessing is not.
-    elif not cited and content and not _is_refusal(answer):
+    elif not cited and content and not declined:
         verdict = "block"
         notes.append("câu trả lời không trích dẫn tài liệu nào")
     if verdict != "block":
@@ -100,7 +116,7 @@ def check(answer: str, context: list[Chunk], *,
 
     return GroundingReport(cited=cited, fabricated=fabricated,
                            uncited_sentences=tuple(uncited), overlap=overlap,
-                           verdict=verdict, notes=notes)
+                           verdict=verdict, notes=notes, declined=declined)
 
 
 _HEDGE = re.compile(

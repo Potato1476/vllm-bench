@@ -248,6 +248,26 @@ spec:
             /
             clamp_min(sum by (model) (rate(guardrail_upstream_requests_total[5m])), 0.001)
 
+        # How often the retrieved documents did not cover the question. This is the one
+        # outcome the platform treats as a success and the caller experiences as a miss,
+        # so it appears in no other ratio here: a decline is served with verdict ok and
+        # counted under outcome="allowed", identical to an answer that helped.
+        #
+        # THE DENOMINATOR IS GENERATED ANSWERS, NOT QUESTIONS ASKED, and it has to be. A
+        # cache hit returns before the grounding report is read, so it can neither produce
+        # a decline nor be counted as one; dividing by all requests would shrink the ratio
+        # by whatever the cache hit rate happens to be that day. Reading it per generated
+        # answer keeps the number comparable between runs with the cache on and off.
+        #
+        # Slightly conservative for the same reason the retry exists: a grounding retry
+        # makes two upstream calls for one question, so the denominator counts both. See
+        # guardrail_grounding_retry_total for how often that happens.
+        - record: guardrail:declined_ratio:rate5m
+          expr: |
+            sum by (model) (rate(guardrail_answers_declined_total[5m]))
+            /
+            clamp_min(sum by (model) (rate(guardrail_upstream_requests_total{outcome="success"}[5m])), 0.001)
+
     # --- Chi phi -------------------------------------------------------------------
     #
     # The acceptance criterion is "cost per 1k tokens at least 30% below an external API",

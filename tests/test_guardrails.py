@@ -181,6 +181,26 @@ def test_grounding_blocks_fabricated_citations() -> None:
           not grounding.check(f"Định nghĩa nằm ở [{real}].", ctx).blocked)
 
 
+def test_grounding_records_when_the_corpus_did_not_cover_the_question() -> None:
+    """A decline is allowed by every other check, so this flag is the only trace of it.
+
+    It is what turns "the pilot felt incomplete" into a count of questions the corpus
+    could not answer, which is the list of documents to go and ask for.
+    """
+    ctx = load_chunks()[:2]
+    real = ctx[0].document_id
+    check("grounding: a decline is marked declined",
+          grounding.check("Tài liệu không đủ thông tin để trả lời.", ctx).declined)
+    check("grounding: a decline is not a block",
+          not grounding.check("Tài liệu không đủ thông tin để trả lời.", ctx).blocked)
+    check("grounding: a real cited answer is not declined",
+          not grounding.check(f"Định nghĩa nằm ở [{real}].", ctx).declined)
+    # Set on every path now, not only where the verdict logic happens to consult it: an
+    # answer that cites a document it was never given is blocked AND is not a decline.
+    check("grounding: declined is set even when the verdict is block",
+          grounding.check("Điều này đúng [KHONG-CO-THAT-001].", ctx).declined is False)
+
+
 def test_pipeline_refuses_before_retrieval() -> None:
     chunks = load_chunks()
     by_id = {c.chunk_id: c for c in chunks}
