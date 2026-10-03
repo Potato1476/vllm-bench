@@ -1,0 +1,123 @@
+# Open WebUI: the chat interface the GreenSM analysts actually use.
+#
+# WHY A UI AT ALL, WHEN THE PLATFORM IS AN API
+#
+# Analysts do not call curl, and handing seven people an API key means seven credentials
+# to rotate every morning -- Aurora is destroyed with the cluster each evening, so the
+# virtual keys die with it. The UI holds ONE key server-side instead. When the keys are
+# reminted the next morning only this chart's secret changes, and nobody using the system
+# notices. That is the whole reason this exists rather than a page of curl examples.
+#
+# It also puts conversation history somewhere the person who typed the question can see
+# and delete it, which is the only acceptable home for that text: the guardrail's own
+# AUDIT_LOG must stay OFF during the pilot, because a real analyst question can carry a
+# customer id or a driver name. See the _audit docstring in services/llm_pipeline/app.py.
+
+image:
+  # Pinned, like the LiteLLM and k6 tags are. A moving tag makes two pilot sessions
+  # incomparable, and the whole point of the pilot is to compare them.
+  repository: ghcr.io/open-webui/open-webui
+  tag: "v0.6.40"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+# The LiteLLM gateway. Not the guardrail directly: the key, the per-agent attribution and
+# the budget all live in LiteLLM, and bypassing it would make the pilot invisible in every
+# dashboard built for it.
+openai:
+  baseUrl: "http://litellm-private.llm-serving.svc.cluster.local:4000/v1"
+  # The moc-da-pilot virtual key, created by `make agent-keys` from bench/agents.json.
+  # Never written here -- `make webui-secret` puts it in a Kubernetes Secret.
+  existingSecret:
+    name: webui-secrets
+    apiKeyKey: OPENAI_API_KEY
+    # Signs JWTs. Without a stable value every restart logs everyone out; with one, a
+    # pod restart mid-session is invisible.
+    secretKeyKey: WEBUI_SECRET_KEY
+    # Bootstraps the admin account on first start, with no interactive setup.
+    adminPasswordKey: WEBUI_ADMIN_PASSWORD
+
+webui:
+  name: "MOC Copilot (demo)"
+  adminEmail: "admin@da51.lab"
+  # Analysts do not self-register; the admin creates the accounts. For a pilot of five to
+  # seven named people that is a few minutes of work, and it keeps the login page from
+  # being an open door while TLS is still outstanding.
+  enableSignup: false
+  # Pre-selects the model a new chat opens on. Only the 7B is served to humans: the 1.5B
+  # needs decode-time citation forcing to stay grounded, which is a fair trade for an
+  # automated agent and not for a colleague reading the answer as advice.
+  defaultModels: "qwen2.5-7b"
+
+# THE SETTING THAT MAKES EVERY OTHER SETTING HERE WORK.
+#
+# Open WebUI marks most of its options "ConfigVar": the environment variable is read ONCE,
+# on the first start with an empty database, and copied in. After that the database value
+# wins and the environment is ignored. Its own documentation opens with the symptom --
+# you change a variable, redeploy, and the UI does not change -- and the fix being an
+# UPDATE statement against sqlite.
+#
+# That failure is silent and it is the dangerous kind: `kubectl describe pod` would show
+# ENABLE_TITLE_GENERATION=false while the running app happily generates titles. Setting
+# this to false makes the environment authoritative on every boot, so this chart is the
+# single source of truth and a `helm upgrade` means what it appears to mean.
+persistentConfig: false
+
+# BACKGROUND LLM CALLS -- THE REASON THIS BLOCK EXISTS.
+#
+# Open WebUI does not send one request per message. By default it also asks the model to
+# name the chat, tag it, suggest follow-up questions, and rewrite the question for
+# retrieval. Four of those default to TRUE.
+#
+# Against a general endpoint that is a minor cost. Against THIS platform each one is a
+# prompt that is not a MOC question -- "summarise this conversation in three words" --
+# which retrieves nothing, cites nothing, and is therefore BLOCKED at grounding and
+# returned as a 400. Every analyst message would produce several such failures.
+#
+# The damage is not the wasted GPU. It is that those refusals land in
+# guardrail_requests_total{outcome="refused",stage="grounding"} next to the real ones, so
+# the pilot's headline number -- how often the guardrail wrongly refuses a genuine analyst
+# question -- would be measuring Open WebUI's own chores instead. The measurement this
+# pilot exists to make would be corrupt, and it would still look like a clean run.
+features:
+  titleGeneration: false
+  tagsGeneration: false
+  followUpGeneration: false
+  retrievalQueryGeneration: false
+  autocompleteGeneration: false
+  # No Ollama is deployed. Left on, the app polls a host that is not there on every model
+  # list refresh and shows connection errors that have nothing to do with the platform.
+  ollamaApi: false
+  # Arena mode asks two models the same question and asks a judge to compare. It needs a
+  # second served model and triples the request count per message.
+  evaluationArenaModels: false
+  webSearch: false
+  imageGeneration: false
+
+# Conversation history, accounts and settings. sqlite on a volume rather than Aurora: the
+# analysts' chat history has no business in the gateway's billing database, and the two
+# have opposite retention needs.
+#
+# THE VOLUME DIES WITH THE CLUSTER, and that is a real loss, not a shrug -- the questions
+# people actually asked are the pilot's main output, the evidence for which documents to
+# request for a real corpus. `make webui-export` copies the database out BEFORE teardown,
+# the same way lab-down exports metrics before destroying anything. Run it, or the session
+# taught you only what the counters happened to record.
+persistence:
+  enabled: true
+  size: 4Gi
+  storageClass: gp3
+
+nodeSelector:
+  workload: tooling
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

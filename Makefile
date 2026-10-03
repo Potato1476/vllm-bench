@@ -25,6 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	vllm-up vllm-diff vllm-down smoke \
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
+	webui-secret webui-admin-password webui-up webui-export webui-down \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -568,6 +569,77 @@ agent-keys: ## Configure shared 3000 RPM team and refresh agent virtual keys
 litellm-smoke: ## Verify auth, model routing, completion and streaming via LiteLLM
 	@MODEL=$(if $(filter solo-b,$(MODE)),qwen2.5-1.5b,qwen2.5-7b) \
 		./bench/scripts/smoke_litellm.sh
+
+# --- Chat UI for the analyst pilot ------------------------------------------
+#
+# The analysts never hold a credential. This secret does, and it is what makes a nightly
+# Aurora teardown invisible to them: the virtual keys are reminted each morning by
+# `make agent-keys`, and only this one secret has to follow.
+
+webui-secret: ## Create/update the Open WebUI secret. PILOT_KEY=sk-... on first run.
+# Existing values are preserved, like litellm-secret does: regenerating WEBUI_SECRET_KEY
+# would invalidate every session token and log the whole pilot out mid-question.
+	@kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@key=$$(kubectl -n $(NS) get secret webui-secrets \
+		-o jsonpath='{.data.WEBUI_SECRET_KEY}' 2>/dev/null | base64 -d || true); \
+	pass=$$(kubectl -n $(NS) get secret webui-secrets \
+		-o jsonpath='{.data.WEBUI_ADMIN_PASSWORD}' 2>/dev/null | base64 -d || true); \
+	api="$(PILOT_KEY)"; \
+	[ -n "$$key" ] || key="$$(openssl rand -hex 32)"; \
+	[ -n "$$pass" ] || pass="$$(openssl rand -base64 18)"; \
+	if [ -z "$$api" ]; then \
+		api=$$(kubectl -n $(NS) get secret webui-secrets \
+			-o jsonpath='{.data.OPENAI_API_KEY}' 2>/dev/null | base64 -d || true); \
+	fi; \
+	[ -n "$$api" ] || { echo "can PILOT_KEY=sk-... -- virtual key moc-da-pilot tu 'make agent-keys'"; exit 1; }; \
+	kubectl -n $(NS) create secret generic webui-secrets \
+		--from-literal=OPENAI_API_KEY="$$api" \
+		--from-literal=WEBUI_SECRET_KEY="$$key" \
+		--from-literal=WEBUI_ADMIN_PASSWORD="$$pass" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "webui-secrets san sang (gia tri cu duoc giu nguyen)."
+	@echo "Mat khau admin KHONG in o day -- doc bang 'make webui-admin-password'."
+
+webui-admin-password: ## Print the Open WebUI admin password. The only target that does.
+# Deliberately a separate target rather than a line in webui-secret's output. A password
+# printed by a setup target ends up in every terminal scrollback and CI log of everyone
+# who ever ran the setup; printing it only when somebody asks keeps it to one place.
+	@kubectl -n $(NS) get secret webui-secrets \
+		-o jsonpath='{.data.WEBUI_ADMIN_PASSWORD}' | base64 -d; echo
+
+webui-up: webui-secret ## Deploy the Open WebUI chat interface for the analyst pilot
+	helm upgrade --install webui charts/webui -n $(NS) --wait --timeout 5m
+	@echo "UI san sang trong cum. Publish bang 'make ingress-up', dang nhap bang"
+	@echo "webui.adminEmail trong charts/webui/values.yaml va 'make webui-admin-password'."
+
+webui-export: ## Copy the Open WebUI database out. The pilot's questions live ONLY here.
+# THE SESSION'S REAL OUTPUT, AND IT IS DELETED WITH THE CLUSTER.
+#
+# The guardrail's AUDIT_LOG stays off during the pilot -- a real analyst question can
+# carry a customer id -- so the questions people actually asked exist in exactly one
+# place: this database. Losing it means the session produced counters and no evidence for
+# which documents a real corpus would need.
+#
+# Snapshotted through sqlite's backup API rather than copied with `kubectl cp` straight
+# off the live file: a plain copy of an open database can land mid-write and restore as
+# "database disk image is malformed", which is discovered days later when someone tries
+# to read it. python3 is in the image; sqlite3 the CLI is not.
+	@pod=$$(kubectl -n $(NS) get pod -l app=webui \
+		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	[ -n "$$pod" ] || { echo "khong thay pod webui"; exit 1; }; \
+	kubectl -n $(NS) exec "$$pod" -- python3 -c \
+		"import sqlite3; s=sqlite3.connect('/app/backend/data/webui.db'); d=sqlite3.connect('/tmp/webui-backup.db'); s.backup(d); d.close(); s.close()" || exit 1; \
+	mkdir -p results; \
+	out="results/webui-$$(date -u +%Y%m%dT%H%M%SZ).db"; \
+	kubectl -n $(NS) cp "$$pod:/tmp/webui-backup.db" "$$out" >/dev/null && \
+	kubectl -n $(NS) exec "$$pod" -- rm -f /tmp/webui-backup.db; \
+	echo "da luu $$out"; \
+	echo "results/ nam trong .gitignore -- file nay chua cau hoi that, dung commit."
+
+webui-down: ## Remove Open WebUI. Keeps the volume; run webui-export first.
+	-helm uninstall webui -n $(NS)
+	@echo "PVC webui-data van con. Chay 'make webui-export' TRUOC khi huy cum,"
+	@echo "vi huy cum la xoa luon volume nay."
 
 # --- Monitoring stack -------------------------------------------------------
 CHART_GPU_OPERATOR ?= v26.7.0

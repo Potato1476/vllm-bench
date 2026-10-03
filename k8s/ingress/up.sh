@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring up the shared ingress: one NGINX controller on a NodePort of the tooling node,
-# five hostnames, and the security group rules that decide who may reach it.
+# six hostnames, and the security group rules that decide who may reach it.
 # Idempotent -- safe to re-run after an IP change, which is the usual reason to.
 set -euo pipefail
 
@@ -194,11 +194,12 @@ cat <<EOF
   Prometheus    http://prometheus.$NODEIP.nip.io:$PORT
   Alertmanager  http://alertmanager.$NODEIP.nip.io:$PORT
   LiteLLM       http://llm.$NODEIP.nip.io:$PORT/v1/models
+  Chat UI       http://chat.$NODEIP.nip.io:$PORT
   vLLM          http://vllm.$NODEIP.nip.io:$PORT/v1/models
 
   Neu mang chan nip.io, them dong nay vao /etc/hosts roi dung ten .da51.lab:$PORT
 
-    $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab vllm.da51.lab
+    $NODEIP  grafana.da51.lab prometheus.da51.lab alertmanager.da51.lab llm.da51.lab chat.da51.lab vllm.da51.lab
 
   Ai vao duoc: $RANGES
   LiteLLM: chi $LLM_ALLOW + Bearer key (xem bang 'make creds')

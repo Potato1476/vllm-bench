@@ -58,6 +58,7 @@ make monitoring-up        # GPU operator, Prometheus, Grafana
 make gpu n=4              # bật node GPU khi đã sẵn sàng đo
 make vllm-up MODE=split REPLICAS_A=3 REPLICAS_B=1
 make litellm-up
+make webui-up PILOT_KEY=sk-...   # chat UI cho pilot, key lấy từ `make agent-keys`
 make ingress-up           # publish UI, giới hạn theo IP của bạn
 ```
 
@@ -107,6 +108,7 @@ make lab-down             # xuất số liệu lên S3, hạ node về 0, rồi 
 | [`docs/k6-load-testing.md`](docs/k6-load-testing.md) | thiết kế bộ đo và cách đọc kết quả |
 | [`docs/ha-serving.md`](docs/ha-serving.md) | profile 3 replica với Redis dùng chung |
 | [`docs/completion-plan.md`](docs/completion-plan.md) | việc còn lại tới nghiệm thu |
+| [`docs/pilot-guide.html`](docs/pilot-guide.html) | trang phát cho analyst trước buổi dùng thử |
 
 Đọc `docs/runbook.md` **trước** lần dựng đầu tiên. Phần "Bẫy đã biết" ở cuối file ghi
 những thứ chỉ lộ ra sau khi đã mất vài giờ — quota GPU mặc định bằng 0, IP nhà đổi làm

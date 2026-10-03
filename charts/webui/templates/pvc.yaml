@@ -1,0 +1,22 @@
+{{- if .Values.persistence.enabled }}
+# Conversation history, accounts and settings.
+#
+# Deleted with the cluster every evening along with everything else, which is a real loss
+# and not an acceptable one to discover afterwards: the questions analysts actually asked
+# are the pilot's main output. `make webui-export` copies the sqlite file out before
+# teardown. Nothing here makes that automatic, so it is written into the runbook and the
+# Makefile rather than left to memory.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: webui-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: webui
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

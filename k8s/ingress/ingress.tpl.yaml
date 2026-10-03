@@ -123,6 +123,47 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: webui
+  namespace: llm-serving
+  annotations:
+    # Streaming answers arrive as SSE; buffering them would hold the whole reply back and
+    # make a working system look frozen.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # File uploads and long conversation exports.
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    # NO basic auth here, deliberately, unlike Grafana and Prometheus: Open WebUI has its
+    # own accounts, and a second password in front of it would be one more thing to tell
+    # seven analysts and the thing they get wrong on the first morning.
+    #
+    # The allowlist is therefore the only lock, which is why it has to be a real one. For
+    # the pilot this is the GreenSM office egress range, NOT a home address -- `make
+    # ingress-up` fills %%CLIENT%% with the caller's own address, so publishing this to
+    # analysts means setting CLIENT explicitly to the office range.
+    #
+    # And it is HTTP until TLS lands: an analyst's password crosses the network readable.
+    # That is the open item blocking a real pilot, tracked in reports/tuan3.md 4.1.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: chat.%%IP%%.nip.io
+      http: &webui
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: webui
+                port:
+                  name: http
+    - host: chat.da51.lab
+      http: *webui
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: vllm-a
   namespace: inference
   annotations:
@@ -136,7 +177,7 @@ metadata:
     # This whitelist is what keeps `make ingress-up PUBLIC=1` from publishing the GPU
     # along with the dashboards. The security group opens port 30080 to everyone in that
     # mode, so the restriction has to live here, at the only layer that can still tell
-    # the five hostnames apart. It works because the Service uses
+    # the six hostnames apart. It works because the Service uses
     # externalTrafficPolicy: Local -- with Cluster, kube-proxy would SNAT every packet
     # and NGINX would see a node address for all callers, matching nobody.
     nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"

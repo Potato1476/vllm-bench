@@ -1,0 +1,115 @@
+{{- include "webui.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: webui
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # One sqlite file on one ReadWriteOnce volume: a surge pod would be scheduled before
+    # the old one released the disk and would sit Pending until it timed out. Recreate is
+    # a few seconds of downtime for a pilot UI, which is the cheaper of the two.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: webui
+  template:
+    metadata:
+      labels:
+        app: webui
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      containers:
+        - name: webui
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # --- the gateway ------------------------------------------------------
+            - name: OPENAI_API_BASE_URL
+              value: {{ .Values.openai.baseUrl | quote }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openai.existingSecret.name }}
+                  key: {{ .Values.openai.existingSecret.apiKeyKey }}
+            - name: ENABLE_OPENAI_API
+              value: "true"
+
+            # --- identity ---------------------------------------------------------
+            - name: WEBUI_NAME
+              value: {{ .Values.webui.name | quote }}
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openai.existingSecret.name }}
+                  key: {{ .Values.openai.existingSecret.secretKeyKey }}
+            # Creates the admin on first start when no users exist, so nobody has to race
+            # to the signup page to claim it. Open WebUI disables signup by itself once
+            # this account is made; enableSignup below is the explicit second lock.
+            - name: WEBUI_ADMIN_EMAIL
+              value: {{ .Values.webui.adminEmail | quote }}
+            - name: WEBUI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openai.existingSecret.name }}
+                  key: {{ .Values.openai.existingSecret.adminPasswordKey }}
+            - name: ENABLE_SIGNUP
+              value: {{ .Values.webui.enableSignup | ternary "true" "false" | quote }}
+            - name: DEFAULT_MODELS
+              value: {{ .Values.webui.defaultModels | quote }}
+
+            # --- the environment stays authoritative -------------------------------
+            # See values.yaml. Without this, everything below is read once and then
+            # ignored, while still appearing correct in the pod spec.
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: {{ .Values.persistentConfig | ternary "true" "false" | quote }}
+
+            # --- background LLM calls ---------------------------------------------
+            # Four of these default to true upstream. Each sends a prompt that is not a
+            # MOC question, which this platform refuses at grounding by design -- and the
+            # refusals would be counted against the guardrail's false-refusal rate, the
+            # number the pilot exists to measure.
+            - name: ENABLE_TITLE_GENERATION
+              value: {{ .Values.features.titleGeneration | ternary "true" "false" | quote }}
+            - name: ENABLE_TAGS_GENERATION
+              value: {{ .Values.features.tagsGeneration | ternary "true" "false" | quote }}
+            - name: ENABLE_FOLLOW_UP_GENERATION
+              value: {{ .Values.features.followUpGeneration | ternary "true" "false" | quote }}
+            - name: ENABLE_RETRIEVAL_QUERY_GENERATION
+              value: {{ .Values.features.retrievalQueryGeneration | ternary "true" "false" | quote }}
+            - name: ENABLE_AUTOCOMPLETE_GENERATION
+              value: {{ .Values.features.autocompleteGeneration | ternary "true" "false" | quote }}
+            - name: ENABLE_EVALUATION_ARENA_MODELS
+              value: {{ .Values.features.evaluationArenaModels | ternary "true" "false" | quote }}
+            - name: ENABLE_OLLAMA_API
+              value: {{ .Values.features.ollamaApi | ternary "true" "false" | quote }}
+            - name: ENABLE_WEB_SEARCH
+              value: {{ .Values.features.webSearch | ternary "true" "false" | quote }}
+            - name: ENABLE_IMAGE_GENERATION
+              value: {{ .Values.features.imageGeneration | ternary "true" "false" | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+      volumes:
+        - name: data
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: webui-data
+        {{- else }}
+          emptyDir: {}
+        {{- end }}

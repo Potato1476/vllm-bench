@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOC Copilot (demo) — hướng dẫn cho buổi dùng thử</title>
+<meta name="description" content="Hướng dẫn ngắn cho Data Analyst dùng thử MOC Copilot trong ba buổi pilot.">
+<style>
+/* Font hệ thống: trang phải hiện đúng khi mạng công ty chặn CDN, và phải hiển thị
+   đủ dấu tiếng Việt trên máy Windows lẫn macOS. */
+:root{
+  --ink:#16110a; --ink-soft:#4a4238; --line:#ddd6cc; --bg:#faf8f5; --card:#fff;
+  --warn-bg:#fff4e6; --warn-line:#e08900; --warn-ink:#6b3d00;
+  --stop-bg:#fdecec; --stop-line:#c0392b; --stop-ink:#7d1f16;
+  --ok:#0f6b45; --ok-bg:#eaf5ef;
+  --measure:36rem;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --ink:#f0ece6; --ink-soft:#b8b0a5; --line:#39332c; --bg:#15120e; --card:#1d1915;
+    --warn-bg:#2e2008; --warn-line:#e8a33d; --warn-ink:#f6d9a8;
+    --stop-bg:#331513; --stop-line:#e06a5c; --stop-ink:#f3c3bc;
+    --ok:#5fcf9e; --ok-bg:#12241c;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:400 17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  padding:0 1.25rem 5rem;
+}
+.wrap{max-width:var(--measure); margin:0 auto}
+header{padding:3rem 0 1.5rem; border-bottom:1px solid var(--line)}
+h1{font-size:1.85rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.01em}
+.sub{margin:0; color:var(--ink-soft)}
+.tag{
+  display:inline-block; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--ink-soft); border:1px solid var(--line); border-radius:2px;
+  padding:.15rem .45rem; margin-bottom:.9rem;
+}
+h2{font-size:1.15rem; margin:2.75rem 0 .75rem; letter-spacing:-.005em}
+h3{font-size:1rem; margin:0 0 .4rem}
+p{margin:0 0 1rem}
+strong{font-weight:600}
+
+/* Dải cảnh báo: phần tử to nhất trang, có chủ ý. Thứ duy nhất không được bỏ sót. */
+.banner{
+  margin:2rem 0 0; padding:1.25rem 1.35rem;
+  background:var(--warn-bg); border:1px solid var(--warn-line); border-left-width:5px;
+  border-radius:3px;
+}
+.banner .lead{font-size:1.2rem; font-weight:600; line-height:1.35; margin:0 0 .5rem; color:var(--warn-ink)}
+.banner p{color:var(--warn-ink); margin:0}
+
+.stop{
+  margin:1.25rem 0; padding:1.1rem 1.25rem;
+  background:var(--stop-bg); border:1px solid var(--stop-line); border-left-width:5px;
+  border-radius:3px; color:var(--stop-ink);
+}
+.stop h3{color:var(--stop-ink)}
+.stop p:last-child{margin:0}
+
+.note{
+  margin:1.25rem 0; padding:1.1rem 1.25rem;
+  background:var(--ok-bg); border:1px solid var(--ok); border-left-width:5px;
+  border-radius:3px;
+}
+.note h3{color:var(--ok)}
+.note p:last-child{margin:0}
+
+ul{margin:0 0 1rem; padding-left:1.15rem}
+li{margin:0 0 .5rem}
+li::marker{color:var(--ink-soft)}
+
+.q{
+  display:block; margin:.35rem 0 .9rem; padding:.55rem .8rem;
+  background:var(--card); border:1px solid var(--line); border-radius:3px;
+  font-size:.95rem; color:var(--ink-soft);
+}
+.q::before{content:"“"}
+.q::after{content:"”"}
+
+dl{margin:0}
+dt{font-weight:600; margin:1.25rem 0 .2rem}
+dt:first-child{margin-top:0}
+dd{margin:0; color:var(--ink-soft)}
+
+.login{
+  margin:1rem 0; padding:1.1rem 1.25rem; background:var(--card);
+  border:1px solid var(--line); border-radius:3px;
+}
+.login dt{margin-top:.9rem}
+.login dt:first-of-type{margin-top:0}
+.fill{
+  background:repeating-linear-gradient(45deg,transparent,transparent 5px,var(--line) 5px,var(--line) 6px);
+  padding:.1rem .4rem; border:1px dashed var(--ink-soft); border-radius:2px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em;
+}
+code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em;
+  background:var(--card); border:1px solid var(--line); border-radius:2px; padding:.05rem .3rem;
+}
+a{color:var(--ok)}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--ok); outline-offset:3px; border-radius:2px}
+footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line); color:var(--ink-soft); font-size:.92rem}
+
+@media (min-width:60rem){
+  :root{--measure:40rem}
+  body{font-size:18px}
+  h1{font-size:2.1rem}
+}
+@media print{
+  body{background:#fff; color:#000; padding:0}
+  .banner,.stop,.note{border-left-width:3px}
+}
+</style>
+</head>
+<body>
+<main class="wrap">
+
+<header>
+  <span class="tag">Bản dùng thử nội bộ · 3 buổi</span>
+  <h1>MOC Copilot (demo)</h1>
+  <p class="sub">Trợ lý tra cứu tài liệu nghiệp vụ, đang trong giai đoạn đánh giá. Trang này mất khoảng ba phút đọc, và nên đọc hết trước khi hỏi câu đầu tiên.</p>
+</header>
+
+<section class="banner" aria-labelledby="w">
+  <p class="lead" id="w">Toàn bộ dữ liệu trong hệ thống này là dữ liệu giả lập.</p>
+  <p>Không có con số nào trong câu trả lời phản ánh số liệu thật của công ty. <strong>Không đưa bất kỳ con số nào từ đây vào báo cáo, email hay bản trình bày thật.</strong> Mỗi câu trả lời đều kèm sẵn dòng nhắc này; nó ở đó vì nó quan trọng, không phải cho đủ thủ tục.</p>
+</section>
+
+<section class="stop" aria-labelledby="s1">
+  <h3 id="s1">Điều dễ mắc bẫy nhất</h3>
+  <p>Hỏi về số liệu vận hành thì hệ thống <strong>vẫn trả lời</strong>, kèm theo mã tài liệu trông rất thuyết phục. Nó không báo lỗi, không nói "tôi không biết".</p>
+  <p>Con số đó được sinh ra tự động để làm dữ liệu thử. Trích dẫn có thật, con số thì không. Đây là lý do có dải cảnh báo ở trên.</p>
+</section>
+
+<h2>Hỏi được gì</h2>
+<p>Kho tài liệu hiện có bốn nhóm nội dung. Câu hỏi nằm trong bốn nhóm này sẽ cho câu trả lời có ích:</p>
+
+<dl>
+  <dt>Định nghĩa chỉ số</dt>
+  <dd>Một KPI được tính thế nào, công thức ra sao, loại trừ những trường hợp nào.
+    <span class="q">Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?</span></dd>
+
+  <dt>Từ điển dữ liệu</dt>
+  <dd>Bảng nào chứa gì, grain là gì, có bẫy gì khi join.
+    <span class="q">Bảng đặt chuyến có grain là gì, và cần lưu ý gì khi join với bảng tài xế?</span></dd>
+
+  <dt>Quy trình phân tích</dt>
+  <dd>Khi một chỉ số biến động thì điều tra theo thứ tự nào, kiểm tra chất lượng dữ liệu ra sao.
+    <span class="q">GBV tuần này giảm so với tuần trước, cần kiểm tra những gì trước?</span></dd>
+
+  <dt>Quy định và danh mục dịch vụ</dt>
+  <dd>Nguyên tắc quản trị dữ liệu, ai sở hữu dịch vụ nào.</dd>
+</dl>
+
+<h2>Không hỏi được gì</h2>
+<ul>
+  <li><strong>Số liệu vận hành thật.</strong> Xem lại phần trên: nó sẽ trả lời, và con số là giả.</li>
+  <li><strong>Việc ngoài kho tài liệu.</strong> Soạn email, dịch thuật, viết code, tóm tắt văn bản bạn dán vào. Hệ thống được thiết kế để chỉ trả lời dựa trên tài liệu nội bộ, nên những việc này sẽ bị từ chối.</li>
+  <li><strong>Tải tệp lên để hỏi.</strong> Chưa hỗ trợ trong bản dùng thử.</li>
+  <li><strong>Truy vấn trực tiếp vào database.</strong> Hệ thống đọc tài liệu, không chạy SQL.</li>
+</ul>
+
+<h2>Ba điều sẽ thấy khác với các chatbot quen dùng</h2>
+<dl>
+  <dt>Câu trả lời hiện ra nguyên đoạn, không chạy từng chữ</dt>
+  <dd>Sẽ có khoảng lặng vài giây rồi cả đoạn xuất hiện cùng lúc. Đây không phải treo. Hệ thống kiểm duyệt xong toàn bộ câu trả lời rồi mới gửi, vì một câu đã gửi đi thì không thu hồi được.</dd>
+
+  <dt>Câu trả lời nào cũng kèm mã tài liệu</dt>
+  <dd>Dạng <code>[METRIC-TRIP-001]</code>. Đó là nguồn của thông tin. Nếu một câu khẳng định không có mã nào, hệ thống sẽ tự chặn thay vì trả lời.</dd>
+
+  <dt>Nó từ chối nhiều hơn bạn quen</dt>
+  <dd>Từ chối là hành vi đúng của hệ thống này, không phải lỗi. Thà không trả lời còn hơn trả lời chắc chắn mà sai.</dd>
+</dl>
+
+<section class="note" aria-labelledby="n1">
+  <h3 id="n1">Khi nó nói "tài liệu không đề cập đến điều này"</h3>
+  <p>Đó là thông tin có giá trị nhất mà buổi dùng thử này thu được, nên xin đừng bỏ qua. Nó có nghĩa là kho tài liệu đang thiếu đúng thứ bạn cần.</p>
+  <p><strong>Nhờ bạn chép lại câu hỏi đó</strong> và gửi về cuối buổi. Danh sách những câu hỏi không trả lời được chính là danh sách tài liệu chúng tôi sẽ đi xin để bản chính thức dùng được thật.</p>
+</section>
+
+<h2>Đăng nhập</h2>
+<div class="login">
+  <dl>
+    <dt>Địa chỉ</dt>
+    <dd><span class="fill">&nbsp;&nbsp;điền URL buổi dùng thử&nbsp;&nbsp;</span></dd>
+    <dt>Tài khoản</dt>
+    <dd>Được tạo sẵn và gửi riêng cho từng người. Không tự đăng ký được.</dd>
+    <dt>Thời gian</dt>
+    <dd><span class="fill">&nbsp;&nbsp;điền khung giờ&nbsp;&nbsp;</span> — ngoài khung giờ này hệ thống được tắt để tiết kiệm chi phí, nên sẽ không truy cập được.</dd>
+  </dl>
+</div>
+<p>Lịch sử hội thoại của bạn chỉ mình bạn xem được, và sẽ bị xoá khi kết thúc đợt dùng thử.</p>
+
+<h2>Gặp vấn đề</h2>
+<p>Báo lại cho <span class="fill">&nbsp;&nbsp;tên và kênh liên hệ&nbsp;&nbsp;</span>. Khi báo lỗi, chép kèm câu hỏi đã gõ sẽ giúp tìm nguyên nhân nhanh hơn nhiều.</p>
+
+<footer>
+  <p>Đề tài DA#51 — nền tảng serving LLM nội bộ. Bản dùng thử, dữ liệu giả lập.</p>
+</footer>
+
+</main>
+</body>
+</html>
