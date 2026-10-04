@@ -41,7 +41,47 @@ openai:
     # Bootstraps the admin account on first start, with no interactive setup.
     adminPasswordKey: WEBUI_ADMIN_PASSWORD
 
+# The warning, inside the product rather than only in the handout nobody re-reads.
+#
+# dismissible is false on purpose. Open WebUI's own example banner is dismissible, which
+# is right for "messages are stored"; it is wrong here. The thing being warned about is
+# not a policy the reader acknowledges once, it is a property of every answer on screen,
+# and it matters most on day three when the novelty has worn off and someone is copying a
+# figure into a spreadsheet.
+#
+# This gets MORE important as the interface gets more branded, not less. A tool wearing
+# the company's colours reads as sanctioned, and fabricated numbers inherit that
+# authority. The banner is what keeps the two signals from cancelling out.
+banner:
+  enabled: true
+  title: "Dữ liệu giả lập — không dùng cho báo cáo thật"
+  content: "Kho tài liệu của bản dùng thử này là dữ liệu sinh tự động. Mọi con số trong câu trả lời đều không phải số liệu thật của công ty, kể cả khi có trích dẫn mã tài liệu."
+
+# The empty-chat starters, which teach the domain at the one moment it matters: when
+# somebody is deciding what to type. A guide page read once loses to four examples sitting
+# under the cursor. All four come from document categories that actually exist in the
+# corpus, so none of them demonstrates a failure on the first try.
+promptSuggestions:
+  - title: ["Định nghĩa", "chỉ số"]
+    content: "Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?"
+  - title: ["Từ điển", "dữ liệu"]
+    content: "Bảng đặt chuyến có grain là gì, và cần lưu ý gì khi join với bảng tài xế?"
+  - title: ["Quy trình", "phân tích"]
+    content: "GBV tuần này giảm so với tuần trước, cần kiểm tra những gì trước?"
+  - title: ["Quản trị", "dữ liệu"]
+    content: "Nguyên tắc lưu trữ và phân quyền truy cập dữ liệu được quy định thế nào?"
+
+# Vietnamese regardless of browser language. The corpus, the prompts and every answer are
+# Vietnamese; an English interface around them is a seam the reader has to cross twice per
+# question.
+locale: "vi"
+
 webui:
+  # Open WebUI appends "(Open WebUI)" to whatever is set here and offers no way to turn
+  # that off. Left alone deliberately: the interface saying what it is built from is
+  # accurate, and on an internal tool wearing company colours that honesty is worth more
+  # than a clean wordmark. CUSTOM_NAME would remove it but polls api.openwebui.com to do
+  # so, which is an outbound call from inside the cluster for a cosmetic gain.
   name: "MOC Copilot (demo)"
   adminEmail: "admin@da51.lab"
   # Analysts do not self-register; the admin creates the accounts. For a pilot of five to

@@ -64,6 +64,25 @@ spec:
               value: {{ .Values.webui.enableSignup | ternary "true" "false" | quote }}
             - name: DEFAULT_MODELS
               value: {{ .Values.webui.defaultModels | quote }}
+            - name: DEFAULT_LOCALE
+              value: {{ .Values.locale | quote }}
+
+            # --- what the reader sees before typing anything -----------------------
+            {{- if .Values.banner.enabled }}
+            - name: WEBUI_BANNERS
+              value: {{ list (dict
+                  "id" "demo-data"
+                  "type" "warning"
+                  "title" .Values.banner.title
+                  "content" .Values.banner.content
+                  "dismissible" false
+                  "timestamp" 1000
+                ) | toJson | quote }}
+            {{- end }}
+            {{- with .Values.promptSuggestions }}
+            - name: DEFAULT_PROMPT_SUGGESTIONS
+              value: {{ . | toJson | quote }}
+            {{- end }}
 
             # --- the environment stays authoritative -------------------------------
             # See values.yaml. Without this, everything below is read once and then
