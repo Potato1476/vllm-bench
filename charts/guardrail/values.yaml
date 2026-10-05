@@ -59,10 +59,10 @@ forceCitationModels: "qwen2.5-1.5b"
 # and grounding cannot tell a true document from a plausible one. See the ANSWER_NOTICE
 # block in services/llm_pipeline/app.py for why this is not a system-prompt instruction.
 #
-# Turn `enabled` off ONLY when the indexed corpus is real documents -- and note that
-# swapping the corpus is not sufficient on its own, because access is pinned to
-# defaultAccessLevel for every caller, so internal documents would be readable by any key
-# until per-key access levels are enforced.
+# LEAVE `enabled` ON. The corpus is simulated for the life of this project -- the team has
+# no access to internal company documents -- so this is a permanent property of the
+# deployment, not a stage it grows out of. The flag exists for a deployment that indexes
+# real documents; that deployment is not this one.
 #
 # `text` empty keeps app.py's built-in Vietnamese default. Set it to override the wording.
 answerNotice:

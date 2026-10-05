@@ -66,8 +66,8 @@ def main() -> int:
           "" if answered else f"[{result.stage}] {result.message}")
 
     if answered:
-        # 3. The provenance notice. Its absence is not a failure once the corpus is real,
-        #    but during the pilot it means the warning is not reaching users.
+        # 3. The provenance notice. On this platform the corpus is simulated permanently,
+        #    so its absence always means the warning is not reaching users.
         check("cau tra loi kem dong nhac nguon du lieu", bool(result.notice),
               "Corpus hien la du lieu mo phong ma cau tra loi khong canh bao. "
               "Kiem answerNotice trong charts/guardrail/values.yaml.")

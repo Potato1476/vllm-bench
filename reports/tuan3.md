@@ -64,11 +64,15 @@ Phán quyết được đọc theo cận dưới chứ không theo điểm ướ
 
 Bộ đối kháng chặn **100% trên 294 mẫu offline** và **100% trên 129 mẫu held-out** chạy qua hệ thống thật. Tỷ lệ chặn nhầm câu hỏi hợp lệ là 0 trên tập offline. Tuần 3 cũng sửa một chỉ số sai trong chính bộ đo: metric `attack_blocked` từng báo 79% do một lớp mẫu tấn công được gửi sai kênh — tỷ lệ thật là 100%, và việc một chỉ số an toàn báo thấp hơn thực tế vẫn là lỗi cần sửa.
 
-### 2.3. Đa agent (TC4)
+### 2.3. Đa agent (TC4) — **chưa đạt, và trước đó nhóm đã đọc sai tiêu chí**
 
-Tầng Aurora đã được dựng lại và **7 virtual key** được cấp cho 7 agent trong `bench/agents.json`, kèm team dùng chung hạn mức 3000 RPM. Cô lập theo key đã được kiểm chứng trên hệ thống thật: key của `moc-datadict` bị từ chối khi gọi mô hình 7B với thông báo `This key can only access models=['qwen2.5-1.5b']`.
+Cơ chế kỹ thuật đã sẵn sàng. Tầng Aurora dựng lại được, virtual key cấp được, và **cô lập theo key đã kiểm chứng trên hệ thống thật**: một key bị giới hạn mô hình nhận `This key can only access models=['qwen2.5-1.5b']` khi gọi sang mô hình khác. Nhãn `end_user` trong Prometheus đến từ **HTTP header `X-Agent-Id`**, không phải trường `user` trong body — LiteLLM v1.90.2 không đọc trường đó — và dashboard độ trễ, chi phí, token theo từng key đã có dữ liệu.
 
-Nhãn `end_user` trong Prometheus đến từ **HTTP header `X-Agent-Id`**, không phải trường `user` trong body — LiteLLM v1.90.2 không đọc trường đó. Dashboard độ trễ, chi phí và token theo từng agent đã có dữ liệu.
+Nhưng **tiêu chí không đo cơ chế, nó đo người dùng**. Đề bài ghi nền tảng này là *"nền tảng cho DA#19/#20/#32/#39/#41/#44/#45"*, nên **"≥5 DA chạy trên nền tảng" nghĩa là ít nhất 5 trong 7 đề án đó thật sự gọi vào**. Bảy agent mà nhóm từng báo cáo (`moc-analytics`, `moc-datadict`…) là tên nhóm tự đặt theo các nhóm tài liệu trong corpus, không phải roster thật. Cấp key không làm tiêu chí này đạt.
+
+**Hiện trạng: 0/7 đề án đã tích hợp.** `bench/agents.json` đã đổi sang đúng bảy mã đề án, và `clients/python/` được viết để một đội tích hợp trong vài phút.
+
+Có một trở ngại kỹ thuật phải xử lý trước khi mời họ: nền tảng hiện **chỉ phục vụ một dạng workload** — hỏi đáp có trích dẫn trên corpus MOC. `finalise()` luôn chạy kiểm tra grounding, nên một đề án làm phân loại, tóm tắt hay trích xuất sẽ bị chặn ở tầng này trên gần như mọi request. Thứ có giá trị với các đề án khác là **chặn PII, chặn prompt injection và hạ tầng serving có đo đạc**, chứ không phải RAG. Hướng xử lý là gắn **profile guardrail theo từng virtual key**: copilot MOC giữ grounding bắt buộc đúng như đề bài yêu cầu, đề án khác dùng profile chỉ gồm PII và injection.
 
 
 ## 3. Giới hạn hiện tại
@@ -82,7 +86,7 @@ Nhãn `end_user` trong Prometheus đến từ **HTTP header `X-Agent-Id`**, khô
 
 ## 4. Kế hoạch Triển khai Tuần 4
 
-Trọng tâm tuần 4 là **FinOps** và **đưa nền tảng vào tay người dùng thật**: một nhóm Data Analyst của GreenSM dùng nó cho công việc của họ, thay vì nền tảng chỉ được gọi bằng công cụ đo.
+Trọng tâm tuần 4 là **FinOps** và **đưa nền tảng vào tay người dùng thật**: một nhóm Data Analyst dùng thử trên giao diện chat, và các đề án khác bắt đầu tích hợp — thay vì nền tảng chỉ được gọi bằng công cụ đo. Lưu ý phạm vi: dữ liệu là mô phỏng, nên pilot đánh giá **nền tảng**, không phải thay thế công cụ tra cứu trong công việc.
 
 ### 4.1. Hiện trạng phần tương thích OpenAI
 
@@ -96,7 +100,7 @@ Năm giới hạn còn lại, và chúng định hình việc chọn người d�
 * **Streaming không chạy chữ.** Guardrail đệm toàn bộ câu trả lời rồi mới phát SSE, vì không thể thu hồi một PII hay một trích dẫn bịa đã gửi đi. Hệ quả là thời gian tới token đầu tiên bằng thời gian sinh cả câu trả lời — công cụ đo không quan tâm, người dùng thật sẽ báo đó là lag.
 * **Chỉ phục vụ chat completions.** Các endpoint `/v1/embeddings` và `/v1/completions` chưa đi qua guardrail.
 
-### 4.2. Ràng buộc lớn nhất: corpus hiện là dữ liệu giả lập
+### 4.2. Ràng buộc lớn nhất: corpus là dữ liệu mô phỏng, và sẽ luôn như vậy
 
 `data/xanhsm_retrieval_mock/manifest.json` ghi rõ không có chính sách hay con số nào trong bộ dữ liệu đại diện cho dữ liệu nội bộ thật của Xanh SM, và **720 trên 798 bản ghi là báo cáo vận hành sinh tự động** theo seed, cho các thành phố có thật.
 
@@ -104,14 +108,15 @@ Tầng grounding không phát hiện được điều đó, và đây không ph�
 
 Biện pháp đã triển khai trong tuần: mọi câu trả lời được **chèn cảnh báo dữ liệu giả lập ở tầng guardrail**, tất định, tại mọi đường phục vụ kể cả cache và streaming. Không đặt trong system prompt, vì sinh văn bản là ngẫu nhiên, và một biện pháp bảo vệ báo cáo thật của đồng nghiệp thì không được phép ngẫu nhiên.
 
-Cần nói rõ thêm: **thay corpus không phải là việc đổi file**. Guardrail hiện ghim access level theo cấu hình triển khai cho mọi caller, nên tài liệu nội bộ thật sẽ đọc được bằng bất kỳ virtual key nào, cho tới khi ánh xạ key → access level được thực thi.
+**Dữ liệu mô phỏng là trạng thái vĩnh viễn của đề tài này, không phải giai đoạn tạm.** Nhóm không có quyền truy cập tài liệu nội bộ của công ty, nên sẽ không có bước thay corpus bằng tài liệu thật. Mọi biện pháp đi kèm — dòng nhắc nguồn dữ liệu trong từng câu trả lời, banner trong giao diện — là cố định chứ không phải tạm thời.
 
-### 4.3. Hai pilot, và tuần 4 làm cái thứ nhất
+Điều đó cũng gỡ hai ràng buộc từng được nêu: ánh xạ key → access level không còn chặn việc gì (vẫn là lỗ hổng cần ghi nhận khi bàn giao, nhưng không phải việc tuần 4), và việc đưa endpoint qua Cloudflare Tunnel là chấp nhận được lâu dài, vì không có tài liệu nội bộ nào đi qua đó.
 
-* **Pilot A — DA dùng thật, nhưng đề bài là đánh giá nền tảng.** Mọi câu trả lời kèm cảnh báo dữ liệu giả lập. Đo ba thứ: độ trễ dưới traffic người thật, tỷ lệ guardrail chặn oan trên câu hỏi thật (đối chiếu với 0% trên 144 câu gold), và tỷ lệ câu hỏi corpus không trả lời được.
-* **Pilot B — có giá trị nghiệp vụ thật.** Cần tài liệu GreenSM thật, ánh xạ key → access level, và index lại. Phụ thuộc vào việc xin được tài liệu nên khởi động ngay ngày đầu, nhưng không đặt trong phạm vi tuần 4.
+### 4.3. Pilot đánh giá nền tảng
 
-Sản phẩm chính của Pilot A là **danh sách tài liệu cần xin cho Pilot B**, có bằng chứng thay vì phỏng đoán. Để đo được điều đó, tuần này đã bổ sung counter `guardrail_answers_declined_total`: trước đó một câu trả lời kiểu "tài liệu không đề cập điều này" đi qua grounding với verdict `ok` và được đếm là thành công, **không phân biệt được với một câu trả lời hữu ích**. Counter này không chứa chữ nào của câu hỏi — đó chính là điều kiện để nó bật trong khi audit log phải tắt, vì câu hỏi của người thật có thể mang số điện thoại khách hàng hoặc tên tài xế.
+Pilot là **đánh giá nền tảng**, không phải công cụ tra cứu sự thật. Mọi câu trả lời kèm cảnh báo nguồn dữ liệu. Đo ba thứ: độ trễ dưới traffic người thật, tỷ lệ guardrail chặn oan trên câu hỏi thật (đối chiếu với 0% trên 144 câu gold), và tỷ lệ câu hỏi corpus không trả lời được.
+
+Chỉ số thứ ba đo bằng counter `guardrail_answers_declined_total` bổ sung tuần này. Trước đó một câu trả lời kiểu "tài liệu không đề cập điều này" đi qua grounding với verdict `ok` và được đếm là thành công, **không phân biệt được với một câu trả lời hữu ích** — nên tỷ lệ câu hỏi nằm ngoài tầm phủ của corpus là con số vô hình. Counter không chứa chữ nào của câu hỏi, và đó chính là điều kiện để nó bật trong khi audit log phải tắt, vì câu hỏi của người thật có thể mang số điện thoại khách hàng hoặc tên tài xế. Kết quả cho biết corpus mô phỏng cần mở rộng về hướng nào để phủ được thứ người dùng thật sự hỏi.
 
 ### 4.4. Ngân sách và hình dạng phiên
 

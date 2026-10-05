@@ -73,10 +73,11 @@ DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "192"))
 # truncated by a client, and the tail is the part that disappears. Prepending also puts it
 # first on the wire for a streamed response, so it is on screen while the answer arrives.
 #
-# Set ANSWER_NOTICE="" to serve answers bare. That is correct ONLY once the indexed corpus
-# is real, and real documents are not a drop-in swap: access is pinned to
-# DEFAULT_ACCESS_LEVEL for every caller (see do_POST), so internal documents would be
-# readable by any key until per-key access levels are enforced.
+# ANSWER_NOTICE="" would serve answers bare. NOTHING IN THIS PROJECT SHOULD EVER SET IT.
+# The team has no access to the company's internal documents, so the indexed corpus is
+# simulated permanently rather than until some later milestone -- there is no second
+# phase in which this notice becomes a lie. The switch exists because a deployment that
+# DID index real documents would need it, not because this one is heading there.
 DEFAULT_ANSWER_NOTICE = (
     "⚠️ Môi trường thử nghiệm: kho tài liệu là dữ liệu mô phỏng, không nối tới kho dữ "
     "liệu vận hành. Số liệu trong câu trả lời này không phải số liệu thật."

@@ -62,7 +62,8 @@ class Answer:
     person: the notice is the thing that stops a simulated figure reaching a real report."""
 
     notice: str = ""
-    """The provenance line, split off. Empty once the corpus is real and it is turned off."""
+    """The provenance line, split off. Always present on this platform: its corpus is
+    simulated permanently, so an empty value here means the warning went missing."""
 
     cited: tuple[str, ...] = ()
     """Document ids the answer leaned on, when the platform reports them."""

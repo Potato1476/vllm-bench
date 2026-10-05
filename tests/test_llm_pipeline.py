@@ -477,7 +477,8 @@ class GuardrailServiceTest(unittest.TestCase):
         self.assertNotIn(self.NOTICE, json.dumps(body, ensure_ascii=False))
 
     def test_an_empty_notice_serves_the_answer_bare(self) -> None:
-        """The switch for the day the indexed corpus is real."""
+        """The switch a real-corpus deployment would use. This project never sets it:
+        no access to internal documents means the corpus stays simulated."""
         with mock.patch.object(app, "ANSWER_NOTICE", ""):
             _status, body = self._post("Một chuyến xe hoàn thành được định nghĩa thế nào?")
         content = body["choices"][0]["message"]["content"]
