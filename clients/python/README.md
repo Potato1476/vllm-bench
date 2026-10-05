@@ -137,12 +137,41 @@ chứ không phải bật một cờ.
 
 ---
 
-## 5. Chọn model
+## 5. Chọn model — và chọn đúng profile
 
-| Model | Dùng cho |
+Đây là chỗ quyết định đề án của bạn chạy được hay bị chặn trên mọi request.
+
+| Model | Truy hồi tài liệu | Bắt buộc trích dẫn | Dùng cho |
+|---|---|---|---|
+| `qwen2.5-7b` | ✅ | ✅ | hỏi đáp trên kho tài liệu MOC |
+| `qwen2.5-1.5b` | ✅ | ✅ | như trên, câu hỏi đóng |
+| `qwen2.5-7b-plain` | ❌ | ❌ | **mọi việc khác** |
+| `qwen2.5-1.5b-plain` | ❌ | ❌ | như trên, việc đơn giản |
+
+**Nếu đề án của bạn không phải hỏi đáp trên kho tài liệu MOC, hãy dùng `-plain`.**
+
+Bản thường ép mọi câu trả lời phải trích dẫn một tài liệu trong kho MOC. Gửi một bài toán
+phân loại, tóm tắt hay trích xuất vào đó thì model không có tài liệu nào để dẫn, và
+guardrail chặn ở tầng grounding — **gần như mọi request**. Đó không phải lỗi của bạn, chỉ
+là chọn sai profile.
+
+Bản `-plain` **giữ nguyên** chặn prompt injection và che PII ở cả hai chiều. Nó chỉ bỏ
+truy hồi và yêu cầu trích dẫn. Nói cách khác, bạn vẫn có đủ phần guardrail mà đề án của
+bạn cần, chỉ bỏ phần vốn dành riêng cho copilot MOC.
+
+```python
+moc = MocCopilot(..., agent_id="da32", model="qwen2.5-7b-plain")
+```
+
+Key của đề án bạn được cấp cả bốn tên. Nếu gọi một tên không nằm trong danh sách, LiteLLM
+trả về `This key can only access models=[...]` — đó là cách nhanh nhất để biết key cấp sai.
+
+### Chọn giữa 7B và 1.5B
+
+| | |
 |---|---|
-| `qwen2.5-7b` | suy luận nhiều bước, câu hỏi mở, nội dung gửi tới người đọc |
-| `qwen2.5-1.5b` | phân loại, trích xuất, câu hỏi đóng có khuôn trả lời |
+| `7b` | suy luận nhiều bước, câu hỏi mở, nội dung gửi tới người đọc |
+| `1.5b` | phân loại, trích xuất, câu hỏi đóng có khuôn trả lời |
 
 Đừng gửi cùng một workload cho cả hai rồi so sánh — chúng ở hai tầng khác nhau, không phải
 hai phiên bản của cùng một thứ. Bản 1.5B cần cưỡng chế trích dẫn lúc decode mới giữ được

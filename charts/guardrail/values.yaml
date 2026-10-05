@@ -54,6 +54,13 @@ auditLog: false
 # that is in context. See _force_citation in app.py for the measurement.
 forceCitationModels: "qwen2.5-1.5b"
 
+# Model names ending in this suffix are served WITHOUT retrieval and WITHOUT the citation
+# requirement, keeping injection screening and PII screening both ways. See the
+# PLAIN_PROFILE_SUFFIX block in services/llm_pipeline/app.py for why the profile rides on
+# the model name instead of a request field. Must match plainProfile.suffix in
+# charts/litellm; set to "" to refuse the profile entirely.
+plainProfileSuffix: "-plain"
+
 # Prepended to every answer the platform serves, because the indexed corpus is synthetic:
 # 720 of its 798 records are generated daily operations figures for real GreenSM cities,
 # and grounding cannot tell a true document from a plausible one. See the ANSWER_NOTICE

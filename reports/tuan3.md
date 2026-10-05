@@ -72,7 +72,13 @@ Nhưng **tiêu chí không đo cơ chế, nó đo người dùng**. Đề bài g
 
 **Hiện trạng: 0/7 đề án đã tích hợp.** `bench/agents.json` đã đổi sang đúng bảy mã đề án, và `clients/python/` được viết để một đội tích hợp trong vài phút.
 
-Có một trở ngại kỹ thuật phải xử lý trước khi mời họ: nền tảng hiện **chỉ phục vụ một dạng workload** — hỏi đáp có trích dẫn trên corpus MOC. `finalise()` luôn chạy kiểm tra grounding, nên một đề án làm phân loại, tóm tắt hay trích xuất sẽ bị chặn ở tầng này trên gần như mọi request. Thứ có giá trị với các đề án khác là **chặn PII, chặn prompt injection và hạ tầng serving có đo đạc**, chứ không phải RAG. Hướng xử lý là gắn **profile guardrail theo từng virtual key**: copilot MOC giữ grounding bắt buộc đúng như đề bài yêu cầu, đề án khác dùng profile chỉ gồm PII và injection.
+Trở ngại kỹ thuật lớn nhất đã được xử lý trong tuần. Trước đó nền tảng **chỉ phục vụ một dạng workload** — hỏi đáp có trích dẫn trên corpus MOC — vì `finalise()` luôn chạy kiểm tra grounding, nên một đề án làm phân loại, tóm tắt hay trích xuất sẽ bị chặn trên gần như mọi request. Khả năng cả 5 trong 7 đề án đều tình cờ là bài toán hỏi đáp là rất thấp, nên đây là điều kiện tiên quyết chứ không phải việc cải thiện.
+
+Giải pháp là **profile guardrail thứ hai**, công bố dưới dạng một tên model riêng: `qwen2.5-7b-plain` và `qwen2.5-1.5b-plain`. Profile này **giữ nguyên** chặn prompt injection và che PII ở cả hai chiều, chỉ bỏ truy hồi và yêu cầu trích dẫn — tức giữ đúng những tầng guardrail có giá trị với mọi đề án, bỏ tầng vốn chỉ dành cho copilot MOC.
+
+Điểm thiết kế đáng lưu ý: **profile đi theo tên model, không theo trường trong request**. Một header do client đặt sẽ cho phép bất kỳ ai tắt grounding của chính copilot MOC — đúng kiểu leo thang quyền mà guardrail đã từ chối cho `access_level`. Vì LiteLLM đã cưỡng chế sẵn danh sách model mỗi virtual key được dùng (đã kiểm chứng tuần 3), ranh giới phân quyền có sẵn trở thành ranh giới profile, không phát sinh cơ chế mới.
+
+Key của copilot MOC **không** được cấp profile này, có chủ ý: trên giao diện analyst, một câu trả lời không có mã tài liệu chính là lỗi mà quy tắc trích dẫn sinh ra để bắt.
 
 
 ## 3. Giới hạn hiện tại

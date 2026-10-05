@@ -17,6 +17,15 @@ data:
           model: {{ printf "openai/%s" $m.upstreamModel | quote }}
           api_base: {{ $m.apiBase | quote }}
           api_key: "none"
+      {{- if $.Values.plainProfile.enabled }}
+      # Same engine, same guardrail service, no retrieval and no citation requirement.
+      # Which keys may call it is decided per virtual key in bench/agents.json.
+      - model_name: {{ printf "%s%s" $m.publicName $.Values.plainProfile.suffix | quote }}
+        litellm_params:
+          model: {{ printf "openai/%s%s" $m.upstreamModel $.Values.plainProfile.suffix | quote }}
+          api_base: {{ $m.apiBase | quote }}
+          api_key: "none"
+      {{- end }}
       {{- end }}
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY

@@ -39,6 +39,26 @@ models:
     upstreamModel: qwen2.5-1.5b
     apiBase: http://guardrail.llm-serving.svc.cluster.local:8080/v1
 
+# A SECOND NAME FOR EACH MODEL THAT SERVES THE NON-RAG PROFILE.
+#
+# This platform is infrastructure for seven other projects, and only the MOC copilot is a
+# cited-question-answering workload. The guardrail refuses any answer that cites nothing,
+# so a project doing classification or extraction is blocked on every request unless it
+# can ask for a profile without the citation rule.
+#
+# Published as a model name rather than a request flag ON PURPOSE: LiteLLM already
+# enforces which models a virtual key may call, so minting a key decides which profiles
+# that project may use, through the mechanism that is already tested. A request-level flag
+# would let any caller switch the MOC copilot's grounding off.
+#
+# SUFFIX MUST MATCH PLAIN_PROFILE_SUFFIX in charts/guardrail. Helm cannot check across
+# charts: a mismatch means LiteLLM advertises `qwen2.5-7b-plain`, the guardrail does not
+# recognise the name, and the caller gets "model is not routed by guardrail" -- which
+# reads like a broken deployment rather than two values that disagree.
+plainProfile:
+  enabled: true
+  suffix: "-plain"
+
 router:
   strategy: simple-shuffle
   # 0, not 1, and 20s, not 300s. THESE TWO CAUSED A CONGESTION COLLAPSE.

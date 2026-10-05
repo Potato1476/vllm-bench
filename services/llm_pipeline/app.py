@@ -100,6 +100,47 @@ MODEL_ROUTES = json.loads(os.getenv(
     }),
 ))
 
+# THE NON-RAG SERVING PROFILE, AND WHY IT RIDES ON THE MODEL NAME.
+#
+# The platform is infrastructure for seven other projects (DA#19 ... DA#45), and only the
+# MOC copilot among them is a cited-question-answering workload. finalise() blocks any
+# answer that cites nothing, so a project doing classification or extraction would be
+# refused at grounding on essentially every request -- it is not that the platform is
+# unhelpful to them, it is unusable.
+#
+# What those teams need is PII screening, injection screening and instrumented serving.
+# Those three do not depend on having retrieved a document; only the citation requirement
+# does. So a second profile serves them with everything except retrieval and grounding.
+#
+# THE PROFILE MUST NOT COME FROM THE REQUEST. A header or body field naming the profile
+# would let any caller turn grounding off for the MOC copilot too, which is exactly the
+# privilege escalation do_POST already refuses for access_level. It rides on the MODEL
+# NAME instead, because LiteLLM already enforces which models a virtual key may use --
+# verified on this deployment, a restricted key gets
+# `This key can only access models=['qwen2.5-1.5b']`. That makes the existing, tested
+# authorisation boundary the profile boundary too, with no new mechanism to get wrong.
+#
+# So `qwen2.5-7b` is grounded and `qwen2.5-7b-plain` is not, and which of the two a
+# project may call is decided when its key is minted.
+PLAIN_PROFILE_SUFFIX = os.getenv("PLAIN_PROFILE_SUFFIX", "-plain")
+
+
+def _resolve_profile(model: str) -> tuple[str, bool]:
+    """Map a requested model to (engine model name, grounded).
+
+    The engine only knows the base names, so the suffix is stripped before the upstream
+    call -- vLLM would reject `qwen2.5-7b-plain` as an unknown model.
+    """
+    if (PLAIN_PROFILE_SUFFIX and model.endswith(PLAIN_PROFILE_SUFFIX)
+            and model[: -len(PLAIN_PROFILE_SUFFIX)] in MODEL_ROUTES):
+        return model[: -len(PLAIN_PROFILE_SUFFIX)], False
+    return model, True
+
+
+def _routable(model: str) -> bool:
+    return _resolve_profile(model)[0] in MODEL_ROUTES
+
+
 # Dense retrieval, off unless both halves are present.
 #
 # Measured on the 144 gold queries: lexical alone scores 0.570 nDCG@10, dense 0.606, the
@@ -550,10 +591,16 @@ def _question(messages: Any) -> str:
 
 
 def _upstream_payload(
-    payload: dict[str, Any], prepared: pipeline.PreparedRequest
+    payload: dict[str, Any], prepared: pipeline.PreparedRequest,
+    engine_model: str | None = None,
 ) -> dict[str, Any]:
     assert prepared.prompt is not None
     forwarded = dict(payload)
+    # The engine knows base names only. A request for `qwen2.5-7b-plain` has to reach it
+    # as `qwen2.5-7b`, or vLLM rejects it as an unknown model -- and the error would
+    # surface as a 502 from the guardrail, pointing diagnosis at the engine.
+    if engine_model:
+        forwarded["model"] = engine_model
     # The response has to be complete before the output guardrails can approve it.
     forwarded["stream"] = False
     forwarded["messages"] = [
@@ -800,8 +847,14 @@ def _cache_variant(payload: dict[str, Any], query_scope: str | None) -> str:
 
 
 def _model_label(model: str) -> str:
-    # Never allow an arbitrary request field to create unbounded Prometheus series.
-    return model if model in MODEL_ROUTES else "unknown"
+    # Never allow an arbitrary request field to create unbounded Prometheus series. The
+    # profile variants are included because grounded and plain traffic have different
+    # refusal profiles and belong in different series -- and the set stays bounded at
+    # twice the number of routed models, not at whatever a caller sends.
+    if model in MODEL_ROUTES:
+        return model
+    engine, grounded = _resolve_profile(model)
+    return model if (not grounded and engine in MODEL_ROUTES) else "unknown"
 
 
 def _count(outcome: str, stage: str, model: str) -> None:
@@ -1042,6 +1095,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             model = str(payload.get("model", ""))
             model_label = _model_label(model)
+            # Server-side, from the model name the gateway authorised. Never from a
+            # request field: see the PLAIN_PROFILE_SUFFIX note.
+            engine_model, grounded = _resolve_profile(model)
             question = _question(payload.get("messages"))
             if not model or not question:
                 terminal_stage = "request"
@@ -1051,7 +1107,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model and a user message are required",
                 )
                 return
-            if model not in MODEL_ROUTES:
+            if not _routable(model):
                 terminal_stage = "request"
                 self._error(
                     HTTPStatus.BAD_REQUEST,
@@ -1223,6 +1279,7 @@ class Handler(BaseHTTPRequestHandler):
                 dense=_dense,
                 observer=observe,
                 preflight_result=checked,
+                grounded=grounded,
             )
             _track_prepared(prepared, model_label)
             _trace_prepared(root, prepared, agent, model_label)
@@ -1251,8 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
             upstream_span.set("guardrail.model", model_label)
             try:
                 upstream = _call_vllm(
-                    model,
-                    _upstream_payload(payload, prepared),
+                    engine_model,
+                    _upstream_payload(payload, prepared, engine_model),
                     traceparent=upstream_span.traceparent(),
                 )
                 upstream_outcome = "success"
@@ -1310,8 +1367,8 @@ class Handler(BaseHTTPRequestHandler):
                 retry_span.set("guardrail.retry_reason", "grounding")
                 try:
                     retried = _call_vllm(
-                        model,
-                        _upstream_payload(payload, prepared),
+                        engine_model,
+                        _upstream_payload(payload, prepared, engine_model),
                         traceparent=retry_span.traceparent(),
                     )
                     second = pipeline.finalise(_answer(retried), prepared, observer=observe)

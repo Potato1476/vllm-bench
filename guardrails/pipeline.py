@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from prompt.build import BuiltPrompt, Session, build
+from prompt.build import BuiltPrompt, Session, build, build_plain
 from prompt.canonical import CanonicalQuery, canonicalise
 from rag import bm25, policy as pol, retrieve
 from rag.corpus import Chunk
@@ -73,6 +73,11 @@ class PreparedRequest:
     denied_documents: int = 0
     stale_documents: int = 0
     refusal: Refusal | None = None
+    # False for the non-RAG serving profile: nothing was retrieved, so there is nothing
+    # for stage 8 to check the answer against. Carried on the request rather than passed
+    # to finalise() separately, so the two halves cannot disagree about which profile
+    # served a request -- a mismatch there would silently skip grounding on a MOC answer.
+    grounded: bool = True
 
     @property
     def ok(self) -> bool:
@@ -137,6 +142,7 @@ def prepare(
     top_k: int = 5,
     observer: StageObserver | None = None,
     preflight_result: PreflightResult | None = None,
+    grounded: bool = True,
 ) -> PreparedRequest:
     # 1-3 -- direct injection, PII redaction and canonicalisation.  The serving adapter
     # may run this before a response-cache lookup and hand the result back here so a miss
@@ -155,6 +161,18 @@ def prepare(
     canon = checked.canonical
     red = checked.inbound_pii
     assert red is not None
+
+    # The non-RAG profile stops here. Stages 1-3 above have already run -- direct
+    # injection, PII redaction, canonicalisation -- and stage 9 still runs in finalise(),
+    # so a plain request keeps every protection that does not depend on having documents.
+    # What it skips is retrieval, rights filtering, indirect-injection screening of
+    # retrieved text and the citation requirement, all meaningless with no document.
+    if not grounded:
+        started = time.perf_counter()
+        prompt = build_plain(canon.text, session)
+        _observe(observer, "prompt", started)
+        return PreparedRequest(prompt=prompt, canonical=canon, inbound_pii=red,
+                               grounded=False)
 
     # A question explicitly about superseded rules needs them unsuppressed, which is why
     # canonicalise extracts the marker instead of deleting it.
@@ -243,14 +261,26 @@ def finalise(
     *,
     observer: StageObserver | None = None,
 ) -> FinalAnswer:
-    # 8 -- citations must exist in the context that was actually sent
-    started = time.perf_counter()
-    report = grounding.check(answer, prepared.context)
-    _observe(observer, "grounding", started)
-    if report.blocked:
-        return FinalAnswer(text="", report=report,
-                           refusal=Refusal("grounding", "câu trả lời không có căn cứ",
-                                           report.notes))
+    # 8 -- citations must exist in the context that was actually sent.
+    #
+    # Skipped for the non-RAG profile, and only there. The check is not merely unhelpful
+    # without context, it inverts: grounding.check blocks any answer that cites nothing,
+    # so running it on a plain request would refuse every single one.
+    #
+    # The neutral report below is constructed rather than faked -- verdict "ok", no
+    # citations, overlap 1.0 is the literal truth about an answer never asked to cite
+    # anything, and it keeps FinalAnswer's shape identical for both profiles.
+    if prepared.grounded:
+        started = time.perf_counter()
+        report = grounding.check(answer, prepared.context)
+        _observe(observer, "grounding", started)
+        if report.blocked:
+            return FinalAnswer(text="", report=report,
+                               refusal=Refusal("grounding", "câu trả lời không có căn cứ",
+                                               report.notes))
+    else:
+        report = grounding.GroundingReport(
+            cited=(), fabricated=(), uncited_sentences=(), overlap=1.0, verdict="ok")
 
     # 9 -- identity numbers must not leave, whatever their origin
     started = time.perf_counter()

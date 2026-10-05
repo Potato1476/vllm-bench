@@ -68,6 +68,10 @@ spec:
               value: {{ .Values.auditLog | ternary "1" "" | quote }}
             - name: FORCE_CITATION_MODELS
               value: {{ .Values.forceCitationModels | quote }}
+            # MUST MATCH plainProfile.suffix in charts/litellm. A mismatch presents as
+            # "model is not routed by guardrail" on every plain request.
+            - name: PLAIN_PROFILE_SUFFIX
+              value: {{ .Values.plainProfileSuffix | quote }}
             # Three states, because "unset" and "empty" mean opposite things here: an
             # absent ANSWER_NOTICE lets app.py use its built-in Vietnamese default, while
             # an explicitly empty one turns the warning off. Helm cannot tell those apart
