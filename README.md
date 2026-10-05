@@ -90,6 +90,7 @@ make lab-down             # xuất số liệu lên S3, hạ node về 0, rồi 
 | `services/llm_pipeline/` | guardrail — OpenAI-compatible, RAG, kiểm tra hai chiều |
 | `guardrails/`, `prompt/`, `rag/` | phát hiện tấn công, dựng prompt, truy hồi |
 | `bench/` | bộ k6, dataset, script phân tích |
+| `bench/agents_sim/` | bảy consumer **mô phỏng** — không phải bằng chứng TC4 |
 | `clients/python/` | client mẫu cho các đề án dùng nền tảng |
 | `observability/` | recording rule và dashboard Grafana |
 | `k8s/` | ingress, GPU operator, tracing |
@@ -121,7 +122,7 @@ treo `kubectl` mà không báo lỗi quyền, GPU Operator cài đè driver củ
 ## Kiểm thử
 
 ```bash
-python -m pytest tests/ -q   # 107 ca: pipeline, guardrail, cache, tracing, availability
+python -m pytest tests/ -q   # 119 ca: pipeline, guardrail, cache, tracing, availability
 make guardrails-test         # kiểm thử hành vi PII, injection, policy, grounding, cache
 make attacks-score           # chấm bộ đối kháng. FOLD=B tách kỹ thuật chưa từng thấy
 make pii-verify              # 5 kiểm tra độc lập rằng PII thật sự bị che

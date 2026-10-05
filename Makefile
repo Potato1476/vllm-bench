@@ -26,7 +26,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down \
-	tunnel-secret tunnel-up tunnel-status tunnel-down \
+	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -661,6 +661,16 @@ webui-down: ## Remove Open WebUI. Keeps the volume; run webui-export first.
 	-helm uninstall webui -n $(NS)
 	@echo "PVC webui-data van con. Chay 'make webui-export' TRUOC khi huy cum,"
 	@echo "vi huy cum la xoa luon volume nay."
+
+agents-sim: ## Drive the 7 SIMULATED consumers. ROUNDS=n ONLY=da20,da32 KEYS=<file>
+# NOT evidence for TC4. These are our own programs standing in for teams we do not have;
+# they measure what the platform can serve, not who has adopted it. Read the docstring in
+# bench/agents_sim/workloads.py before quoting anything from a run.
+	@PYTHONPATH=. python3 bench/agents_sim/run.py \
+		$(if $(BASE_URL),--base-url $(BASE_URL),) \
+		$(if $(KEYS),--keys $(KEYS),) \
+		$(if $(ROUNDS),--rounds $(ROUNDS),) \
+		$(if $(ONLY),--only $(ONLY),)
 
 # --- Cloudflare Tunnel: an address that outlives the cluster -----------------
 
