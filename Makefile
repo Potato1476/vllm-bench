@@ -25,7 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	vllm-up vllm-diff vllm-down smoke \
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
-	webui-secret webui-admin-password webui-up webui-export webui-down \
+	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -607,8 +607,28 @@ webui-admin-password: ## Print the Open WebUI admin password. The only target th
 	@kubectl -n $(NS) get secret webui-secrets \
 		-o jsonpath='{.data.WEBUI_ADMIN_PASSWORD}' | base64 -d; echo
 
-webui-up: webui-secret ## Deploy the Open WebUI chat interface for the analyst pilot
-	helm upgrade --install webui charts/webui -n $(NS) --wait --timeout 5m
+webui-logo: ## Build the branding ConfigMap from local files. LOGO_DIR=<dir with *.png>
+# The logo reaches the cluster WITHOUT passing through git, because this repository is
+# public and committing a company logo to it is redistributing a trademarked asset to
+# everyone who clones it. That is a different act from an employee putting the logo on an
+# internal tool, and only one of them is ours to do.
+	@dir="$(LOGO_DIR)"; \
+	[ -n "$$dir" ] || { echo "can LOGO_DIR=<thu muc chua favicon.png logo.png splash.png>"; exit 1; }; \
+	args=""; \
+	for f in favicon.png logo.png splash.png; do \
+		if [ -f "$$dir/$$f" ]; then args="$$args --from-file=$$f=$$dir/$$f"; \
+		else echo "  bo qua $$f (khong co trong $$dir)"; fi; \
+	done; \
+	[ -n "$$args" ] || { echo "khong tim thay file anh nao"; exit 1; }; \
+	kubectl -n $(NS) create configmap webui-branding $$args \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "webui-branding san sang. Bat bang: make webui-up BRANDING=1"
+	@echo "Xac nhan duong dan static o lan deploy dau -- sai duong dan KHONG bao loi:"
+	@echo "  kubectl -n $(NS) exec deploy/webui -- sh -c 'echo \$$STATIC_DIR; ls \$$STATIC_DIR'"
+
+webui-up: webui-secret ## Deploy the Open WebUI chat interface. BRANDING=1 mounts the logo.
+	helm upgrade --install webui charts/webui -n $(NS) --wait --timeout 5m \
+		$(if $(BRANDING),--set branding.enabled=true,)
 	@echo "UI san sang trong cum. Publish bang 'make ingress-up', dang nhap bang"
 	@echo "webui.adminEmail trong charts/webui/values.yaml va 'make webui-admin-password'."
 

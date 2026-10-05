@@ -3,28 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MOC Copilot (demo) — hướng dẫn cho buổi dùng thử</title>
+<title>MOC Copilot — hướng dẫn trước buổi dùng thử</title>
 <meta name="description" content="Hướng dẫn ngắn cho Data Analyst dùng thử MOC Copilot trong ba buổi pilot.">
 <style>
 /* Font hệ thống: trang phải hiện đúng khi mạng công ty chặn CDN, và phải hiển thị
    đủ dấu tiếng Việt trên máy Windows lẫn macOS. */
 :root{
-  --ink:#16110a; --ink-soft:#4a4238; --line:#ddd6cc; --bg:#faf8f5; --card:#fff;
-  --warn-bg:#fff4e6; --warn-line:#e08900; --warn-ink:#6b3d00;
-  --stop-bg:#fdecec; --stop-line:#c0392b; --stop-ink:#7d1f16;
-  --ok:#0f6b45; --ok-bg:#eaf5ef;
+  /* Mau thuong hieu, trich tu CSS cong khai cua xanhsm.com ngay 05/10/2026.
+     Doi chieu lai voi brand guideline chinh thuc truoc khi chay that: trang
+     marketing khong phai brand book. Doi o DAY, khong rai hex khap file. */
+  --brand:#28bdbf; --brand-deep:#209799; --brand-ink:#0e5b5c; --gold:#e3bb42;
+  --ink:#333333; --ink-soft:#5c6b6b; --line:#dbe6e6; --bg:#f4fafa; --card:#fff;
+  --warn-bg:#fff7e8; --warn-line:#e3bb42; --warn-ink:#6b5310;
+  --stop-bg:#fdeeec; --stop-line:#d0564a; --stop-ink:#7d281f;
+  --ok:var(--brand-deep); --ok-bg:#e8f7f7;
   --measure:36rem;
 }
 @media (prefers-color-scheme:dark){
   :root{
-    --ink:#f0ece6; --ink-soft:#b8b0a5; --line:#39332c; --bg:#15120e; --card:#1d1915;
-    --warn-bg:#2e2008; --warn-line:#e8a33d; --warn-ink:#f6d9a8;
-    --stop-bg:#331513; --stop-line:#e06a5c; --stop-ink:#f3c3bc;
-    --ok:#5fcf9e; --ok-bg:#12241c;
+    --brand:#3ad4d6; --brand-deep:#28bdbf; --brand-ink:#9fe9ea; --gold:#e9c75c;
+    --ink:#e8f0f0; --ink-soft:#9fb0b0; --line:#2b3a3a; --bg:#0e1717; --card:#162122;
+    --warn-bg:#2d2408; --warn-line:#c7a23c; --warn-ink:#f2dba4;
+    --stop-bg:#2f1512; --stop-line:#e07a6c; --stop-ink:#f4c6bf;
+    --ok:var(--brand); --ok-bg:#102525;
   }
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+/* Dai thuong hieu: mot vach mau o canh tren, khong phai mot header to.
+   Trang nay la tai lieu de doc, mau thuong hieu o day de nhan dien chu khong de
+   gianh su chu y voi dai canh bao ben duoi. */
+.brandbar{
+  height:4px; background:linear-gradient(90deg,var(--brand-deep),var(--brand) 55%,var(--gold));
+  position:fixed; inset:0 0 auto; z-index:2;
+}
+.mark{display:flex; align-items:center; gap:.65rem; margin-bottom:1.5rem}
+.mark .slot{
+  width:112px; height:30px; border:1px dashed var(--ink-soft); border-radius:3px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:.62rem; letter-spacing:.06em; color:var(--ink-soft); text-transform:uppercase;
+}
+.mark .unit{font-size:.82rem; color:var(--ink-soft)}
 body{
   margin:0; background:var(--bg); color:var(--ink);
   font:400 17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
@@ -36,10 +55,10 @@ h1{font-size:1.85rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.01em}
 .sub{margin:0; color:var(--ink-soft)}
 .tag{
   display:inline-block; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase;
-  color:var(--ink-soft); border:1px solid var(--line); border-radius:2px;
+  color:var(--brand-ink); background:var(--ok-bg); border:1px solid var(--brand); border-radius:2px;
   padding:.15rem .45rem; margin-bottom:.9rem;
 }
-h2{font-size:1.15rem; margin:2.75rem 0 .75rem; letter-spacing:-.005em}
+h2{font-size:1.15rem; margin:2.75rem 0 .75rem; letter-spacing:-.005em; color:var(--brand-ink)}
 h3{font-size:1rem; margin:0 0 .4rem}
 p{margin:0 0 1rem}
 strong{font-weight:600}
@@ -117,23 +136,29 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
 </style>
 </head>
 <body>
+<div class="brandbar" aria-hidden="true"></div>
 <main class="wrap">
 
+<div class="mark">
+  <span class="slot" role="img" aria-label="Chỗ đặt logo công ty">logo</span>
+  <span class="unit">Khối Dữ liệu &amp; Phân tích</span>
+</div>
+
 <header>
-  <span class="tag">Bản dùng thử nội bộ · 3 buổi</span>
-  <h1>MOC Copilot (demo)</h1>
-  <p class="sub">Trợ lý tra cứu tài liệu nghiệp vụ, đang trong giai đoạn đánh giá. Trang này mất khoảng ba phút đọc, và nên đọc hết trước khi hỏi câu đầu tiên.</p>
+  <span class="tag">Môi trường thử nghiệm · 3 buổi</span>
+  <h1>MOC Copilot</h1>
+  <p class="sub">Trợ lý tra cứu tài liệu nghiệp vụ cho Data Analyst. Trang này mất khoảng ba phút đọc, và nên đọc hết trước khi hỏi câu đầu tiên.</p>
 </header>
 
 <section class="banner" aria-labelledby="w">
-  <p class="lead" id="w">Toàn bộ dữ liệu trong hệ thống này là dữ liệu giả lập.</p>
-  <p>Không có con số nào trong câu trả lời phản ánh số liệu thật của công ty. <strong>Không đưa bất kỳ con số nào từ đây vào báo cáo, email hay bản trình bày thật.</strong> Mỗi câu trả lời đều kèm sẵn dòng nhắc này; nó ở đó vì nó quan trọng, không phải cho đủ thủ tục.</p>
+  <p class="lead" id="w">Hệ thống này chạy trên dữ liệu mô phỏng, không nối tới kho dữ liệu vận hành.</p>
+  <p>Không con số nào trong câu trả lời phản ánh số liệu thật. <strong>Dùng để tra cứu định nghĩa và quy trình, không dùng để lấy số.</strong> Mỗi câu trả lời đều kèm dòng nhắc nguồn dữ liệu; nó ở đó vì nó quan trọng, không phải cho đủ thủ tục.</p>
 </section>
 
 <section class="stop" aria-labelledby="s1">
   <h3 id="s1">Điều dễ mắc bẫy nhất</h3>
   <p>Hỏi về số liệu vận hành thì hệ thống <strong>vẫn trả lời</strong>, kèm theo mã tài liệu trông rất thuyết phục. Nó không báo lỗi, không nói "tôi không biết".</p>
-  <p>Con số đó được sinh ra tự động để làm dữ liệu thử. Trích dẫn có thật, con số thì không. Đây là lý do có dải cảnh báo ở trên.</p>
+  <p>Con số đó được sinh ra tự động để làm dữ liệu mô phỏng. Trích dẫn có thật, con số thì không. Đây là lý do có dải cảnh báo ở trên.</p>
 </section>
 
 <h2>Hỏi được gì</h2>
@@ -199,7 +224,7 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
 <p>Báo lại cho <span class="fill">&nbsp;&nbsp;tên và kênh liên hệ&nbsp;&nbsp;</span>. Khi báo lỗi, chép kèm câu hỏi đã gõ sẽ giúp tìm nguyên nhân nhanh hơn nhiều.</p>
 
 <footer>
-  <p>Đề tài DA#51 — nền tảng serving LLM nội bộ. Bản dùng thử, dữ liệu giả lập.</p>
+  <p>Đề tài DA#51 — nền tảng serving LLM nội bộ. Môi trường thử nghiệm, dữ liệu mô phỏng.</p>
 </footer>
 
 </main>

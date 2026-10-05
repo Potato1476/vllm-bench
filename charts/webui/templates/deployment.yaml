@@ -124,7 +124,21 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/backend/data
+            {{- if .Values.branding.enabled }}
+            {{- $dir := .Values.branding.staticDir }}
+            {{- range .Values.branding.files }}
+            - name: branding
+              mountPath: {{ printf "%s/%s" $dir . }}
+              subPath: {{ . }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
       volumes:
+        {{- if .Values.branding.enabled }}
+        - name: branding
+          configMap:
+            name: {{ .Values.branding.existingConfigMap }}
+        {{- end }}
         - name: data
         {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:

@@ -52,10 +52,18 @@ openai:
 # This gets MORE important as the interface gets more branded, not less. A tool wearing
 # the company's colours reads as sanctioned, and fabricated numbers inherit that
 # authority. The banner is what keeps the two signals from cancelling out.
+# Worded as a DATA PROVENANCE label, not as an apology for being unfinished.
+#
+# "Bản demo" reads as "not finished yet", which is the thing the product is trying not to
+# look like, and it is also the wrong claim: the platform is finished, the corpus is not
+# real. Every serious analytics tool states where its numbers came from -- "data as of",
+# "sandbox", "pre-production" -- and none of them is apologising. Stating the source is
+# what a professional tool does, so this costs nothing in polish and keeps the one fact
+# that stops a generated figure reaching a real report.
 banner:
   enabled: true
-  title: "Dữ liệu giả lập — không dùng cho báo cáo thật"
-  content: "Kho tài liệu của bản dùng thử này là dữ liệu sinh tự động. Mọi con số trong câu trả lời đều không phải số liệu thật của công ty, kể cả khi có trích dẫn mã tài liệu."
+  title: "Môi trường thử nghiệm — số liệu mô phỏng"
+  content: "Kho tài liệu của hệ thống này là dữ liệu mô phỏng, không kết nối tới kho dữ liệu vận hành. Các con số trong câu trả lời không phải số liệu thật, kể cả khi có mã tài liệu đi kèm. Dùng để tra cứu định nghĩa và quy trình, không dùng để lấy số."
 
 # The empty-chat starters, which teach the domain at the one moment it matters: when
 # somebody is deciding what to type. A guide page read once loses to four examples sitting
@@ -76,13 +84,34 @@ promptSuggestions:
 # question.
 locale: "vi"
 
+# Logo and favicon, supplied at deploy time and NEVER committed.
+#
+# The repository is public. A company logo file checked into it is redistribution of a
+# trademarked asset to anyone who clones the repo, which is a different thing from an
+# employee putting it on an internal tool. `make webui-logo LOGO=...` builds the
+# ConfigMap from a local file, so the asset reaches the cluster without passing through
+# git. .gitignore keeps the staging path out as a second lock.
+#
+# staticDir MUST BE CONFIRMED on the first deploy, because it moves between upstream
+# versions and a wrong path fails silently -- the pod starts, the old logo is served, and
+# nothing in the logs says why:
+#
+#     kubectl -n llm-serving exec deploy/webui -- sh -c 'echo $STATIC_DIR; ls $STATIC_DIR'
+#
+# Mounted per file with subPath so the other assets in that directory survive; mounting
+# the directory itself would hide them.
+branding:
+  enabled: false
+  staticDir: /app/backend/open_webui/static
+  existingConfigMap: webui-branding
+  files: ["favicon.png", "logo.png", "splash.png"]
+
 webui:
-  # Open WebUI appends "(Open WebUI)" to whatever is set here and offers no way to turn
-  # that off. Left alone deliberately: the interface saying what it is built from is
-  # accurate, and on an internal tool wearing company colours that honesty is worth more
-  # than a clean wordmark. CUSTOM_NAME would remove it but polls api.openwebui.com to do
-  # so, which is an outbound call from inside the cluster for a cosmetic gain.
-  name: "MOC Copilot (demo)"
+  # Open WebUI appends "(Open WebUI)" to whatever is set here, and no environment variable
+  # turns that off. CUSTOM_NAME would, but it polls api.openwebui.com to do it, which is
+  # an outbound call from inside the cluster for a cosmetic gain. So the suffix stays
+  # whatever this says; plan the wordmark around it rather than fighting it.
+  name: "MOC Copilot"
   adminEmail: "admin@da51.lab"
   # Analysts do not self-register; the admin creates the accounts. For a pilot of five to
   # seven named people that is a few minutes of work, and it keeps the login page from

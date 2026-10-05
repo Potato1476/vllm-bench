@@ -66,3 +66,8 @@ kubeconfig
 # Extra secret patterns for bench/scripts/scan_secrets.sh. Local only: the whole point
 # of that script is that the values it hunts for are never committed.
 .secrets-extra
+
+# Company brand assets. Reach the cluster via `make webui-logo LOGO_DIR=...`, never via
+# git: this repository is public, and committing a logo redistributes a trademarked asset
+# to everyone who clones it.
+branding/
