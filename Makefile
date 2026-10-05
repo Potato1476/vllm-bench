@@ -26,7 +26,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down \
-	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim \
+	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -661,6 +661,17 @@ webui-down: ## Remove Open WebUI. Keeps the volume; run webui-export first.
 	-helm uninstall webui -n $(NS)
 	@echo "PVC webui-data van con. Chay 'make webui-export' TRUOC khi huy cum,"
 	@echo "vi huy cum la xoa luon volume nay."
+
+finops-plot: ## Draw the TC2 curve. CALLS=n OUT=<path> MAX_RPS=n
+# Imports the cost model from finops_curve.py instead of restating it: a chart and a table
+# with separate copies of the arithmetic drift apart on the first edit, and the drift is
+# invisible because both look authoritative and nobody re-derives a picture.
+	@PYTHONPATH=. python3 bench/scripts/finops_plot.py \
+		$(if $(CALLS),--calls $(CALLS),) \
+		$(if $(OUT),--out $(OUT),) \
+		$(if $(MAX_RPS),--max-rps $(MAX_RPS),) \
+		$(if $(API_IN),--api-in $(API_IN),) \
+		$(if $(API_OUT),--api-out $(API_OUT),)
 
 agents-sim: ## Drive the 7 SIMULATED consumers. ROUNDS=n ONLY=da20,da32 KEYS=<file>
 # NOT evidence for TC4. These are our own programs standing in for teams we do not have;
