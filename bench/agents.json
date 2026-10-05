@@ -41,65 +41,110 @@
     "It is also NOT what TC4 counts. TC4's '>=5 DA' is five digital agents, already met by",
     "the seven above; the analysts in this pilot are the real-project integration goal, a",
     "separate thing. Per-person attribution for them lives in the UI's own logs, not in the",
-    "end_user Prometheus label, which stays one series for the whole UI."
+    "end_user Prometheus label, which stays one series for the whole UI.",
+    "",
+    "THE ROSTER IS NOW THE ONE FROM THE BRIEF, NOT ONE WE INVENTED.",
+    "The brief names this platform 'nen tang cho DA#19/#20/#32/#39/#41/#44/#45', so TC4's",
+    "'>=5 DA chay tren nen tang' means at least five of THOSE project teams actually calling",
+    "it. The seven ids here are those projects. The earlier ids -- moc-analytics, moc-datadict",
+    "and so on -- were placeholders derived from corpus categories, and reporting per-agent",
+    "numbers under them would have described a roster that does not exist.",
+    "",
+    "description and corpus_focus are deliberately left UNCONFIRMED rather than guessed. We do",
+    "not know what DA#32 does, and a plausible-sounding guess here would propagate into the",
+    "dashboard, the report and the acceptance review as though it were fact. Fill each one in",
+    "from its own team, not from imagination.",
+    "",
+    "models lists both tiers for every project for the same reason: tier choice depends on the",
+    "workload, and nobody has told us theirs yet. See the model-tier note -- 7B for the hard",
+    "work, 1.5B for the simple, and never the same workload sent to both. Narrow each entry",
+    "once its team says what it is doing.",
+    "",
+    "AND TC4 IS NOT A TECHNICAL TASK. Minting keys does not satisfy it; five other teams",
+    "choosing to integrate does. That has a lead time nobody here controls, so it starts now.",
+    "clients/python/ exists to make saying yes cheap for them."
   ],
-  "rate_limit": {"team_id": "moc-shared", "rpm_limit": 3000},
+  "rate_limit": {
+    "team_id": "moc-shared",
+    "rpm_limit": 3000
+  },
   "agents": [
     {
-      "id": "moc-analytics",
-      "description": "Metric definitions and how KPIs are calculated",
-      "corpus_focus": "metric-catalog",
+      "id": "da19",
+      "description": "DA#19 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-7b", "qwen2.5-1.5b"]
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
     },
     {
-      "id": "moc-datadict",
-      "description": "Table and field lookups against the data dictionary",
-      "corpus_focus": "data-dictionary",
+      "id": "da20",
+      "description": "DA#20 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-1.5b"]
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
     },
     {
-      "id": "moc-playbook",
-      "description": "Investigation procedures when a KPI moves",
-      "corpus_focus": "analysis-playbook",
+      "id": "da32",
+      "description": "DA#32 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-7b"]
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
     },
     {
-      "id": "moc-governance",
-      "description": "Data governance, retention and access questions",
-      "corpus_focus": "data-governance",
-      "access_level": "internal-demo",
-      "budget_usd": 5,
-      "models": ["qwen2.5-7b"]
-    },
-    {
-      "id": "moc-service",
-      "description": "Service catalogue and ownership lookups",
-      "corpus_focus": "service-catalog",
-      "access_level": "internal-demo",
-      "budget_usd": 5,
-      "models": ["qwen2.5-1.5b"]
-    },
-    {
-      "id": "moc-kb",
-      "description": "General internal knowledge base",
-      "corpus_focus": "knowledge-base",
+      "id": "da39",
+      "description": "DA#39 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-7b", "qwen2.5-1.5b"]
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
     },
     {
-      "id": "moc-daily",
-      "description": "Daily operations reports, the bulk of the corpus",
-      "corpus_focus": "daily-operations",
+      "id": "da41",
+      "description": "DA#41 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-1.5b"]
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
+    },
+    {
+      "id": "da44",
+      "description": "DA#44 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
+    },
+    {
+      "id": "da45",
+      "description": "DA#45 - pham vi va workload chua xac nhan voi doi de an",
+      "corpus_focus": "unconfirmed",
+      "access_level": "internal-demo",
+      "budget_usd": 10,
+      "models": [
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ]
     },
     {
       "id": "moc-da-pilot",
@@ -107,7 +152,9 @@
       "corpus_focus": "all",
       "access_level": "internal-demo",
       "budget_usd": 10,
-      "models": ["qwen2.5-7b"]
+      "models": [
+        "qwen2.5-7b"
+      ]
     }
   ]
 }

@@ -18,7 +18,7 @@ Cập nhật 02/10/2026. Phương pháp và dữ liệu thô: [`docs/acceptance-
 | **TC1b** | Uptime ≥ 99,5% | cận dưới 99,5946% ở 40 req/s (n=12.001) | ✅ |
 | **TC2** | Chi phí/1k token giảm ≥30% | đường cong theo tải; hoà vốn ~1,5 req/s | ⚠️ |
 | **TC3** | Chặn ≥95% injection/PII | 100% offline (294 mẫu), 100% live (129 mẫu) | ✅ |
-| **TC4** | ≥5 DA chạy trên nền tảng | 7 agent, `end_user` vào Prometheus | ✅ |
+| **TC4** | ≥5 DA chạy trên nền tảng | 0/7 đề án đã tích hợp; key và client đã sẵn | ⚠️ |
 
 TC1a và TC2 không phải bài toán kỹ thuật chưa giải được — chúng là **quyết định về tài
 nguyên**. TC1a thiếu một GPU trong hạn mức 16 vCPU; TC2 là ngưỡng tải chứ không phải một
@@ -90,6 +90,7 @@ make lab-down             # xuất số liệu lên S3, hạ node về 0, rồi 
 | `services/llm_pipeline/` | guardrail — OpenAI-compatible, RAG, kiểm tra hai chiều |
 | `guardrails/`, `prompt/`, `rag/` | phát hiện tấn công, dựng prompt, truy hồi |
 | `bench/` | bộ k6, dataset, script phân tích |
+| `clients/python/` | client mẫu cho các đề án dùng nền tảng |
 | `observability/` | recording rule và dashboard Grafana |
 | `k8s/` | ingress, GPU operator, tracing |
 | `docs/` | báo cáo, runbook, kiến trúc |
@@ -109,6 +110,7 @@ make lab-down             # xuất số liệu lên S3, hạ node về 0, rồi 
 | [`docs/ha-serving.md`](docs/ha-serving.md) | profile 3 replica với Redis dùng chung |
 | [`docs/completion-plan.md`](docs/completion-plan.md) | việc còn lại tới nghiệm thu |
 | [`docs/pilot-guide.html`](docs/pilot-guide.html) | trang phát cho analyst trước buổi dùng thử |
+| [`clients/python/README.md`](clients/python/README.md) | hướng dẫn tích hợp cho DA#19/20/32/39/41/44/45 |
 
 Đọc `docs/runbook.md` **trước** lần dựng đầu tiên. Phần "Bẫy đã biết" ở cuối file ghi
 những thứ chỉ lộ ra sau khi đã mất vài giờ — quota GPU mặc định bằng 0, IP nhà đổi làm
@@ -119,7 +121,7 @@ treo `kubectl` mà không báo lỗi quyền, GPU Operator cài đè driver củ
 ## Kiểm thử
 
 ```bash
-python -m pytest tests/ -q   # 89 ca: pipeline, guardrail, cache, tracing, availability
+python -m pytest tests/ -q   # 99 ca: pipeline, guardrail, cache, tracing, availability
 make guardrails-test         # kiểm thử hành vi PII, injection, policy, grounding, cache
 make attacks-score           # chấm bộ đối kháng. FOLD=B tách kỹ thuật chưa từng thấy
 make pii-verify              # 5 kiểm tra độc lập rằng PII thật sự bị che

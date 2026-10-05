@@ -481,7 +481,7 @@ class GuardrailServiceTest(unittest.TestCase):
         with mock.patch.object(app, "ANSWER_NOTICE", ""):
             _status, body = self._post("Một chuyến xe hoàn thành được định nghĩa thế nào?")
         content = body["choices"][0]["message"]["content"]
-        self.assertNotIn("Dữ liệu demo", content)
+        self.assertNotIn("Môi trường thử nghiệm", content)
         self.assertIn("METRIC-TRIP-001", content)
 
 
@@ -539,7 +539,11 @@ class ServedNoticeUnitTest(unittest.TestCase):
             self.assertEqual(app._served(""), "")
 
     def test_the_default_notice_names_the_corpus_as_simulated(self) -> None:
-        self.assertIn("giả lập", app.DEFAULT_ANSWER_NOTICE)
+        """Worded as data provenance, not as an apology for being unfinished -- and it
+        must keep the warning glyph, because clients/python/moc_copilot.py splits the
+        notice off the answer by looking for it."""
+        self.assertIn("mô phỏng", app.DEFAULT_ANSWER_NOTICE)
+        self.assertIn("\u26a0", app.DEFAULT_ANSWER_NOTICE)
 
 
 if __name__ == "__main__":

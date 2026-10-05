@@ -78,8 +78,8 @@ DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "192"))
 # DEFAULT_ACCESS_LEVEL for every caller (see do_POST), so internal documents would be
 # readable by any key until per-key access levels are enforced.
 DEFAULT_ANSWER_NOTICE = (
-    "⚠️ Dữ liệu demo: corpus đang dùng là dữ liệu giả lập, không phải dữ liệu nội bộ "
-    "Xanh SM. Không dùng số liệu trong câu trả lời này cho báo cáo thật."
+    "⚠️ Môi trường thử nghiệm: kho tài liệu là dữ liệu mô phỏng, không nối tới kho dữ "
+    "liệu vận hành. Số liệu trong câu trả lời này không phải số liệu thật."
 )
 ANSWER_NOTICE = os.getenv("ANSWER_NOTICE", DEFAULT_ANSWER_NOTICE).strip()
 
