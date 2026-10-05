@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tunnel
+description: Cloudflare Tunnel - a stable HTTPS address that survives nightly cluster rebuilds
+type: application
+version: 0.1.0
+appVersion: "2026.9.3"

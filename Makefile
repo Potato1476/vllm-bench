@@ -26,6 +26,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down \
+	tunnel-secret tunnel-up tunnel-status tunnel-down \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
 	rag-data rag-eval rag-eval-nopolicy guardrails-test \
@@ -660,6 +661,47 @@ webui-down: ## Remove Open WebUI. Keeps the volume; run webui-export first.
 	-helm uninstall webui -n $(NS)
 	@echo "PVC webui-data van con. Chay 'make webui-export' TRUOC khi huy cum,"
 	@echo "vi huy cum la xoa luon volume nay."
+
+# --- Cloudflare Tunnel: an address that outlives the cluster -----------------
+
+tunnel-secret: ## Store the Cloudflare tunnel token. TUNNEL_TOKEN=... on first run.
+# The token is read from the environment, never from a file in the repo and never as a
+# make variable on the command line -- a `make tunnel-secret TUNNEL_TOKEN=ey...` lands in
+# shell history, and this token can publish anything in the cluster to the internet.
+	@kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@tok="$${TUNNEL_TOKEN:-}"; \
+	if [ -z "$$tok" ]; then \
+		tok=$$(kubectl -n $(NS) get secret tunnel-secrets \
+			-o jsonpath='{.data.TUNNEL_TOKEN}' 2>/dev/null | base64 -d || true); \
+	fi; \
+	[ -n "$$tok" ] || { \
+		echo "chua co token. Lay o Cloudflare Zero Trust > Networks > Tunnels,"; \
+		echo "roi chay:  TUNNEL_TOKEN='ey...' make tunnel-secret"; \
+		echo "(dat truoc lenh de khong vao shell history neu HISTCONTROL=ignorespace)"; \
+		exit 1; }; \
+	kubectl -n $(NS) create secret generic tunnel-secrets \
+		--from-literal=TUNNEL_TOKEN="$$tok" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "tunnel-secrets san sang (token cu duoc giu neu khong truyen moi)."
+
+tunnel-up: tunnel-secret ## Connect the Cloudflare tunnel. URL khong doi khi dung lai cum.
+	helm upgrade --install tunnel charts/tunnel -n $(NS) --wait --timeout 3m
+	@echo
+	@echo "Tunnel da ket noi. Anh xa hostname -> service nam o Cloudflare dashboard,"
+	@echo "KHONG o repo nay, vi do chinh la thu phai song qua moi lan dung lai cum."
+	@echo
+	@echo "  CHI anh xa:  http://webui.llm-serving.svc.cluster.local:8080"
+	@echo "  KHONG anh xa vLLM (khong co auth) hay Prometheus (khong co auth)."
+	@echo "  Bat Cloudflare Access de nguoi la khong cham toi duoc trang dang nhap."
+
+tunnel-status: ## Is the tunnel actually connected? Ask the pod, not the dashboard.
+	@kubectl -n $(NS) get pod -l app=tunnel \
+		-o custom-columns=POD:.metadata.name,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount 2>/dev/null
+	@kubectl -n $(NS) logs -l app=tunnel --tail=15 2>/dev/null \
+		| grep -iE "registered|connection|error|unable" | tail -6 || true
+
+tunnel-down: ## Disconnect the tunnel. The hostname stays claimed in Cloudflare.
+	-helm uninstall tunnel -n $(NS)
 
 # --- Monitoring stack -------------------------------------------------------
 CHART_GPU_OPERATOR ?= v26.7.0

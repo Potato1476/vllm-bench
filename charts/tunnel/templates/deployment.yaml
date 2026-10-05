@@ -1,0 +1,71 @@
+{{- include "tunnel.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunnel
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: tunnel
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: tunnel
+  template:
+    metadata:
+      labels:
+        app: tunnel
+      annotations:
+        # Restart on token change. Without this, rotating the tunnel token updates the
+        # Secret and leaves the old pod running on the old credential until something else
+        # happens to restart it -- which presents as "the rotation did nothing".
+        checksum/secret: {{ .Values.existingSecret.name | sha256sum }}
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      containers:
+        - name: cloudflared
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - tunnel
+            # A container must never rewrite its own binary: the image tag would stop
+            # describing what is running, which is the whole reason the tag is pinned.
+            # Upgrades happen by changing image.tag and redeploying.
+            - --no-autoupdate
+            {{- if .Values.metrics.enabled }}
+            - --metrics
+            - "0.0.0.0:{{ .Values.metrics.port }}"
+            {{- end }}
+            - run
+          env:
+            # Passed by environment rather than on the command line, because argv is
+            # visible to anything that can read /proc inside the pod and to `kubectl
+            # describe`, and this token is enough to publish anything in the cluster.
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret.name }}
+                  key: {{ .Values.existingSecret.key }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            # It dials out and relays. It has no reason to write anything, escalate, or
+            # run as root.
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

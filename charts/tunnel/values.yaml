@@ -1,0 +1,99 @@
+# Cloudflare Tunnel: the fix for an address that changes every morning.
+#
+# WHAT PROBLEM THIS ACTUALLY SOLVES
+#
+# The pilot URL is chat.<node-ip>.nip.io:30080. The node IP changes on every cluster
+# rebuild, and the cluster is destroyed every evening, so analysts would get a new address
+# each morning -- which nobody tolerates for a tool they are meant to use in their work.
+# TLS is missing too, so a password crosses the network readable.
+#
+# cloudflared DIALS OUT from inside the cluster and holds the connection open. The public
+# hostname belongs to the tunnel, not to the node, so a rebuild changes nothing a user can
+# see. Nothing listens for inbound connections: no LoadBalancer, no security group rule,
+# no source allowlist to maintain, and no waiting on GreenSM IT for the office egress
+# range. TLS is terminated at Cloudflare's edge.
+#
+# WHY NOT CLOUDFRONT, which was the first idea
+#
+# CloudFront needs the origin reachable from the internet, which would delete the source
+# allowlist that is currently the only thing in front of an unauthenticated vLLM endpoint
+# and an unauthenticated Prometheus. It is also a cache for static content being asked to
+# carry traffic that is 100% dynamic and per-user, and its origin must be a stable domain
+# name -- which is the exact thing a nightly rebuild does not provide.
+#
+# THE TRADE, STATED PLAINLY
+#
+# Traffic passes through a third party. That is acceptable for Pilot A, whose corpus is
+# simulated data. It is NOT acceptable once real internal documents are indexed: Pilot B
+# moves to an ALB with an ACM certificate on a company domain, where the data stays inside
+# AWS. Do not let this become permanent by default.
+
+image:
+  repository: cloudflare/cloudflared
+  # Pinned like every other image here. Confirmed to exist on Docker Hub before writing.
+  tag: "2026.9.3"
+  pullPolicy: IfNotPresent
+
+# One replica is a deliberate choice for the pilot, not an oversight. cloudflared is
+# stateless and a restart reconnects in seconds; two replicas would buy a few seconds of
+# availability at the cost of a third of a tooling node, on a cluster where k6 already
+# had to fight for CPU. Raise it for anything that is not a supervised session.
+replicaCount: 1
+
+# The tunnel token, created once in the Cloudflare Zero Trust dashboard and held in a
+# Kubernetes Secret by `make tunnel-secret`. It never appears in values, in git, or in a
+# Helm release's stored manifest.
+#
+# A REMOTELY MANAGED TUNNEL, on purpose. The hostname-to-service mapping lives in the
+# Cloudflare dashboard rather than in this repo, which is the opposite of how everything
+# else here works -- and it is right exactly once: that mapping is the thing that has to
+# OUTLIVE the cluster. Keeping it outside means a rebuild cannot invalidate it, and the
+# morning routine is `make tunnel-up` with the same secret, nothing else.
+existingSecret:
+  name: tunnel-secrets
+  key: TUNNEL_TOKEN
+
+# WHAT YOU MAP IN THE DASHBOARD, AND WHAT YOU MUST NOT.
+#
+# The tunnel bypasses NGINX entirely, so the whitelist-source-range annotations that
+# protect the other hostnames do not apply to anything routed through here. Whatever is
+# mapped is reachable from the internet, with only that service's own authentication in
+# front of it.
+#
+#   MAP      http://webui.llm-serving.svc.cluster.local:8080
+#            Open WebUI has real accounts and a login form. Put Cloudflare Access in front
+#            as well -- it is free on the Zero Trust plan and means a stranger never
+#            reaches the login page at all.
+#
+#   DO NOT MAP
+#            vLLM        no authentication whatsoever, and the one exposure here that
+#                        costs money per abusive request
+#            Prometheus  no authentication, and every metric readable
+#            LiteLLM     only with Cloudflare Access, and only if an external project
+#                        genuinely needs the API. A Bearer key alone on a public URL is
+#                        one leaked key away from someone else's bill.
+#
+# These are listed here because the dashboard will not remind anyone.
+routes:
+  documented:
+    - "webui.llm-serving.svc.cluster.local:8080"
+
+nodeSelector:
+  workload: tooling
+
+# Tiny on purpose: this is a TCP relay, not a proxy doing work. Measured need is well
+# under a tenth of a core; the limit is there to stop a bug starving the gateway it sits
+# beside, which is the failure the k6 anti-affinity rule exists for.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+metrics:
+  # cloudflared serves Prometheus metrics and a /ready endpoint on this port. Worth having:
+  # when the UI is unreachable, the first question is whether the tunnel is connected, and
+  # without this the answer takes a log dive.
+  enabled: true
+  port: 2000
