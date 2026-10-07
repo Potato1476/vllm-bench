@@ -1014,6 +1014,24 @@ def _trace_refusal(
         span.fail(refusal.reason)
 
 
+def _trace_pii(span: tracing.Span, redaction: Any) -> None:
+    """Record THAT identity numbers were redacted, never which ones.
+
+    Its own function because two paths need it and only one used to have it. A warehouse
+    question builds its own PreparedRequest and never reaches _trace_prepared, so a
+    request carrying a CCCD was redacted correctly and left no evidence that it had been
+    -- and if the planner then failed, the trace showed an error with no sign the input
+    had contained anything sensitive. Caught by the tracing test on 2026-10-07.
+    """
+    if not redaction or not getattr(redaction, "findings", None):
+        return
+    findings = Counter(finding.kind for finding in redaction.findings)
+    span.set("guardrail.pii.ingress.count", sum(findings.values()))
+    # The kinds found, not the values found. Knowing a CCCD was redacted is the whole
+    # diagnostic value; knowing which CCCD would undo the redaction.
+    span.set("guardrail.pii.ingress.kinds", ",".join(sorted(findings)))
+
+
 def _trace_prepared(
     span: tracing.Span, prepared: pipeline.PreparedRequest, agent: str, model: str
 ) -> None:
@@ -1030,12 +1048,7 @@ def _trace_prepared(
         "rag.documents.stale": prepared.stale_documents,
         "rag.documents.dropped_injection": len(prepared.dropped_documents),
     })
-    if prepared.inbound_pii:
-        findings = Counter(finding.kind for finding in prepared.inbound_pii.findings)
-        span.set("guardrail.pii.ingress.count", sum(findings.values()))
-        # The kinds found, not the values found. Knowing a CCCD was redacted is the whole
-        # diagnostic value; knowing which CCCD would undo the redaction.
-        span.set("guardrail.pii.ingress.kinds", ",".join(sorted(findings)))
+    _trace_pii(span, prepared.inbound_pii)
     if prepared.prompt is not None:
         span.set("prompt.cache_salt", prepared.prompt.cache_salt)
 
@@ -1214,6 +1227,10 @@ class Handler(BaseHTTPRequestHandler):
                     and warehouse.looks_analytical(checked.canonical.text)):
                 audit["agent"] = agent
                 audit["question"] = checked.inbound_pii.text if checked.inbound_pii else None
+                # Before anything that can fail. The planner call and the SQL execution
+                # both raise, and the evidence that input PII was redacted has to survive
+                # those paths as well as the happy one.
+                _trace_pii(root, checked.inbound_pii)
                 sql = warehouse.plan_common(checked.canonical.text)
                 planner = "metric-template" if sql is not None else "llm"
                 plan_response: dict[str, Any] = {"usage": {

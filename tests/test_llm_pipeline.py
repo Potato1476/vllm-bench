@@ -572,7 +572,11 @@ class GuardrailServiceTest(unittest.TestCase):
         before = self._declined_total()
         _FakeVllm.mode = "decline"
         try:
-            status, body = self._post("Doanh thu quý 4 của một thành phố chưa có trong corpus?")
+            # Deliberately NOT a figure question. "Doanh thu quý 4 ..." was used here until
+            # the warehouse router landed, and it routes to SQL -- correctly, since it asks
+            # for a number. A decline is what happens when the DOCUMENTS do not cover the
+            # question, so the question has to be one that goes to the documents at all.
+            status, body = self._post("Chính sách bảo hành thiết bị áp dụng cho ai?")
         finally:
             _FakeVllm.mode = "normal"
         # Served, not refused: the caller gets an honest "not in the documents".

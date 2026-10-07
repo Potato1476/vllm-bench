@@ -24,7 +24,21 @@ _INTENT = re.compile(
     r"tỷ lệ|tỉ lệ|tài xế|xe|sạc|tháng|tuần|ngày)\b|\b20\d{2}-\d{2}-\d{2}\b",
     re.IGNORECASE,
 )
-_DEFINITION = re.compile(r"\b(là gì|định nghĩa|cách tính|quy tắc|điều kiện|ý nghĩa)\b", re.I)
+# Questions that EXPLAIN rather than ask for a figure. They outrank _INTENT, because a
+# definition question is full of metric words -- "GBV được tính như thế nào?" trips every
+# intent token there is -- and routing it to SQL answers a question nobody asked.
+#
+# Measured on 2026-10-07, before this was widened: that question returned
+# "gbv_vnd=15323000" instead of the definition and its [METRIC-REV-001] citation. Nothing
+# errored; the wrong KIND of answer came back confidently, which is the failure mode this
+# platform exists to prevent. Three of the seven simulated consumer workloads ask
+# questions of this shape.
+_DEFINITION = re.compile(
+    r"\b(là gì|định nghĩa|cách tính|quy tắc|điều kiện|ý nghĩa"
+    r"|tính như thế nào|được tính thế nào|tính thế nào|tính ra sao"
+    r"|tính trên|mẫu số|công thức"
+    r"|cần kiểm tra|cần làm|các bước|quy trình|hướng dẫn|lưu ý"
+    r"|phân biệt|khác nhau|ghi nhận thế nào)\b", re.I)
 _ALLOWED_FUNCTIONS = {
     "avg", "count", "sum", "total", "min", "max", "round", "abs", "coalesce",
     "ifnull", "nullif", "date", "datetime", "strftime", "substr", "substring",

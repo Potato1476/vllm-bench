@@ -94,3 +94,56 @@ class WarehouseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouterTest(unittest.TestCase):
+    """What goes to SQL and what goes to the documents.
+
+    Untested when the router landed, and that is how a definition question came to be
+    answered with a total. The failure is silent by construction: both paths return a
+    confident, well-formed answer, so only an assertion about WHICH path ran can catch it.
+    """
+
+    # Every one of these is a real question from the corpus categories or from
+    # bench/agents_sim. They are full of metric words, which is exactly why _INTENT alone
+    # routes them wrong.
+    EXPLAIN = (
+        "GBV được tính như thế nào?",
+        "GBV được tính như thế nào và loại trừ những khoản nào?",
+        "Tỷ lệ huỷ chuyến tính trên mẫu số nào?",
+        "Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?",
+        "Bảng đặt chuyến có grain là gì, và cần lưu ý gì khi join với bảng tài xế?",
+        "GBV tuần này giảm so với tuần trước, cần kiểm tra những gì trước?",
+        "Trường trip_status nhận những giá trị nào?",
+    )
+    FIGURES = (
+        "Ngày 2026-01-01 có bao nhiêu booking?",
+        "Top 5 thành phố theo GBV tháng 3",
+        "Tổng doanh thu tuần trước là bao nhiêu?",
+        "So sánh số chuyến giữa Hà Nội và Đà Nẵng",
+    )
+
+    def test_explanations_go_to_the_documents(self) -> None:
+        for q in self.EXPLAIN:
+            with self.subTest(q=q):
+                self.assertFalse(warehouse.looks_analytical(q),
+                                 "cau hoi giai thich bi dinh tuyen sang SQL")
+
+    def test_figure_questions_go_to_the_warehouse(self) -> None:
+        """The other half: narrowing the router must not switch the feature off."""
+        for q in self.FIGURES:
+            with self.subTest(q=q):
+                self.assertTrue(warehouse.looks_analytical(q),
+                                "cau hoi so lieu khong toi duoc warehouse")
+
+    def test_the_router_is_what_protects_plan_common(self) -> None:
+        """plan_common assumes it was routed to; it does not re-check, and should not --
+        a second copy of the rule in two places is a pair that drifts.
+
+        That makes looks_analytical the only thing standing between a definition question
+        and a metric template, with NO model call in between to fail first. This records
+        where the responsibility sits: plan_common answers "GBV được tính như thế nào?"
+        with a SUM over the daily aggregate when asked directly.
+        """
+        self.assertIsNotNone(warehouse.plan_common("GBV được tính như thế nào?"))
+        self.assertFalse(warehouse.looks_analytical("GBV được tính như thế nào?"))
