@@ -85,12 +85,26 @@ OpenAI SDK ném `BadRequestError`, mà phần lớn code hiểu là "mình gửi
 retry. **Không phải.** Đó là quyết định về **nội dung**, và retry chỉ tốn GPU để bị từ chối
 lần nữa.
 
+**Tên tầng chặn nằm trong `message`, không nằm trong `code`.** Đi qua gateway, LiteLLM viết
+lại lỗi: `code` thành `"400"`, chỉ giữ câu thông báo. Guardrail vì vậy gắn tầng chặn vào
+đầu câu dưới dạng `[injection]`:
+
+```json
+{"error": {"code": "400",
+  "message": "litellm.BadRequestError: OpenAIException - [injection] câu hỏi chứa chỉ dẫn nhằm ghi đè hệ thống. ..."}}
+```
+
 ```python
+import re
 try:
     r = client.chat.completions.create(...)
 except BadRequestError as e:
-    stage = e.body["error"]["code"]     # injection | grounding | pii_egress | ...
+    tag = re.search(r"\[([a-z_]+)\]", e.body["error"]["message"])
+    stage = tag.group(1) if tag else "unknown"    # injection | grounding | pii_egress | ...
 ```
+
+Đừng đọc `e.body["error"]["code"]` — trên hệ thống thật nó luôn là `"400"`. `moc_copilot.py`
+xử lý sẵn cả hai trường hợp.
 
 | stage | Nghĩa là gì | Retry có ích không |
 |---|---|---|

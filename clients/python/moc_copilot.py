@@ -26,6 +26,7 @@ Requires only the `openai` package.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -172,13 +173,31 @@ class MocCopilot:
         return [m.id for m in self._client.models.list().data]
 
 
+_STAGE_TAG = re.compile(r"\[([a-z_]+)\]")
+_KNOWN_STAGES = REFUSAL_STAGES | {"invalid_request", "invalid_json"}
+
+
 def _refusal(exc: BadRequestError) -> Refused:
+    """Recover the refusal stage, whichever path the error took.
+
+    Called straight, the guardrail sets error.code to the stage. Through LiteLLM -- which
+    is how every real caller reaches it -- error.code arrives as "400" and the stage is
+    gone; only the message survives, so the guardrail also tags the message with
+    "[stage]". Measured on LiteLLM v1.90.2: trusting `code` alone reported every refusal
+    as "unknown", and input_was_rejected was False for an injection.
+    """
     body = getattr(exc, "body", None) or {}
     err = body.get("error", {}) if isinstance(body, dict) else {}
-    stage = err.get("code") or "unknown"
+    message = err.get("message") or str(exc)
+    code = str(err.get("code") or "")
+    if code in _KNOWN_STAGES:
+        stage = code
+    else:
+        tag = _STAGE_TAG.search(message)
+        stage = tag.group(1) if tag and tag.group(1) in _KNOWN_STAGES else "unknown"
     return Refused(
         stage=stage,
-        message=err.get("message") or str(exc),
+        message=message,
         detail=tuple(err.get("detail") or ()),
     )
 

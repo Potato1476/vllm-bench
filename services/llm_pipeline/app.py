@@ -26,7 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from guardrails import pipeline
+from guardrails import pipeline, spotlight
 from prompt.build import Session
 from rag import bm25, policy
 from rag.corpus import DEFAULT_CORPUS, load_chunks
@@ -571,6 +571,54 @@ def _session(agent: str, access_level: str) -> Session:
         if key not in _sessions:
             _sessions[key] = Session(agent=agent, access_level=access_level)
         return _sessions[key]
+
+
+def _undatamark(answer: str, session: Session) -> str:
+    """Take the spotlight marker back out of a model answer.
+
+    Retrieved chunks reach the model DATAMARKED -- every run of whitespace replaced by the
+    session marker, so text from a document is visibly not an instruction. Models copy
+    phrases from their context, and on 2026-10-07 a live answer came back as
+    "Xe^không^được^tính^ AVAILABLE^vì^pin^dưới^ngưỡng..." in front of the analyst pilot.
+    spotlight.undatamark existed and nothing called it on the way out.
+
+    Applied BEFORE finalise rather than after, so grounding's lexical overlap is measured
+    on the clean text it was calibrated on -- "Xe^không^được" tokenises as one word.
+
+    NOT a PII fix, and worth saying so because it looks like one. The egress scan misses
+    a spaced phone number whether or not markers are present -- pii_vi.scan finds nothing
+    in "0912 345 678" and nothing in "0912^345^678", only in "0912345678" (checked
+    2026-10-07). That is a recall gap in the detector itself, recorded separately.
+    """
+    if session.mode is spotlight.Mode.DATAMARK and session.marker:
+        return spotlight.undatamark(answer, session.marker)
+    return answer
+
+
+def _caller_system(messages: Any) -> str:
+    """The calling application's own system prompt, for the plain profile only.
+
+    Under the grounded profile it is discarded on purpose: a caller-supplied system
+    prompt could countermand the citation rules, and the MOC copilot's prompt is owned by
+    the guardrail. Under the plain profile it is the TASK -- "label this as one of four
+    categories", "extract these three fields" -- and dropping it made the profile serve a
+    paraphrase instead of the requested output, measured live on 2026-10-07.
+
+    Trust boundary: this text comes from the integrating project, authenticated by its
+    virtual key. The USER content it operates on is what stays screened for injection.
+    """
+    if not isinstance(messages, list):
+        return ""
+    parts = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "system":
+            content = message.get("content", "")
+            if isinstance(content, str):
+                parts.append(content.strip())
+            elif isinstance(content, list):
+                parts.extend(c.get("text", "").strip() for c in content
+                             if isinstance(c, dict) and c.get("type") == "text")
+    return "\n\n".join(p for p in parts if p)
 
 
 def _question(messages: Any) -> str:
@@ -1280,6 +1328,7 @@ class Handler(BaseHTTPRequestHandler):
                 observer=observe,
                 preflight_result=checked,
                 grounded=grounded,
+                task=None if grounded else _caller_system(payload.get("messages")),
             )
             _track_prepared(prepared, model_label)
             _trace_prepared(root, prepared, agent, model_label)
@@ -1332,7 +1381,8 @@ class Handler(BaseHTTPRequestHandler):
             audit["docs"] = [c.document_id for c in prepared.context]
             audit["usage"] = upstream.get("usage")
 
-            final = pipeline.finalise(_answer(upstream), prepared, observer=observe)
+            final = pipeline.finalise(_undatamark(_answer(upstream), _session(agent, access)),
+                                      prepared, observer=observe)
 
             # ONE SECOND ATTEMPT WHEN GROUNDING BLOCKS. Measured, after getting this
             # wrong once.
@@ -1371,7 +1421,9 @@ class Handler(BaseHTTPRequestHandler):
                         _upstream_payload(payload, prepared, engine_model),
                         traceparent=retry_span.traceparent(),
                     )
-                    second = pipeline.finalise(_answer(retried), prepared, observer=observe)
+                    second = pipeline.finalise(
+                        _undatamark(_answer(retried), _session(agent, access)),
+                        prepared, observer=observe)
                     if second.ok:
                         upstream = retried
                         final = second
@@ -1580,8 +1632,20 @@ class Handler(BaseHTTPRequestHandler):
         message: str,
         detail: list[str] | None = None,
     ) -> None:
+        # The stage goes into the MESSAGE as well as `code`, because `code` does not survive
+        # the gateway. Measured on LiteLLM v1.90.2, 2026-10-07: a guardrail 400 with
+        # code="injection" reaches the caller as
+        #
+        #   {"error": {"message": "litellm.BadRequestError: OpenAIException - <our message>.
+        #              Received Model Group=qwen2.5-7b ...", "type": null, "code": "400"}}
+        #
+        # `code` is rewritten to the HTTP status and `type` to null; only our message text is
+        # carried through, wrapped. Every caller goes through LiteLLM, so without the tag no
+        # caller can tell an injection refusal (do not retry) from a grounding refusal (may
+        # retry) -- which is the one distinction clients/python/README.md tells them to make.
+        # A direct call still gets the structured `code`; the tag is for everyone else.
         self._json(status, {"error": {
-            "message": message,
+            "message": f"[{code}] {message}",
             "type": "guardrail_error",
             "code": code,
             "detail": detail or [],

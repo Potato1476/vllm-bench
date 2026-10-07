@@ -143,6 +143,7 @@ def prepare(
     observer: StageObserver | None = None,
     preflight_result: PreflightResult | None = None,
     grounded: bool = True,
+    task: str | None = None,
 ) -> PreparedRequest:
     # 1-3 -- direct injection, PII redaction and canonicalisation.  The serving adapter
     # may run this before a response-cache lookup and hand the result back here so a miss
@@ -169,7 +170,7 @@ def prepare(
     # retrieved text and the citation requirement, all meaningless with no document.
     if not grounded:
         started = time.perf_counter()
-        prompt = build_plain(canon.text, session)
+        prompt = build_plain(canon.text, session, task=task)
         _observe(observer, "prompt", started)
         return PreparedRequest(prompt=prompt, canonical=canon, inbound_pii=red,
                                grounded=False)

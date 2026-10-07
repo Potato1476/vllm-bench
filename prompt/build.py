@@ -208,15 +208,20 @@ _PLAIN_RULES = (
 )
 
 
-def build_plain(question: str, session: Session) -> BuiltPrompt:
+def build_plain(question: str, session: Session, *, task: str | None = None) -> BuiltPrompt:
     """Assemble a prompt with no retrieved context, for the non-RAG serving profile.
 
     Returns the same BuiltPrompt shape as build() so the serving adapter needs no special
     case. cited_ids is empty, which is what tells finalise() there is nothing to ground
     against -- a plain request cannot cite documents it was never given.
     """
-    system = "\n\n".join([_PLAIN_RULES,
-                          spotlight.system_rule(session.mode, session.marker)])
+    # The caller's task goes AFTER the platform's rules and is labelled as the task, so
+    # the order states the precedence: the rule that user content is data, never an
+    # instruction, is set first and the task is something to carry out within it.
+    parts = [_PLAIN_RULES, spotlight.system_rule(session.mode, session.marker)]
+    if task:
+        parts.append("## Nhiệm vụ do ứng dụng gọi đặt ra\n" + task)
+    system = "\n\n".join(parts)
     return BuiltPrompt(
         system=system,
         user=normalise(question),

@@ -123,6 +123,26 @@ class RefusalTest(unittest.TestCase):
                 self.assertFalse(self.m._refusal(
                     _FakeBadRequest({"error": {"code": stage}})).input_was_rejected)
 
+    def test_the_stage_survives_litellm_rewriting_the_error(self) -> None:
+        """The body below is what LiteLLM v1.90.2 actually returned on 2026-10-07 for a
+        guardrail injection refusal: code rewritten to "400", type null, our message
+        wrapped. Before the [stage] tag, this parsed as stage "unknown", and an injection
+        looked retryable."""
+        exc = _FakeBadRequest({"error": {
+            "message": "litellm.BadRequestError: OpenAIException - [injection] câu hỏi chứa "
+                       "chỉ dẫn nhằm ghi đè hệ thống. Received Model Group=qwen2.5-7b\n"
+                       "Available Model Group Fallbacks=None",
+            "type": None, "param": None, "code": "400"}})
+        r = self.m._refusal(exc)
+        self.assertEqual(r.stage, "injection")
+        self.assertTrue(r.input_was_rejected)
+
+    def test_an_unknown_bracketed_word_is_not_taken_for_a_stage(self) -> None:
+        """A bracket in ordinary text -- a document id, say -- must not become a stage."""
+        exc = _FakeBadRequest({"error": {"code": "400",
+                                         "message": "loi gi do [METRIC-TRIP-001] [foo]"}})
+        self.assertEqual(self.m._refusal(exc).stage, "unknown")
+
     def test_a_malformed_error_body_still_yields_a_refusal(self) -> None:
         r = self.m._refusal(_FakeBadRequest({}))
         self.assertEqual(r.stage, "unknown")
