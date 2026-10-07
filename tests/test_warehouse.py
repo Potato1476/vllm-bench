@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from services.llm_pipeline import warehouse
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class WarehouseTest(unittest.TestCase):
@@ -135,6 +138,23 @@ class RouterTest(unittest.TestCase):
             with self.subTest(q=q):
                 self.assertTrue(warehouse.looks_analytical(q),
                                 "cau hoi so lieu khong toi duoc warehouse")
+
+    def test_no_gold_evaluation_question_is_routed_to_sql(self) -> None:
+        """The whole 144, not a handful I picked.
+
+        A hand-written sample is chosen from questions I already had in mind, so it
+        reflects the bug I was thinking about rather than the ones I was not. The gold set
+        is the corpus's own ground truth for what the copilot answers, and measuring
+        against all of it is what showed the first fix was still letting 42% through --
+        a sample of seven had looked clean.
+        """
+        path = ROOT / "data" / "xanhsm_retrieval_mock" / "eval" / "retrieval_eval.jsonl"
+        gold = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        questions = [r.get("query") or r.get("question") or "" for r in gold]
+        self.assertGreater(len(questions), 100, "khong doc duoc bo cau hoi vang")
+        routed = [q for q in questions if warehouse.looks_analytical(q)]
+        self.assertEqual(routed, [], f"{len(routed)}/{len(questions)} cau vang bi day sang SQL")
 
     def test_the_router_is_what_protects_plan_common(self) -> None:
         """plan_common assumes it was routed to; it does not re-check, and should not --

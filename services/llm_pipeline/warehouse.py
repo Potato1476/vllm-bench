@@ -18,27 +18,36 @@ MAX_ROWS = 20
 MAX_SQL_CHARS = 4000
 QUERY_TIMEOUT_SECONDS = 3.0
 
-_INTENT = re.compile(
-    r"\b(bao nhiêu|mấy|số lượng|thống kê|so sánh|xu hướng|cao nhất|thấp nhất|"
-    r"trung bình|tổng|đếm|top|doanh thu|gbv|booking|đặt xe|chuyến|hủy|"
-    r"tỷ lệ|tỉ lệ|tài xế|xe|sạc|tháng|tuần|ngày)\b|\b20\d{2}-\d{2}-\d{2}\b",
-    re.IGNORECASE,
-)
-# Questions that EXPLAIN rather than ask for a figure. They outrank _INTENT, because a
-# definition question is full of metric words -- "GBV được tính như thế nào?" trips every
-# intent token there is -- and routing it to SQL answers a question nobody asked.
+# ROUTING IS BY AGGREGATION VERB, NOT BY METRIC NOUN.
 #
-# Measured on 2026-10-07, before this was widened: that question returned
-# "gbv_vnd=15323000" instead of the definition and its [METRIC-REV-001] citation. Nothing
-# errored; the wrong KIND of answer came back confidently, which is the failure mode this
-# platform exists to prevent. Three of the seven simulated consumer workloads ask
-# questions of this shape.
+# The first version matched bare nouns -- doanh thu, chuyến, tài xế, ngày -- and those
+# appear in EVERY metric-catalog question, so 60 of the corpus's own 144 gold evaluation
+# questions (42%) were sent to SQL. "Một chuyến có voucher được ghi nhận doanh thu ... thế
+# nào?" came back as net_revenue_vnd=21381253000 instead of the definition, live, on
+# 2026-10-07. Nothing errored; the wrong KIND of answer arrived with a citation on it.
+#
+# A warehouse question asks for a COMPUTED FIGURE. That needs an aggregation verb (bao
+# nhiêu, tổng, top, so sánh, trung bình) or a concrete time anchor (a date, "tuần trước").
+# A noun on its own carries no such request and must not route.
+_AGGREGATION = re.compile(
+    r"\b(bao nhiêu|mấy|số lượng|thống kê|so sánh|xu hướng|cao nhất|thấp nhất|"
+    r"trung bình|tổng|đếm|top|liệt kê|xếp hạng)\b", re.I)
+_ANCHOR = re.compile(
+    r"\b20\d{2}-\d{2}-\d{2}\b|\b(ngày|tháng|tuần|quý|hôm qua|hôm nay)\s+(\d|này|trước|qua)",
+    re.I)
+
+# Questions that EXPLAIN rather than ask for a figure, and they outrank the two above.
+# Three groups, each added after it let gold questions through:
+#   interrogatives  thế nào, ra sao, khi nào, làm sao -- asking for an explanation
+#   schema          bảng nào, trường nào, lấy từ -- asking WHERE data lives, not for it
+#   procedure       các bước, quy trình, cần kiểm tra -- asking how to investigate
 _DEFINITION = re.compile(
-    r"\b(là gì|định nghĩa|cách tính|quy tắc|điều kiện|ý nghĩa"
-    r"|tính như thế nào|được tính thế nào|tính thế nào|tính ra sao"
-    r"|tính trên|mẫu số|công thức"
-    r"|cần kiểm tra|cần làm|các bước|quy trình|hướng dẫn|lưu ý"
-    r"|phân biệt|khác nhau|ghi nhận thế nào)\b", re.I)
+    r"\b(là gì|định nghĩa|cách tính|quy tắc|điều kiện|ý nghĩa|công thức|mẫu số"
+    r"|thế nào|ra sao|khi nào|hay không|phân biệt|khác nhau|làm sao|cách nào"
+    r"|bảng nào|trường nào|cột nào|metric nào|chỉ số nào|dùng gì|kiểm tra gì"
+    r"|lấy từ|dựa vào đâu|cần kiểm tra|cần làm|các bước|quy trình|hướng dẫn|lưu ý)\b",
+    re.I)
+
 _ALLOWED_FUNCTIONS = {
     "avg", "count", "sum", "total", "min", "max", "round", "abs", "coalesce",
     "ifnull", "nullif", "date", "datetime", "strftime", "substr", "substring",
@@ -78,7 +87,8 @@ class QueryResult:
 
 def looks_analytical(question: str) -> bool:
     """Avoid a planner call for obvious documentation questions."""
-    return bool(_INTENT.search(question)) and not bool(_DEFINITION.search(question))
+    asks_for_a_figure = bool(_AGGREGATION.search(question) or _ANCHOR.search(question))
+    return asks_for_a_figure and not bool(_DEFINITION.search(question))
 
 
 def plan_common(question: str) -> str | None:

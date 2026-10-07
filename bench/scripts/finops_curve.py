@@ -67,8 +67,19 @@ AURORA_HOURLY = 0.082
 # Standard support. It is $0.60/h in EXTENDED support, which this cluster was silently
 # paying on 1.31 -- terraform/cluster/version_guard.tf now refuses to plan that.
 EKS_HOURLY = 0.10
-PROMPT_TOKENS = 1300
-OUTPUT_TOKENS = 45
+# MEASURED, not assumed. 34,275 served requests on the 07/10 ramp to 50 req/s, cache
+# bypassed, read from the usage field LiteLLM returns -- bench/k6/lib/verdict.js counts
+# both as Counters, so these are totals divided by requests.
+#
+# MEANS, deliberately, not medians. Cost is linear in tokens, so the bill follows the
+# mean; the output distribution is skewed (p50 38, p90 65, max 192) and using p50 would
+# understate it. The p-values live in the k6 summary, where latency reasoning wants them.
+#
+# Replacing the old 1300/45 estimates moves TC2 the HARDER way: fewer tokens per request
+# makes the external API cheaper per request, so self-hosting needs more volume to win.
+# Break-even 1.75 -> 2.00 req/s, the 30% threshold 2.45 -> 2.85 req/s.
+PROMPT_TOKENS = 1142
+OUTPUT_TOKENS = 36.5
 CALLS_PER_PROMPT = 1.0175    # one generation + the 1.75% grounding retry
 
 
