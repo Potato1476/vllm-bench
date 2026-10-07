@@ -83,12 +83,21 @@ CLIENT_CIDRS="$CLIENT_CIDR"
 #   make ingress-up LLM_CIDRS=203.0.113.7/32
 LLM_ALLOW="$CLIENT_CIDRS"
 [ -n "${LLM_CIDRS:-}" ] && LLM_ALLOW="$LLM_ALLOW,$LLM_CIDRS"
+# The chat UI gets its own allowlist, separate from LiteLLM and vLLM. They used to share
+# %%CLIENT%%, which left PUBLIC=1 two bad options for a demo: the chat stays 403 for
+# everyone else, or vLLM -- no authentication at all, and the one exposure here billed
+# per abusive request -- goes public along with it. Open WebUI has its own accounts and
+# signup is disabled, so under PUBLIC=1 it opens while the unauthenticated engine stays
+# pinned to the caller.
+CHAT_ALLOW="$LLM_ALLOW"
 if [ "${PUBLIC:-0}" = "1" ]; then
   RANGES="0.0.0.0/0"
+  CHAT_ALLOW="0.0.0.0/0"
   say "MO CONG KHAI: bat ky ai cung ket noi duoc toi cong $PORT"
   echo "  Grafana       -- co trang dang nhap rieng"
   echo "  Prometheus    -- basic auth (mat khau di qua mang dang cleartext tren HTTP)"
   echo "  Alertmanager  -- basic auth"
+  echo "  Chat UI       -- CONG KHAI, dang nhap Open WebUI (tu dang ky da tat)"
   echo "  LiteLLM       -- VAN khoa ve $LLM_ALLOW + Bearer key"
   echo "  vLLM          -- VAN khoa ve $LLM_ALLOW o tang nginx, khong theo cong khai"
 else
@@ -179,7 +188,7 @@ for cidr in "${CIDRS[@]}"; do
 done
 
 # --- ingresses -------------------------------------------------------------------
-sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CLIENT%%|$LLM_ALLOW|g" "$TPL" > "$OUT"
+sed -e "s/%%IP%%/$NODEIP/g" -e "s|%%CHAT%%|$CHAT_ALLOW|g" -e "s|%%CLIENT%%|$LLM_ALLOW|g" "$TPL" > "$OUT"
 kubectl apply -f "$OUT" >/dev/null
 say "da tao Ingress"
 

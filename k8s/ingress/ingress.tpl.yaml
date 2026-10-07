@@ -144,7 +144,10 @@ metadata:
     #
     # And it is HTTP until TLS lands: an analyst's password crosses the network readable.
     # That is the open item blocking a real pilot, tracked in reports/tuan3.md 4.1.
-    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+    #
+    # %%CHAT%%, not %%CLIENT%%: its own allowlist, so PUBLIC=1 can open the chat without
+    # opening vLLM alongside it. See CHAT_ALLOW in up.sh.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CHAT%%"
 spec:
   ingressClassName: nginx
   rules:
