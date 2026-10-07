@@ -320,9 +320,13 @@ fix-cidr: ## Repoint the cluster at your current public IP after an ISP address 
 		st=$$(aws eks describe-update --name $(CLUSTER) --update-id $$id \
 			--query 'update.status' --output text); \
 		[ "$$st" = "Successful" ] || { echo "update ended $$st"; exit 1; }; \
-		sed -i.bak "s|^allowed_cidrs.*|allowed_cidrs = [\"$$ip/32\"]|" $(CLUSTER_DIR)/terraform.tfvars; \
-		rm -f $(CLUSTER_DIR)/terraform.tfvars.bak; \
-		grep allowed_cidrs $(CLUSTER_DIR)/terraform.tfvars; \
+		if [ -f $(CLUSTER_DIR)/terraform.tfvars ]; then \
+			sed -i.bak "s|^allowed_cidrs.*|allowed_cidrs = [\"$$ip/32\"]|" $(CLUSTER_DIR)/terraform.tfvars; \
+			rm -f $(CLUSTER_DIR)/terraform.tfvars.bak; \
+			grep allowed_cidrs $(CLUSTER_DIR)/terraform.tfvars; \
+		else \
+			echo "terraform.tfvars absent; EKS CIDR updated, sync local tfvars before the next Terraform apply"; \
+		fi; \
 		kubectl get --raw /healthz && echo " -- API reachable again"
 
 
@@ -413,11 +417,14 @@ vllm-down: ## Remove the vLLM release but keep the cluster
 # put changed source under an old immutable ECR tag and make the next push fail.
 GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag services/llm_pipeline \
 	data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl \
+	data/xanhsm_mock_warehouse/scripts/generate_warehouse.py \
+	data/xanhsm_mock_warehouse/sql/schema.sql \
+	data/xanhsm_mock_warehouse/sql/views.sql \
 	-type f ! -path '*/__pycache__/*' ! -name '*.pyc' \
 	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
 
 guardrail-image: ## Build and push the guardrail service image to the core ECR repository
-	@repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
+	@set -e; repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
 		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
 	reg=$${repo%%/*}; \
