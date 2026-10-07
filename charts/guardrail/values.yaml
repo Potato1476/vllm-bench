@@ -73,7 +73,7 @@ plainProfileSuffix: "-plain"
 #
 # `text` empty keeps app.py's built-in Vietnamese default. Set it to override the wording.
 answerNotice:
-  enabled: true
+  enabled: false
   text: ""
 
 semanticCache:
