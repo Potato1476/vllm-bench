@@ -655,7 +655,17 @@ agent-key: ## Print ONE project's virtual key, on request. AGENT=da32
 	@[ -n "$(AGENT)" ] || { echo "can AGENT=<id>, vi du AGENT=da32. Co san:"; \
 		kubectl -n llm-serving get secret agent-keys -o jsonpath='{.data}' \
 		| python3 -c "import sys,json; print('  ' + ' '.join(sorted(json.load(sys.stdin))))"; exit 1; }
-	@kubectl -n llm-serving get secret agent-keys -o jsonpath='{.data.$(AGENT)}' | base64 -d; echo
+# Fails loudly on an unknown name. jsonpath returns an empty string for a missing field,
+# so a typo used to print nothing and exit 0 -- and `KEY=$$(make -s agent-key AGENT=da99)`
+# would set an empty key, which surfaces much later as a 401 that looks like a revoked
+# credential rather than a misspelling.
+	@k=$$(kubectl -n llm-serving get secret agent-keys \
+		-o jsonpath='{.data.$(AGENT)}' 2>/dev/null | base64 -d 2>/dev/null); \
+	[ -n "$$k" ] || { echo "khong co key cho '$(AGENT)'. Co san:" >&2; \
+		kubectl -n llm-serving get secret agent-keys -o jsonpath='{.data}' \
+		| python3 -c "import sys,json; print('  ' + ' '.join(sorted(json.load(sys.stdin))), file=sys.stderr)"; \
+		exit 1; }; \
+	printf '%s\n' "$$k"
 
 webui-up: webui-secret ## Deploy the Open WebUI chat interface. BRANDING=1 mounts the logo.
 	helm upgrade --install webui charts/webui -n $(NS) --wait --timeout 5m \
