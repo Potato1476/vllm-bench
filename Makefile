@@ -423,7 +423,7 @@ GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag services/llm_pipeline \
 	-type f ! -path '*/__pycache__/*' ! -name '*.pyc' \
 	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
 
-guardrail-image: ## Build and push the guardrail service image to the core ECR repository
+guardrail-image: guardrails-test ## Build and push the guardrail service image to the core ECR repository
 	@set -e; repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \
 		| grep -E '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/' || true); \
 	[ -n "$$repo" ] || { echo "guardrail ECR output is empty -- review/apply the core tier first"; exit 1; }; \
@@ -1098,7 +1098,7 @@ rag-eval-nopolicy: ## Same, with the metadata layer off -- shows what it is wort
 guardrails-test: ## Behaviour tests for PII, injection, policy, grounding and cache
 	@PYTHONPATH=. python3 -m tests.test_guardrails
 	@PYTHONPATH=. python3 -m unittest tests.test_llm_pipeline tests.test_semantic_cache tests.test_tracing \
-		tests.test_dense_serving tests.test_availability
+		tests.test_dense_serving tests.test_availability tests.test_warehouse
 
 attacks-build: ## Regenerate the adversarial suite (deterministic, seeded)
 	@python3 bench/datasets/make_attacks.py

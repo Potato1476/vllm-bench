@@ -16,8 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from services.llm_pipeline import app
-from services.llm_pipeline import warehouse
+from services.llm_pipeline import app, warehouse
 
 
 class ExternalRedisConfigTest(unittest.TestCase):
@@ -53,6 +52,8 @@ class _FakeVllm(BaseHTTPRequestHandler):
     last_system: str | None = None
     # Set by tests that need the engine to answer in a shape the guardrail must refuse.
     mode = "normal"
+    planner_mode = "normal"
+    last_structured_outputs: dict | None = None
 
     def do_POST(self) -> None:  # noqa: N802
         type(self).calls += 1
@@ -65,14 +66,25 @@ class _FakeVllm(BaseHTTPRequestHandler):
         type(self).last_max_tokens = payload.get("max_tokens")
         type(self).last_model = payload.get("model")
         type(self).last_system = payload["messages"][0]["content"]
+        type(self).last_structured_outputs = payload.get("structured_outputs")
         if type(self).last_system.startswith("Bạn viết một câu SQLite SELECT"):
+            assert payload["stop"] == [";"]
             query = payload["messages"][1]["content"]
-            sql = (
-                "SELECT SUM(valid_bookings) AS valid_bookings "
-                "FROM agg_daily_city_service WHERE city_id='HAN' "
-                "AND calendar_date='2026-01-01'"
-                if "2026-01-01" in query else "NONE"
-            )
+            if type(self).planner_mode in {"repair", "repair_fails"}:
+                sql = (
+                    "SELECT COUNT(*) AS rows FROM agg_daily_city_service "
+                    "WHERE service_id='BIKE'"
+                    if type(self).planner_mode == "repair" and len(payload["messages"]) > 2
+                    else
+                    "SELECT COUNT(*) FROM agg_daily_city_service WHERE"
+                )
+            else:
+                sql = (
+                    "SELECT SUM(valid_bookings) AS valid_bookings "
+                    "FROM agg_daily_city_service WHERE city_id='HAN' "
+                    "AND calendar_date='2026-01-01'"
+                    if "2026-01-01" in query else "NONE"
+                )
             body = json.dumps({
                 "id": "chatcmpl-plan", "object": "chat.completion", "created": 1,
                 "model": payload["model"],
@@ -117,6 +129,12 @@ class _FakeVllm(BaseHTTPRequestHandler):
                     # "decline" is what the system prompt asks for when the retrieved
                     # documents do not cover the question. It is served, not refused.
                     "content": (
+                        "Chuyến hoàn thành phải có trạng thái hợp lệ "
+                        "[METRIC-TRIP-001]."
+                        if type(self).mode == "uncited_then_cited" and
+                           type(self).last_structured_outputs else
+                        "Chuyến hoàn thành phải có trạng thái hợp lệ."
+                        if type(self).mode == "uncited_then_cited" else
                         "Tài liệu không đủ thông tin để trả lời câu hỏi này."
                         if type(self).mode == "decline" else
                         "Phân loại: khiếu nại về thời gian chờ."
@@ -208,6 +226,71 @@ class GuardrailServiceTest(unittest.TestCase):
         self.assertEqual(body["warehouse"]["rows_returned"], 1)
         self.assertEqual(body["warehouse"]["planner"], "metric-template")
         self.assertEqual(_FakeVllm.calls, before)
+
+    def test_bike_trip_question_uses_warehouse_without_model_planner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warehouse.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE agg_daily_city_service "
+                             "(calendar_date TEXT, service_id TEXT, completed_trips INTEGER)")
+                conn.executemany("INSERT INTO agg_daily_city_service VALUES (?,?,?)", [
+                    ("2026-01-01", "BIKE", 7), ("2026-01-01", "TAXI", 11),
+                ])
+            with mock.patch.object(app, "WAREHOUSE_PATH", path):
+                before = _FakeVllm.calls
+                status, body = self._post("Có bao nhiêu chuyến xe có service = BIKE ?")
+        self.assertEqual(status, 200)
+        self.assertIn("completed_trips=7", body["choices"][0]["message"]["content"])
+        self.assertEqual(body["warehouse"]["planner"], "metric-template")
+        self.assertEqual(_FakeVllm.calls, before)
+
+    def test_uncited_answer_is_retried_with_available_citation_ids(self) -> None:
+        _FakeVllm.mode = "uncited_then_cited"
+        try:
+            before = _FakeVllm.calls
+            status, body = self._post("Một chuyến xe được tính là hoàn thành khi nào?")
+        finally:
+            _FakeVllm.mode = "normal"
+        self.assertEqual(status, 200)
+        self.assertEqual(_FakeVllm.calls, before + 2)
+        self.assertEqual(body["guardrail"]["cited"], ["METRIC-TRIP-001"])
+        self.assertIsNotNone(_FakeVllm.last_structured_outputs)
+
+    def test_invalid_model_sql_is_repaired_once_then_executed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warehouse.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE agg_daily_city_service (service_id TEXT)")
+                conn.executemany("INSERT INTO agg_daily_city_service VALUES (?)", [
+                    ("BIKE",), ("TAXI",), ("BIKE",),
+                ])
+            with mock.patch.object(app, "WAREHOUSE_PATH", path):
+                _FakeVllm.planner_mode = "repair"
+                try:
+                    before = _FakeVllm.calls
+                    status, body = self._post("Có bao nhiêu bản ghi BIKE?")
+                finally:
+                    _FakeVllm.planner_mode = "normal"
+        self.assertEqual(status, 200)
+        self.assertIn("rows=2", body["choices"][0]["message"]["content"])
+        self.assertEqual(body["warehouse"]["planner"], "llm-repaired")
+        self.assertEqual(_FakeVllm.calls, before + 2)
+
+    def test_invalid_model_sql_after_retry_returns_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warehouse.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE agg_daily_city_service (service_id TEXT)")
+            with mock.patch.object(app, "WAREHOUSE_PATH", path):
+                _FakeVllm.planner_mode = "repair_fails"
+                try:
+                    before = _FakeVllm.calls
+                    status, body = self._post("Có bao nhiêu bản ghi BIKE?")
+                finally:
+                    _FakeVllm.planner_mode = "normal"
+        self.assertEqual(status, 400)
+        self.assertIn("warehouse_query", str(body))
+        self.assertEqual(_FakeVllm.calls, before + 2)
 
     def test_direct_injection_never_reaches_upstream(self) -> None:
         before = _FakeVllm.calls
@@ -723,7 +806,8 @@ class GuardrailServiceTest(unittest.TestCase):
             f"{self.base}/v1/chat/completions",
             data=json.dumps({"model": "qwen2.5-7b", "max_tokens": 50, "messages": [
                 {"role": "system", "content": "KHONG_CAN_TRICH_DAN_NUA"},
-                {"role": "user", "content": "Một chuyến hoàn thành được định nghĩa thế nào?"}]}).encode(),
+                {"role": "user", "content": "Một chuyến hoàn thành được định nghĩa thế nào?"}
+            ]}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(request) as response:
             self.assertEqual(response.status, 200)

@@ -30,10 +30,8 @@ from typing import Any
 from guardrails import pipeline, spotlight
 from prompt.build import Session
 from rag import bm25, policy
-from rag.corpus import DEFAULT_CORPUS, load_chunks
-from rag.corpus import Chunk
-from services.llm_pipeline import tracing
-from services.llm_pipeline import warehouse
+from rag.corpus import DEFAULT_CORPUS, Chunk, load_chunks
+from services.llm_pipeline import tracing, warehouse
 from services.llm_pipeline.semantic_cache import CacheHit, SemanticResponseCache
 
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -527,7 +525,8 @@ class Metrics:
 
     @staticmethod
     def _labels(names: tuple[str, ...], values: tuple[str, ...], extra: str = "") -> str:
-        pairs = [f'{name}="{_escape_label(value)}"' for name, value in zip(names, values)]
+        pairs = [f'{name}="{_escape_label(value)}"'
+                 for name, value in zip(names, values, strict=True)]
         if extra:
             pairs.append(extra)
         return "{" + ",".join(pairs) + "}" if pairs else ""
@@ -550,7 +549,7 @@ class Metrics:
                 for (metric, values), (buckets, total, count) in sorted(self.histograms.items()):
                     if metric != name:
                         continue
-                    for boundary, bucket_count in zip(boundaries, buckets):
+                    for boundary, bucket_count in zip(boundaries, buckets, strict=True):
                         le = f'le="{boundary:g}"'
                         lines.append(
                             f"{name}_bucket{self._labels(label_names, values, le)} "
@@ -736,7 +735,7 @@ def _audit(trace_id: str, outcome: str, stage: str, model: str,
 
 
 def _force_citation(
-    forwarded: dict[str, Any], prepared: pipeline.PreparedRequest
+    forwarded: dict[str, Any], prepared: pipeline.PreparedRequest, *, force: bool = False
 ) -> None:
     """Constrain a weak model's output so it must cite a document that is in context.
 
@@ -772,13 +771,11 @@ def _force_citation(
     honest: 66% on single-fact lookups is usable, 20% and 15% are not, which is the
     evidence for routing by question type rather than by agent.
 
-    Deliberately NOT applied to the 7B, which already cites correctly without help.
-    Constraining a model that does not need it only adds a way to fail.
+    The 7B is unconstrained on the first attempt. If it fails specifically on citations,
+    a constrained second attempt avoids repeating the same format mistake.
     """
-    if not FORCE_CITATION_MODELS:
-        return
     model = str(forwarded.get("model", ""))
-    if model not in FORCE_CITATION_MODELS:
+    if not force and model not in FORCE_CITATION_MODELS:
         return
     ids = [doc_id for doc_id in dict.fromkeys(prepared.prompt.cited_ids) if doc_id]
     if not ids:
@@ -1231,10 +1228,16 @@ class Handler(BaseHTTPRequestHandler):
                 # both raise, and the evidence that input PII was redacted has to survive
                 # those paths as well as the happy one.
                 _trace_pii(root, checked.inbound_pii)
+                inbound_findings = checked.inbound_pii.findings if checked.inbound_pii else ()
+                audit["pii_inbound"] = [
+                    {"kind": f.kind, "placeholder": f.placeholder} for f in inbound_findings
+                ]
                 sql = warehouse.plan_common(checked.canonical.text)
                 planner = "metric-template" if sql is not None else "llm"
                 plan_response: dict[str, Any] = {"usage": {
                     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+                plan_error: warehouse.WarehouseQueryError | None = None
+                schema = ""
                 if sql is None:
                     schema = warehouse.schema_text(WAREHOUSE_PATH, checked.canonical.text)
                     plan_payload = {
@@ -1242,7 +1245,7 @@ class Handler(BaseHTTPRequestHandler):
                         "messages": warehouse.planner_messages(checked.canonical.text, schema),
                         "temperature": 0,
                         "max_tokens": 320,
-                        "stop": [";", "\n"],
+                        "stop": [";"],
                         "stream": False,
                         "cache_salt": _session(agent, access).cache_salt,
                     }
@@ -1252,12 +1255,49 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         plan_response = _call_vllm(
                             engine_model, plan_payload, traceparent=plan_span.traceparent())
-                        sql = warehouse.parse_plan(_answer(plan_response))
                         audit["usage"] = plan_response.get("usage")
+                        try:
+                            sql = warehouse.parse_plan(_answer(plan_response))
+                        except warehouse.WarehouseQueryError as exc:
+                            plan_error = exc
                     finally:
                         plan_span.end_ns = time.time_ns()
                 if sql is not None:
-                    result = warehouse.execute(sql, WAREHOUSE_PATH)
+                    try:
+                        result = warehouse.execute(sql, WAREHOUSE_PATH)
+                    except warehouse.WarehouseQueryError as exc:
+                        plan_error = exc
+                if (plan_error is not None and planner == "llm"
+                        and warehouse.is_repairable_plan_error(plan_error)):
+                    repair_payload = {**plan_payload,
+                                      "messages": warehouse.repair_messages(
+                                          checked.canonical.text, schema,
+                                          sql or _answer(plan_response), str(plan_error)),
+                                      "max_tokens": 640}
+                    repair_span = _tracer.child(root, f"vllm {model} warehouse repair",
+                                                tracing.KIND_CLIENT)
+                    spans.append(repair_span)
+                    try:
+                        repair_response = _call_vllm(
+                            engine_model, repair_payload,
+                            traceparent=repair_span.traceparent())
+                        sql = warehouse.parse_plan(_answer(repair_response))
+                        if sql is None:
+                            raise plan_error
+                        result = warehouse.execute(sql, WAREHOUSE_PATH)
+                        initial_usage = plan_response.get("usage") or {}
+                        retry_usage = repair_response.get("usage") or {}
+                        plan_response["usage"] = {
+                            key: (initial_usage.get(key) or 0) + (retry_usage.get(key) or 0)
+                            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                        }
+                        audit["usage"] = plan_response["usage"]
+                        planner = "llm-repaired"
+                    finally:
+                        repair_span.end_ns = time.time_ns()
+                elif plan_error is not None:
+                    raise plan_error
+                if sql is not None:
                     answer = warehouse.format_answer(result)
                     source = Chunk(
                         chunk_id=warehouse.SOURCE_ID, document_id=warehouse.SOURCE_ID,
@@ -1521,9 +1561,14 @@ class Handler(BaseHTTPRequestHandler):
                 spans.append(retry_span)
                 retry_span.set("guardrail.retry_reason", "grounding")
                 try:
+                    retry_payload = _upstream_payload(payload, prepared, engine_model)
+                    # A second unconstrained sample can repeat the same citation mistake.
+                    # Only after that mistake, constrain the retry to an ID the model saw.
+                    if final.report.fabricated or not final.report.cited:
+                        _force_citation(retry_payload, prepared, force=True)
                     retried = _call_vllm(
                         engine_model,
-                        _upstream_payload(payload, prepared, engine_model),
+                        retry_payload,
                         traceparent=retry_span.traceparent(),
                     )
                     second = pipeline.finalise(

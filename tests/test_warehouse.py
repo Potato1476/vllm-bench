@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from prompt.canonical import canonicalise
 from services.llm_pipeline import warehouse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,49 @@ class WarehouseTest(unittest.TestCase):
         self.assertIn("SUM(valid_bookings)", sql)
         self.assertIn("calendar_date = '2026-01-01'", sql)
         self.assertEqual(warehouse.execute(sql, self.path).rows[0][-1], 42)
+
+    def test_bike_trip_question_uses_completed_trip_metric(self) -> None:
+        for question in (
+            "Có bao nhiêu chuyến xe có service = BIKE ?",
+            "Có bao nhiêu chuyến BIKE?",
+            "Tổng số chuyến BIKE là bao nhiêu?",
+        ):
+            with self.subTest(question=question):
+                sql = warehouse.plan_common(question)
+                self.assertIsNotNone(sql)
+                assert sql is not None
+                self.assertIn("SUM(completed_trips) AS completed_trips", sql)
+                self.assertIn("service_id IN ('BIKE')", sql)
+
+    def test_personal_trip_question_does_not_query_global_totals(self) -> None:
+        self.assertFalse(warehouse.looks_analytical("Tôi đi được mấy chuyến BIKE?"))
+        self.assertFalse(warehouse.looks_analytical("Có bao nhiêu chuyến của tôi?"))
+
+    def test_document_questions_do_not_take_the_numeric_warehouse_route(self) -> None:
+        path = Path("data/xanhsm_retrieval_mock/eval/retrieval_eval.jsonl")
+        with path.open() as lines:
+            for line in lines:
+                item = json.loads(line)
+                with self.subTest(query_id=item["query_id"]):
+                    self.assertFalse(
+                        warehouse.looks_analytical(canonicalise(item["query"]).text)
+                    )
+
+    def test_cancelled_trip_question_does_not_add_completed_trips(self) -> None:
+        for question in ("Có bao nhiêu chuyến xe bị hủy của BIKE?",
+                         "Có bao nhiêu chuyến xe bị huỷ của BIKE?"):
+            with self.subTest(question=question):
+                sql = warehouse.plan_common(question)
+                self.assertIsNotNone(sql)
+                assert sql is not None
+                self.assertIn("SUM(cancelled_bookings) AS cancelled_bookings", sql)
+                self.assertNotIn("SUM(completed_trips)", sql)
+
+    def test_month_filter_is_applied_for_vietnamese_year_phrase(self) -> None:
+        sql = warehouse.plan_common("Doanh thu BIKE tháng 8 năm 2026 là bao nhiêu?")
+        self.assertIsNotNone(sql)
+        assert sql is not None
+        self.assertIn("calendar_date BETWEEN '2026-08-01' AND '2026-08-31'", sql)
 
     def test_fact_metric_templates_use_rows_and_local_day(self) -> None:
         online = warehouse.plan_common(
