@@ -48,7 +48,7 @@
 
 import http from 'k6/http';
 import exec from 'k6/execution';
-import { buildBody, pickAgent, pickRequest, rng } from './lib/workload.js';
+import { agents, buildBody, pickAgent, pickRequest, rng } from './lib/workload.js';
 import { classify, emitProbe } from './lib/verdict.js';
 
 // --- configuration --------------------------------------------------------------------
@@ -346,10 +346,64 @@ export const options = {
   },
 };
 
+// --- what the platform actually serves ----------------------------------------------------
+//
+// WHY THIS RUNS BEFORE ANY LOAD IS OFFERED
+//
+// The model for each request is drawn from the agent's allow-list in agents.json, which
+// says what a key MAY call -- not what is deployed. With MODE=solo-a only the 7B pair is
+// served, so half of every agent's list does not exist, and LiteLLM answers those with
+// `400 Invalid model name`.
+//
+// k6 classifies a 400 on benign traffic as a false refusal, so on 2026-10-07 an
+// adversarial run came back reporting 46% of legitimate questions refused and 62.8%
+// availability. The guardrail had done nothing wrong: it never saw those requests. A
+// configuration mismatch was reported as a safety regression, which is worse than a
+// failed run -- it points the investigation at the wrong system.
+//
+// setup() runs once, before any VU. Asking /v1/models here turns that silent
+// misattribution into a message before a single request is sent.
+export function setup() {
+  if (!BASE_URL) return { served: [] };
+  const key = MASTER_KEY || Object.values(AGENT_KEYS)[0] || '';
+  const res = http.get(`${BASE_URL}/v1/models`, {
+    headers: { Authorization: `Bearer ${key}` },
+    tags: { name: 'models' },
+  });
+  if (res.status !== 200) {
+    // Not fatal: a key scoped tightly enough may not be allowed to list models, and that
+    // is not a reason to refuse to measure. The run proceeds without the check.
+    console.warn(`khong doc duoc /v1/models (HTTP ${res.status}); bo qua kiem tra model`);
+    return { served: [] };
+  }
+  let served = [];
+  try {
+    served = (JSON.parse(res.body).data || []).map((m) => m.id);
+  } catch (e) {
+    console.warn(`/v1/models tra ve khong phai JSON; bo qua kiem tra model`);
+    return { served: [] };
+  }
+
+  const wanted = MODEL_PIN ? [MODEL_PIN] : [...new Set(agents.flatMap((a) => a.models))];
+  const missing = wanted.filter((m) => !served.includes(m));
+  if (missing.length) {
+    const msg =
+      `Bo do se goi model KHONG duoc phuc vu: ${missing.join(', ')}.\n` +
+      `  Nen tang dang phuc vu: ${served.join(', ') || '(khong co)'}.\n` +
+      `  LiteLLM tra 400 cho nhung model nay va k6 se dem chung thanh "chan oan",\n` +
+      `  bien mot sai lech cau hinh thanh mot bao cao loi guardrail.\n` +
+      `  Ghim model: MODEL=${served[0] || 'qwen2.5-7b'}, hoac trien khai MODE=shared.`;
+    // Abort rather than warn. A run that cannot measure what it claims to measure is
+    // worse than no run, because its numbers get quoted.
+    exec.test.abort(msg);
+  }
+  return { served };
+}
+
 // --- the request ------------------------------------------------------------------------
 let next = null;
 
-export function request() {
+export function request(_setupData) {
   if (next === null) next = rng(exec.vu.idInTest || 1);
 
   const scenarioName = exec.scenario.name;
