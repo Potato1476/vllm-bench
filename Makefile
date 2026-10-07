@@ -25,7 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	vllm-up vllm-diff vllm-down smoke \
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
-	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down \
+	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
@@ -640,6 +640,15 @@ webui-logo: ## Build the branding ConfigMap from local files. LOGO_DIR=<dir with
 	@echo "webui-branding san sang. Bat bang: make webui-up BRANDING=1"
 	@echo "Xac nhan duong dan static o lan deploy dau -- sai duong dan KHONG bao loi:"
 	@echo "  kubectl -n $(NS) exec deploy/webui -- sh -c 'echo \$$STATIC_DIR; ls \$$STATIC_DIR'"
+
+agent-key: ## Print ONE project's virtual key, on request. AGENT=da32
+# The keys live only in the Kubernetes Secret llm-serving/agent-keys -- never in a file,
+# never in a setup target's output. This is the one place that prints a key, and only the
+# one asked for, so handing a key to a project team is a deliberate act with a name on it.
+	@[ -n "$(AGENT)" ] || { echo "can AGENT=<id>, vi du AGENT=da32. Co san:"; \
+		kubectl -n llm-serving get secret agent-keys -o jsonpath='{.data}' \
+		| python3 -c "import sys,json; print('  ' + ' '.join(sorted(json.load(sys.stdin))))"; exit 1; }
+	@kubectl -n llm-serving get secret agent-keys -o jsonpath='{.data.$(AGENT)}' | base64 -d; echo
 
 webui-up: webui-secret ## Deploy the Open WebUI chat interface. BRANDING=1 mounts the logo.
 	helm upgrade --install webui charts/webui -n $(NS) --wait --timeout 5m \
