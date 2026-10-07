@@ -5,7 +5,8 @@ project_tag = "da51"
 owner       = "bao"
 
 # Architecture profile: one writer and one failover reader across the two DB subnets.
-instance_class = "db.t4g.medium"
+# Not db.t4g.medium: not offered for aurora-postgresql 17.9 in us-east-1a/1b.
+instance_class = "db.t3.medium"
 instance_count = 2
 
 backup_retention_days = 7

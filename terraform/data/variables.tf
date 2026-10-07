@@ -34,9 +34,9 @@ variable "master_username" {
 }
 
 variable "instance_class" {
-  description = "Aurora instance class. db.t4g.medium is the cost-conscious lab default."
+  description = "Aurora instance class. db.t3.medium because db.t4g.medium is not offered for aurora-postgresql 17.9 in us-east-1a/1b, where the DB subnets are (checked 2026-10-07)."
   type        = string
-  default     = "db.t4g.medium"
+  default     = "db.t3.medium"
 }
 
 variable "instance_count" {

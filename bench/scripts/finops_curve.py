@@ -43,14 +43,30 @@ from __future__ import annotations
 import argparse
 import math
 
-# From terraform/cluster/variables.tf, which records them next to the instance type.
-GPU_HOURLY = 0.8048          # g6.xlarge, 1x L4 24GB
-CPU_HOURLY = 0.1008          # m7i.large; m7i.xlarge is double
-AURORA_HOURLY = 0.073        # db.t4g.medium, from terraform/data/terraform.tfvars
-EKS_HOURLY = 0.10            # control plane, standard support
+import os
 
-# Measured: bench ramp, 8642 probes, cache off, qwen2.5-7b AWQ on one L4.
-REQ_PER_GPU = 10.0
+# Both cards are kept because both are measurements, not because both are deployed. The
+# default is the one the cluster actually runs (terraform/cluster/terraform.tfvars:
+# gpu_instance_type = "g5.xlarge"); FINOPS_GPU=l4 reproduces the week-2 curve.
+#
+# Prices verified against the AWS Pricing API on 2026-10-07, on-demand, us-east-1, Linux.
+# req/s per card is SLO-compliant capacity, p95 < 3s, cache bypassed, qwen2.5-7b AWQ:
+#   a10g  12.5  = 50 req/s on 4 cards, p95 2047ms, 15,001 requests (reports/tuan3.md 1.3)
+#   l4    10.0  = bench ramp, 8642 probes, linear from 1 to 4 cards
+GPUS = {
+    "a10g": (1.006, 12.5, "A10G"),
+    "l4": (0.8048, 10.0, "L4"),
+}
+GPU_KEY = os.getenv("FINOPS_GPU", "a10g")
+GPU_HOURLY, REQ_PER_GPU, GPU_LABEL = GPUS[GPU_KEY]
+
+CPU_HOURLY = 0.1008          # m7i.large, Pricing API 2026-10-07
+# db.t3.medium, NOT db.t4g.medium: t4g is not offered for aurora-postgresql 17.9 in the
+# DB subnets' AZs (1a, 1b). Pricing API 2026-10-07. See terraform/data/terraform.tfvars.
+AURORA_HOURLY = 0.082
+# Standard support. It is $0.60/h in EXTENDED support, which this cluster was silently
+# paying on 1.31 -- terraform/cluster/version_guard.tf now refuses to plan that.
+EKS_HOURLY = 0.10
 PROMPT_TOKENS = 1300
 OUTPUT_TOKENS = 45
 CALLS_PER_PROMPT = 1.0175    # one generation + the 1.75% grounding retry
@@ -82,7 +98,7 @@ def main() -> int:
           f"${args.api_in}/1M vao, ${args.api_out}/1M ra  (gia niem yet, CAN XAC NHAN)")
     print(f"  {args.calls:g} loi goi model moi prompt  |  "
           f"{PROMPT_TOKENS} token vao / {OUTPUT_TOKENS} ra moi loi goi")
-    print(f"  Suc phuc vu do duoc: {REQ_PER_GPU:g} req/s moi GPU L4\n")
+    print(f"  Suc phuc vu do duoc: {REQ_PER_GPU:g} req/s moi GPU {GPU_LABEL}\n")
 
     print(f"  {'req/s':>6} {'GPU':>4} {'tu serving':>11} {'API':>10} "
           f"{'tiet kiem':>10}  {'USD/1k token ra':>16}")

@@ -17,9 +17,17 @@ variable "cluster_name" {
 }
 
 variable "k8s_version" {
-  description = "Control plane version. Keep on a version still in STANDARD support: extended support raises the cluster fee from $0.10 to $0.60 per hour, six times the cost for nothing."
+  description = "Control plane version. Must be in EKS STANDARD support -- version_guard.tf refuses to plan otherwise, because extended support bills $0.60/h instead of $0.10/h."
   type        = string
-  default     = "1.31"
+  # 1.35: standard support until 2027-03-27. Was 1.31, which aged into extended support on
+  # 2025-11-26 underneath a comment warning against exactly that; see version_guard.tf.
+  default = "1.35"
+}
+
+variable "allow_extended_support" {
+  description = "Set true only to stay on an out-of-standard-support version on purpose. Costs $0.50/h extra per cluster."
+  type        = bool
+  default     = false
 }
 
 # No default on purpose. With nodes on public subnets this CIDR is the cluster's only

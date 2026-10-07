@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FuncFormatter  # noqa: E402
 
 from bench.scripts.finops_curve import (  # noqa: E402
-    OUTPUT_TOKENS, PROMPT_TOKENS, REQ_PER_GPU, api_cost_per_hour, cluster_cost,
+    GPU_LABEL, OUTPUT_TOKENS, PROMPT_TOKENS, REQ_PER_GPU, api_cost_per_hour, cluster_cost,
 )
 
 # Measured ceiling. Past this the curve is arithmetic, not evidence, and the chart shades
@@ -113,7 +113,7 @@ def main() -> int:
     ax_cost.set_title(
         "TC2 — chi phí trên 1k token so với API ngoài\n"
         f"{PROMPT_TOKENS} token vào / {OUTPUT_TOKENS} ra mỗi lời gọi · "
-        f"{a.calls:g} lời gọi mỗi prompt · {REQ_PER_GPU:g} req/s mỗi GPU L4 (đo được)",
+        f"{a.calls:g} lời gọi mỗi prompt · {REQ_PER_GPU:g} req/s mỗi GPU {GPU_LABEL} (đo được)",
         fontsize=12, loc="left")
 
     # --- bottom: the criterion itself --------------------------------------------
