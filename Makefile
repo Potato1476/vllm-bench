@@ -263,21 +263,35 @@ plan: ## Show the pending change set for the cluster tier
 # Cost Explorer bills ~$0.01 per request, so this is a command you run, not something
 # you put on a loop. Zero-cost services are filtered out to keep the end-of-session glance
 # short; a day with no spend at all prints nothing for that day.
-cost: ## Show the last 7 days of spend, grouped by service
+cost: ## Show the last 7 days of spend by service -- GROSS usage, before credits
+# FILTERED TO RECORD_TYPE=Usage, AND THAT FILTER IS THE WHOLE POINT.
+#
+# This account is covered by AWS credits, which are booked per service as negative
+# amounts. Without the filter every service nets to roughly zero and the total line read
+# "$0" -- on 2026-10-07, after ~40 USD of real usage that week and 86.79 USD over the
+# project. A cost report that says the platform is free is worse than none: TC2 compares
+# OUR cost against an API, and credits are a payment method, not a property of the
+# platform. Usage is the number the comparison needs; credits are printed separately so
+# nobody mistakes net for gross either.
+#
+# Each Cost Explorer API call is billed at $0.01. Do not put this in a loop.
 	@aws ce get-cost-and-usage \
 		--time-period Start=$$(date -u -v-7d +%Y-%m-%d 2>/dev/null || date -u -d '7 days ago' +%Y-%m-%d),End=$$(date -u +%Y-%m-%d) \
 		--granularity DAILY --metrics UnblendedCost \
+		--filter '{"Dimensions":{"Key":"RECORD_TYPE","Values":["Usage"]}}' \
 		--group-by Type=DIMENSION,Key=SERVICE --output json \
 	| jq -r '["DATE","SERVICE","USD"], (.ResultsByTime[] as $$d | $$d.Groups[] \
 		| select((.Metrics.UnblendedCost.Amount|tonumber) > 0.005) \
 		| [$$d.TimePeriod.Start, .Keys[0], (.Metrics.UnblendedCost.Amount|tonumber*100|round/100|tostring)]) \
 		| @tsv' \
 	| column -t -s "$$(printf '\t')"
-	@printf 'total 7d: '
 	@aws ce get-cost-and-usage \
 		--time-period Start=$$(date -u -v-7d +%Y-%m-%d 2>/dev/null || date -u -d '7 days ago' +%Y-%m-%d),End=$$(date -u +%Y-%m-%d) \
-		--granularity MONTHLY --metrics UnblendedCost --output json \
-	| jq -r '[.ResultsByTime[].Total.UnblendedCost.Amount|tonumber]|add|.*100|round/100|"$$\(.)"'
+		--granularity MONTHLY --metrics UnblendedCost \
+		--group-by Type=DIMENSION,Key=RECORD_TYPE --output json \
+	| jq -r '[.ResultsByTime[].Groups[] | {k:.Keys[0], v:(.Metrics.UnblendedCost.Amount|tonumber)}] \
+		| group_by(.k) | map({k:.[0].k, v:(map(.v)|add)})[] \
+		| "\(.k) 7d: $$\(.v*100|round/100)"'
 
 # A residential connection hands out a new address whenever it reconnects, and the
 # symptom is a kubectl that hangs and times out rather than a permission error -- it
