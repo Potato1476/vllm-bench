@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import threading
 import types
 import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 
 from services.llm_pipeline import app
+from services.llm_pipeline import warehouse
 
 
 class ExternalRedisConfigTest(unittest.TestCase):
@@ -61,6 +65,28 @@ class _FakeVllm(BaseHTTPRequestHandler):
         type(self).last_max_tokens = payload.get("max_tokens")
         type(self).last_model = payload.get("model")
         type(self).last_system = payload["messages"][0]["content"]
+        if type(self).last_system.startswith("Bạn viết một câu SQLite SELECT"):
+            query = payload["messages"][1]["content"]
+            sql = (
+                "SELECT SUM(valid_bookings) AS valid_bookings "
+                "FROM agg_daily_city_service WHERE city_id='HAN' "
+                "AND calendar_date='2026-01-01'"
+                if "2026-01-01" in query else "NONE"
+            )
+            body = json.dumps({
+                "id": "chatcmpl-plan", "object": "chat.completion", "created": 1,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                              "content": sql},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if type(self).mode == "tool_call":
             # A well-formed tool call: content is null and tool_calls carries the payload.
             message: dict = {"role": "assistant", "content": None, "tool_calls": [
@@ -162,6 +188,26 @@ class GuardrailServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["guardrail"]["verdict"], "ok")
         self.assertIn("METRIC-TRIP-001", body["choices"][0]["message"]["content"])
+
+    def test_analytical_question_reads_warehouse_through_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warehouse.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE agg_daily_city_service "
+                             "(calendar_date TEXT, city_id TEXT, valid_bookings INTEGER)")
+                conn.execute("INSERT INTO agg_daily_city_service VALUES "
+                             "('2026-01-01', 'HAN', 42)")
+            with mock.patch.object(app, "WAREHOUSE_PATH", path):
+                before = _FakeVllm.calls
+                status, body = self._post(
+                    "Tổng số booking ở Hà Nội ngày 2026-01-01 là bao nhiêu?"
+                )
+        self.assertEqual(status, 200)
+        self.assertIn("valid_bookings=42", body["choices"][0]["message"]["content"])
+        self.assertEqual(body["guardrail"]["cited"], [warehouse.SOURCE_ID])
+        self.assertEqual(body["warehouse"]["rows_returned"], 1)
+        self.assertEqual(body["warehouse"]["planner"], "metric-template")
+        self.assertEqual(_FakeVllm.calls, before)
 
     def test_direct_injection_never_reaches_upstream(self) -> None:
         before = _FakeVllm.calls

@@ -24,13 +24,16 @@ import uuid
 from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from guardrails import pipeline, spotlight
 from prompt.build import Session
 from rag import bm25, policy
 from rag.corpus import DEFAULT_CORPUS, load_chunks
+from rag.corpus import Chunk
 from services.llm_pipeline import tracing
+from services.llm_pipeline import warehouse
 from services.llm_pipeline.semantic_cache import CacheHit, SemanticResponseCache
 
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -92,6 +95,7 @@ FORCE_CITATION_MODELS = frozenset(
     if m.strip()
 )
 CORPUS_PATH = os.getenv("CORPUS_PATH", str(DEFAULT_CORPUS))
+WAREHOUSE_PATH = Path(os.getenv("WAREHOUSE_PATH", str(warehouse.DEFAULT_PATH)))
 MODEL_ROUTES = json.loads(os.getenv(
     "MODEL_ROUTES_JSON",
     json.dumps({
@@ -1203,6 +1207,90 @@ class Handler(BaseHTTPRequestHandler):
             access = DEFAULT_ACCESS_LEVEL
             checked = pipeline.preflight(question, observer=observe)
 
+            # Analytical questions use the packaged mock warehouse. The model only
+            # proposes SQL; SQLite executes it read-only and the response is formatted
+            # from returned rows, so generated prose cannot invent a numeric result.
+            if (grounded and checked.ok and checked.canonical is not None
+                    and warehouse.looks_analytical(checked.canonical.text)):
+                audit["agent"] = agent
+                audit["question"] = checked.inbound_pii.text if checked.inbound_pii else None
+                sql = warehouse.plan_common(checked.canonical.text)
+                planner = "metric-template" if sql is not None else "llm"
+                plan_response: dict[str, Any] = {"usage": {
+                    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+                if sql is None:
+                    schema = warehouse.schema_text(WAREHOUSE_PATH, checked.canonical.text)
+                    plan_payload = {
+                        "model": engine_model,
+                        "messages": warehouse.planner_messages(checked.canonical.text, schema),
+                        "temperature": 0,
+                        "max_tokens": 320,
+                        "stop": [";", "\n"],
+                        "stream": False,
+                        "cache_salt": _session(agent, access).cache_salt,
+                    }
+                    plan_span = _tracer.child(root, f"vllm {model} warehouse plan",
+                                              tracing.KIND_CLIENT)
+                    spans.append(plan_span)
+                    try:
+                        plan_response = _call_vllm(
+                            engine_model, plan_payload, traceparent=plan_span.traceparent())
+                        sql = warehouse.parse_plan(_answer(plan_response))
+                        audit["usage"] = plan_response.get("usage")
+                    finally:
+                        plan_span.end_ns = time.time_ns()
+                if sql is not None:
+                    result = warehouse.execute(sql, WAREHOUSE_PATH)
+                    answer = warehouse.format_answer(result)
+                    source = Chunk(
+                        chunk_id=warehouse.SOURCE_ID, document_id=warehouse.SOURCE_ID,
+                        text=answer, category="warehouse-result", status="active",
+                        access_level=access, effective_date=None, source_url=None,
+                        version=None, tags=("synthetic", "sql-result"),
+                    )
+                    prepared_sql = pipeline.PreparedRequest(
+                        prompt=None, canonical=checked.canonical, context=[source],
+                        inbound_pii=checked.inbound_pii,
+                    )
+                    final_sql = pipeline.finalise(answer, prepared_sql, observer=observe)
+                    if not final_sql.ok:
+                        assert final_sql.refusal is not None
+                        outcome = "refused"
+                        terminal_stage = final_sql.refusal.stage
+                        self._error(HTTPStatus.BAD_REQUEST, final_sql.refusal.stage,
+                                    final_sql.refusal.reason, final_sql.refusal.detail)
+                        return
+                    audit["answer"] = final_sql.text
+                    audit["docs"] = [warehouse.SOURCE_ID]
+                    audit["cited"] = list(final_sql.report.cited)
+                    response = {
+                        "id": f"chatcmpl-warehouse-{uuid.uuid4().hex}",
+                        "object": "chat.completion", "created": int(time.time()),
+                        "model": model,
+                        "choices": [{"index": 0, "message": {
+                            "role": "assistant", "content": _served(final_sql.text)},
+                            "finish_reason": "stop"}],
+                        "usage": plan_response.get("usage", {}),
+                        "guardrail": {
+                            "verdict": final_sql.report.verdict,
+                            "cited": list(final_sql.report.cited),
+                            "dropped_documents": [],
+                            "latency_seconds": round(time.monotonic() - started, 6),
+                            "trace_id": root.trace_id if root.sampled else "",
+                            "cache": {"hit": False},
+                        },
+                        "warehouse": {"sql": result.sql, "planner": planner,
+                                      "rows_returned": len(result.rows),
+                                      "truncated": result.truncated},
+                    }
+                    outcome = "allowed"
+                    terminal_stage = "none"
+                    if payload.get("stream") is True:
+                        self._sse(response, final_sql.text, model)
+                    else:
+                        self._json(HTTPStatus.OK, response)
+                    return
+
             # A direct-injection refusal still goes through prepare below so the response,
             # metrics and traces use the same PreparedRequest contract as a cache miss.
             # PII-bearing requests never touch Redis: two callers' different phone numbers
@@ -1569,6 +1657,9 @@ class Handler(BaseHTTPRequestHandler):
                 "upstream",
                 f"vLLM request failed: {reason}",
             )
+        except warehouse.WarehouseQueryError as exc:
+            terminal_stage = "warehouse"
+            self._error(HTTPStatus.BAD_REQUEST, "warehouse_query", str(exc))
         except (TypeError, ValueError) as exc:
             terminal_stage = "request"
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))

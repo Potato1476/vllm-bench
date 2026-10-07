@@ -19,5 +19,13 @@
 !data/xanhsm_retrieval_mock/
 !data/xanhsm_retrieval_mock/corpus/
 !data/xanhsm_retrieval_mock/corpus/retrieval_corpus.jsonl
+!data/xanhsm_mock_warehouse/
+!data/xanhsm_mock_warehouse/scripts/
+!data/xanhsm_mock_warehouse/scripts/generate_warehouse.py
+!data/xanhsm_mock_warehouse/sql/
+!data/xanhsm_mock_warehouse/sql/schema.sql
+!data/xanhsm_mock_warehouse/sql/views.sql
+data/xanhsm_mock_warehouse/csv/
+data/xanhsm_mock_warehouse/xanhsm_mock_warehouse.sqlite
 **/__pycache__/
 **/*.pyc

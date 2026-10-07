@@ -14,6 +14,19 @@ Hoặc nạp các file trong `csv/` vào Athena, Glue, Spark, PostgreSQL hay war
 
 `sql/example_queries.sql` chứa các truy vấn mẫu cho booking, doanh thu, conversion, cancellation, tài xế, utilization, đội xe, sạc và retention. `quality_report.json` chứa kết quả kiểm tra integrity và orphan keys ở dạng máy đọc được.
 
+### Hỏi bằng tiếng Việt qua chat
+
+Sau khi build và triển khai guardrail image mới, dùng model grounded `qwen2.5-7b` qua luồng chat hiện tại. Ví dụ: **“Tổng số booking ở Hà Nội ngày 2026-01-01 là bao nhiêu?”** Hoặc gọi trực tiếp service:
+
+```bash
+kubectl -n llm-serving port-forward svc/guardrail 8080:8080
+curl http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen2.5-7b","messages":[{"role":"user","content":"Tổng số booking ở Hà Nội ngày 2026-01-01 là bao nhiêu?"}]}'
+```
+
+Phản hồi chứa số liệu, mã nguồn `[WAREHOUSE-QUERY-001]` và trường `warehouse.sql` để kiểm tra câu SQL đã chạy. Các chỉ số tổng hợp phổ biến, số tài xế online và thời gian chờ sạc dùng SQL đã định nghĩa trong dịch vụ; với câu hỏi khác, LLM đề xuất SQL. SQLite chỉ nhận một câu `SELECT` ở chế độ chỉ đọc, giới hạn thời gian và tối đa 20 dòng kết quả. Nếu SQL không hợp lệ, API trả lỗi `warehouse_query` thay vì suy đoán số liệu. Image guardrail tạo database từ generator có trong repo khi build; file SQLite lớn không được lưu trong Git.
+
 ## Mô hình dữ liệu
 
 Dimensions: ngày, địa lý, dịch vụ, tài xế, khách hàng, phương tiện, trạm sạc và chiến dịch.

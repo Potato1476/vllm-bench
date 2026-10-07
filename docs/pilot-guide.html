@@ -152,7 +152,7 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
 
 <section class="banner" aria-labelledby="w">
   <p class="lead" id="w">Hệ thống này chạy trên dữ liệu mô phỏng, không nối tới kho dữ liệu vận hành.</p>
-  <p>Không con số nào trong câu trả lời phản ánh số liệu thật. <strong>Dùng để tra cứu định nghĩa và quy trình, không dùng để lấy số.</strong> Mỗi câu trả lời đều kèm dòng nhắc nguồn dữ liệu; nó ở đó vì nó quan trọng, không phải cho đủ thủ tục.</p>
+  <p>Không con số nào trong câu trả lời phản ánh số liệu thật. Có thể hỏi số liệu từ mock warehouse để thử luồng phân tích, nhưng không dùng các con số này cho báo cáo kinh doanh.</p>
 </section>
 
 <section class="stop" aria-labelledby="s1">
@@ -162,7 +162,7 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
 </section>
 
 <h2>Hỏi được gì</h2>
-<p>Kho tài liệu hiện có bốn nhóm nội dung. Câu hỏi nằm trong bốn nhóm này sẽ cho câu trả lời có ích:</p>
+<p>Có thể hỏi định nghĩa trong kho tài liệu hoặc hỏi số liệu trong mock warehouse:</p>
 
 <dl>
   <dt>Định nghĩa chỉ số</dt>
@@ -179,6 +179,10 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
 
   <dt>Quy định và danh mục dịch vụ</dt>
   <dd>Nguyên tắc quản trị dữ liệu, ai sở hữu dịch vụ nào.</dd>
+
+  <dt>Số liệu giả lập</dt>
+  <dd>Hỏi theo ngày, thành phố, dịch vụ hoặc so sánh các chỉ số. Hệ thống chạy truy vấn chỉ đọc trên SQLite và trả tối đa 20 dòng.
+    <span class="q">Tổng số booking ở Hà Nội ngày 2026-01-01 là bao nhiêu?</span></dd>
 </dl>
 
 <h2>Không hỏi được gì</h2>
@@ -186,7 +190,7 @@ footer{margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line);
   <li><strong>Số liệu vận hành thật.</strong> Xem lại phần trên: nó sẽ trả lời, và con số là giả.</li>
   <li><strong>Việc ngoài kho tài liệu.</strong> Soạn email, dịch thuật, viết code, tóm tắt văn bản bạn dán vào. Hệ thống được thiết kế để chỉ trả lời dựa trên tài liệu nội bộ, nên những việc này sẽ bị từ chối.</li>
   <li><strong>Tải tệp lên để hỏi.</strong> Chưa hỗ trợ trong bản dùng thử.</li>
-  <li><strong>Truy vấn trực tiếp vào database.</strong> Hệ thống đọc tài liệu, không chạy SQL.</li>
+  <li><strong>Dữ liệu sau 28/08/2026.</strong> Mock warehouse chỉ có dữ liệu từ 01/01 đến 28/08/2026.</li>
 </ul>
 
 <h2>Ba điều sẽ thấy khác với các chatbot quen dùng</h2>

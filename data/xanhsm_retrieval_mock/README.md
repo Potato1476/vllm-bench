@@ -47,7 +47,7 @@ Từ `eval/retrieval_eval.jsonl`, đo tối thiểu:
 - Tỷ lệ top-k chứa tài liệu `deprecated/draft` khi câu hỏi hỏi định nghĩa hiện hành.
 - Citation precision: citation có nằm trong `must_cite` hay không.
 
-Các câu loại `hybrid` và `reasoning` mới chỉ đánh giá bước truy xuất định nghĩa/schema/playbook. Để trả lời bằng con số, cần bổ sung mock warehouse và lớp sinh SQL.
+Các câu loại `hybrid` và `reasoning` trong bộ eval này chỉ đánh giá bước truy xuất định nghĩa/schema/playbook. Luồng chat hiện có thêm nhánh truy vấn mock warehouse bằng SQL chỉ đọc cho câu hỏi số liệu; bộ eval retrieval này chưa đo độ đúng của SQL do LLM tạo.
 
 ## Tái tạo
 

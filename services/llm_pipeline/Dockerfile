@@ -17,6 +17,14 @@ WORKDIR /app
 # with the corpus, so the chart syncs them from S3 the same way vLLM syncs weights.
 RUN pip install --no-cache-dir numpy==2.3.4 redis==6.4.0
 
+# Build the reproducible mock warehouse from tracked sources. The large SQLite/CSV
+# outputs are gitignored and absent in clean checkouts; only SQLite is kept in the image.
+COPY data/xanhsm_mock_warehouse/scripts/generate_warehouse.py \
+     data/xanhsm_mock_warehouse/scripts/generate_warehouse.py
+COPY data/xanhsm_mock_warehouse/sql/ data/xanhsm_mock_warehouse/sql/
+RUN python data/xanhsm_mock_warehouse/scripts/generate_warehouse.py \
+    && rm -rf data/xanhsm_mock_warehouse/csv
+# Keep application code after the expensive database layer so code-only fixes reuse it.
 COPY guardrails/ guardrails/
 COPY prompt/ prompt/
 COPY rag/ rag/
