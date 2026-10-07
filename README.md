@@ -156,7 +156,7 @@ treo `kubectl` mà không báo lỗi quyền, GPU Operator cài đè driver củ
 ## Kiểm thử
 
 ```bash
-python -m pytest tests/ -q   # 119 ca: pipeline, guardrail, cache, tracing, client
+python -m pytest tests/ -q   # 142 ca: pipeline, guardrail, cache, tracing, client
 make guardrails-test         # kiểm thử hành vi PII, injection, policy, grounding, cache
 make attacks-score           # chấm bộ đối kháng. FOLD=B tách kỹ thuật chưa từng thấy
 make pii-verify              # 5 kiểm tra độc lập rằng PII thật sự bị che

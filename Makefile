@@ -25,7 +25,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	vllm-up vllm-diff vllm-down smoke \
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
-	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key \
+	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key agent-keys-list \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
@@ -647,6 +647,27 @@ webui-logo: ## Build the branding ConfigMap from local files. LOGO_DIR=<dir with
 	@echo "webui-branding san sang. Bat bang: make webui-up BRANDING=1"
 	@echo "Xac nhan duong dan static o lan deploy dau -- sai duong dan KHONG bao loi:"
 	@echo "  kubectl -n $(NS) exec deploy/webui -- sh -c 'echo \$$STATIC_DIR; ls \$$STATIC_DIR'"
+
+agent-keys-list: ## Show every key, its quota and spend, and whether we can still hand it out
+# Reads BOTH sides and compares them, which is the point. LiteLLM stores only a hash, so
+# "the gateway accepts this key" and "we can still give this key to a team" are different
+# facts that drift apart every time Aurora is recreated. Prints no key.
+	@base=$${LITELLM_URL:-}; \
+	if [ -z "$$base" ]; then \
+		if curl -fsS --max-time 2 http://127.0.0.1:4000/health/readiness >/dev/null 2>&1; then \
+			base=http://127.0.0.1:4000; \
+		else \
+			ip=$$(kubectl -n monitoring get ingress grafana \
+				-o jsonpath='{.spec.rules[0].host}' 2>/dev/null \
+				| sed 's/^grafana\.//; s/\.nip\.io$$//'); \
+			[ -n "$$ip" ] || { echo "khong tim thay LiteLLM -- 'make pf' hoac 'make ingress-up'"; exit 1; }; \
+			base=http://llm.$$ip.nip.io:30080; \
+		fi; \
+	fi; \
+	key=$$(kubectl -n $(NS) get secret litellm-secrets \
+		-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d); \
+	[ -n "$$key" ] || { echo "khong doc duoc master key"; exit 1; }; \
+	PYTHONPATH=. python3 bench/scripts/list_keys.py --base-url "$$base" --master-key "$$key"
 
 agent-key: ## Print ONE project's virtual key, on request. AGENT=da32
 # The keys live only in the Kubernetes Secret llm-serving/agent-keys -- never in a file,
