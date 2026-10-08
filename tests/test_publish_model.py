@@ -148,7 +148,7 @@ class OverwriteTest(_Tmp):
         argv = ["--from", str(self.root), "--name", "moc-7b", "--version", "v1",
                 "--served-name", "qwen2.5-7b", "--signer", "training-pipeline",
                 "--bucket", "some-bucket"]
-        with mock.patch.object(pm, "s3_prefix_exists", return_value=True), \
+        with mock.patch.object(pm, "prefix_state", return_value="published"), \
              mock.patch.object(pm, "upload") as uploaded, \
              mock.patch.object(pm, "sign") as signed:
             code = pm.main(argv)
@@ -162,7 +162,7 @@ class OverwriteTest(_Tmp):
         write_raw(self.root)
         argv = ["--from", str(self.root), "--name", "moc-7b", "--version", "v1",
                 "--served-name", "qwen2.5-7b", "--signer", "t", "--bucket", "b"]
-        with mock.patch.object(pm, "s3_prefix_exists", return_value=True), \
+        with mock.patch.object(pm, "prefix_state", return_value="published"), \
              mock.patch.object(pm, "build_manifest") as hashed:
             pm.main(argv)
         hashed.assert_not_called()
@@ -173,7 +173,7 @@ class RefusalTest(_Tmp):
         write_raw(self.root, extra={"pytorch_model.bin": b"\x80\x04junk"})
         argv = ["--from", str(self.root), "--name", "moc-7b", "--version", "v1",
                 "--served-name", "qwen2.5-7b", "--signer", "t", "--bucket", "b"]
-        with mock.patch.object(pm, "s3_prefix_exists", return_value=False), \
+        with mock.patch.object(pm, "prefix_state", return_value="empty"), \
              mock.patch.object(pm, "upload") as uploaded, \
              mock.patch.object(pm, "sign") as signed, \
              mock.patch.object(pm, "put_ready") as ready:
@@ -198,7 +198,7 @@ class RefusalTest(_Tmp):
                 "--served-name", "qwen2.5-7b", "--signer", "t", "--bucket", "b"]
         truncated = mock.Mock()
         truncated.sizes.return_value = {"config.json": 1}   # everything else missing
-        with mock.patch.object(pm, "s3_prefix_exists", return_value=False), \
+        with mock.patch.object(pm, "prefix_state", return_value="empty"), \
              mock.patch.object(pm, "sign"), \
              mock.patch.object(pm, "upload"), \
              mock.patch.object(pm, "S3Source", return_value=truncated), \
@@ -221,7 +221,7 @@ class RefusalTest(_Tmp):
             sent.update({p.relative_to(staging).as_posix(): p.stat().st_size
                          for p in staging.rglob("*") if p.is_file()})
 
-        with mock.patch.object(pm, "s3_prefix_exists", return_value=False), \
+        with mock.patch.object(pm, "prefix_state", return_value="empty"), \
              mock.patch.object(pm, "sign", side_effect=lambda *a, **k: order.append("sign")), \
              mock.patch.object(pm, "upload", side_effect=fake_upload), \
              mock.patch.object(pm, "S3Source", return_value=landed), \
@@ -249,3 +249,59 @@ class SignFlagsTest(unittest.TestCase):
         self.assertIn("--yes", argv)
         for gone in ("--output-signature", "--tlog-upload", "--tlog-upload=false"):
             self.assertNotIn(gone, argv, f"{gone} da bi cosign v3 bo")
+
+
+class PartialPrefixTest(_Tmp):
+    """An interrupted publish must not block its own retry.
+
+    Several gigabytes over a home connection get cancelled, lose the network, or are
+    stopped deliberately, and the small files land first. Reading any object under the
+    prefix as "this version exists" refuses the retry with a message saying the version is
+    already published -- wrong, and the opposite of what the person needs to hear the next
+    morning.
+    """
+
+    def test_debris_without_ready_is_cleared_and_the_publish_proceeds(self) -> None:
+        write_raw(self.root)
+        argv = ["--from", str(self.root), "--name", "m", "--version", "v1",
+                "--served-name", "s", "--signer", "t", "--bucket", "b"]
+        landed: dict[str, int] = {}
+        source = mock.Mock()
+        source.sizes.side_effect = lambda: landed
+        with mock.patch.object(pm, "prefix_state", return_value="partial"), \
+             mock.patch.object(pm, "clear_prefix") as cleared, \
+             mock.patch.object(pm, "sign"), \
+             mock.patch.object(pm, "upload",
+                               side_effect=lambda s, b, p: landed.update(
+                                   {f.relative_to(s).as_posix(): f.stat().st_size
+                                    for f in s.rglob("*") if f.is_file()})), \
+             mock.patch.object(pm, "S3Source", return_value=source), \
+             mock.patch.object(pm, "put_ready") as ready:
+            code = pm.main(argv)
+        self.assertEqual(code, 0)
+        cleared.assert_called_once()
+        ready.assert_called_once()
+
+    def test_a_published_version_is_still_never_overwritten(self) -> None:
+        """The refusal that matters stays: rollback has to return the exact bytes that
+        ran, so a version carrying _READY is closed forever."""
+        write_raw(self.root)
+        argv = ["--from", str(self.root), "--name", "m", "--version", "v1",
+                "--served-name", "s", "--signer", "t", "--bucket", "b"]
+        with mock.patch.object(pm, "prefix_state", return_value="published"), \
+             mock.patch.object(pm, "clear_prefix") as cleared, \
+             mock.patch.object(pm, "upload") as uploaded:
+            self.assertEqual(pm.main(argv), 1)
+        cleared.assert_not_called()
+        uploaded.assert_not_called()
+
+    def test_ready_is_what_marks_a_version_published(self) -> None:
+        for keys, expected in (
+            (["models/m/v1/_READY", "models/m/v1/config.json"], "published"),
+            (["models/m/v1/config.json"], "partial"),
+            ([], "empty"),
+        ):
+            with self.subTest(keys=keys):
+                out = mock.Mock(returncode=0, stdout=json.dumps(keys or None))
+                with mock.patch.object(pm.subprocess, "run", return_value=out):
+                    self.assertEqual(pm.prefix_state("b", "models/m/v1"), expected)

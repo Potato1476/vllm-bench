@@ -110,14 +110,37 @@ def sign(manifest_path: Path, key_uri: str, out_path: Path) -> None:
         raise CheckError(f"cosign sign-blob that bai: {proc.stderr.strip()[:300]}")
 
 
-def s3_prefix_exists(bucket: str, prefix: str) -> bool:
+def prefix_state(bucket: str, prefix: str) -> str:
+    """"published" | "partial" | "empty".
+
+    THE DISTINCTION MATTERS BECAUSE INTERRUPTED PUBLISHES HAPPEN. An upload of several
+    gigabytes over a home connection gets cancelled, loses its network, or is stopped on
+    purpose, and it leaves the small files behind with no _READY. Treating any object
+    under the prefix as "this version exists" then refuses the retry -- with a message
+    saying the version is already published, which is both wrong and the opposite of what
+    the person needs to hear.
+
+    _READY is the contract's own marker for "this version is complete", so it is also the
+    right thing to ask here. Debris is debris, and it gets cleaned and overwritten.
+    """
     proc = subprocess.run(
         ["aws", "s3api", "list-objects-v2", "--bucket", bucket,
-         "--prefix", f"{prefix}/", "--max-items", "1"],
+         "--prefix", f"{prefix}/", "--query", "Contents[].Key"],
         capture_output=True, text=True, check=False, timeout=120)
     if proc.returncode != 0:
         raise CheckError(f"khong doc duoc S3: {proc.stderr.strip()[:200]}")
-    return bool(json.loads(proc.stdout or "{}").get("Contents"))
+    keys = json.loads(proc.stdout or "null") or []
+    if any(k.endswith("/_READY") for k in keys):
+        return "published"
+    return "partial" if keys else "empty"
+
+
+def clear_prefix(bucket: str, prefix: str) -> None:
+    proc = subprocess.run(
+        ["aws", "s3", "rm", f"s3://{bucket}/{prefix}/", "--recursive", "--only-show-errors"],
+        capture_output=True, text=True, check=False, timeout=600)
+    if proc.returncode != 0:
+        raise CheckError(f"khong xoa duoc prefix do dang: {proc.stderr.strip()[:200]}")
 
 
 def upload(staging: Path, bucket: str, prefix: str) -> None:
@@ -173,10 +196,16 @@ def main(argv: list[str] | None = None) -> int:
         # and republishing over a version silently changes what a rollback means -- the
         # state file still names the version, but the version is no longer what it was.
         if a.bucket and not a.dry_run:
-            if s3_prefix_exists(a.bucket, prefix):
+            state = prefix_state(a.bucket, prefix)
+            if state == "published":
                 raise CheckError(
-                    f"s3://{a.bucket}/{prefix}/ da ton tai. Version khong duoc ghi de: "
-                    "rollback phai tra ve dung bo byte da chay. Dung so hieu version moi.")
+                    f"s3://{a.bucket}/{prefix}/ da xuat ban (co _READY). Version khong "
+                    "duoc ghi de: rollback phai tra ve dung bo byte da chay. Dung so "
+                    "hieu version moi.")
+            if state == "partial":
+                print(f"  prefix co file nhung khong co _READY -- rac tu mot lan chay do "
+                      f"dang. Xoa va lam lai.")
+                clear_prefix(a.bucket, prefix)
 
         # --- staging copy -------------------------------------------------------------
         with tempfile.TemporaryDirectory(prefix="publish-model-") as tmp:
