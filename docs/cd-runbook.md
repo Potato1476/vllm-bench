@@ -8,7 +8,7 @@ dựng cụm buổi sáng.
 ## Dựng cụm, theo thứ tự
 
 ```bash
-make lab-up                 # EKS, 3 node tooling (da la mac dinh)
+make lab-up                 # EKS, 3 node tooling; GPU la g5.xlarge (A10G)
 make kubeconfig
 make monitoring-up          # GPU operator, Prometheus, Grafana
 make gpu n=4
@@ -129,6 +129,41 @@ trên đĩa đúng là bản đã ký. Không có dòng đó thì state không h
 
 Bỏ ngoại lệ này bằng cách xuất bản lại checkpoint theo hợp đồng rồi trỏ `weights` sang
 version mới. Từ lúc đó, **mỗi lần pod khởi động đều băm lại và đối chiếu**.
+
+---
+
+## Tầng node theo loại model
+
+Mỗi model chạy trên node group riêng, không chia card với model khác.
+
+| tier | node group | card | giá | dùng cho |
+|---|---|---|---|---|
+| `main` | `gpu` | g5.xlarge — A10G 24GB | 1,006 USD/h | 7B, 4 node |
+| `light` | `gpu-light` | g4dn.xlarge — T4 16GB | 0,526 USD/h | 1.5B, **0 node** |
+
+Khai trong `deploy/state.yaml`:
+
+```yaml
+qwen2.5-1.5b:
+  tier: light
+  stable: { weights: models/..., engine: vllm/vllm-openai:v0.29.0 }
+  phase: idle
+```
+
+Track `light` tự nhận `nodeSelector` và toleration cho taint `tier=light`, và lấy 1 card
+chứ không phải 4.
+
+### Vì sao `light` đang để 0 node
+
+**Quota G là 16 vCPU**, mỗi `.xlarge` ăn 4 — tức **tối đa 4 node GPU, bất kể loại nào**.
+Cả 4 đang cần cho 7B: 12,5 req/s mỗi card × 4 = 50 req/s, vừa đúng ngưỡng TC1a. Bật node
+nhẹ lên bây giờ là lấy mất một card của 7B và trần tụt còn **37,5 req/s** — trượt TC1a.
+
+Mở khoá bằng cách xin nâng quota lên 20 vCPU, rồi đặt `gpu_light_desired = 1`. Thêm
+**0,526 USD/giờ**.
+
+Đây cũng là lý do `mode: shared` không phải hình dạng đúng cho việc này: nó cắt 25% một
+card đang phải đạt 50 req/s, trong khi một card T4 riêng rẻ hơn một nửa và không mượn của ai.
 
 ---
 

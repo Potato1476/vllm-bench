@@ -18,7 +18,7 @@ cpu_desired = 2
 node_subnet_count = 1
 
 # L4 24GB, $0.8048/hr. Ada, so FP8 is available.
-gpu_instance_type = "g6.xlarge"
+gpu_instance_type = "g5.xlarge"   # A10G. L4 chi dat 40 req/s, truot TC1a.
 # 0 outside a measurement window, 1 for normal work, 3 for the scale-verification session.
 gpu_desired = 0
 

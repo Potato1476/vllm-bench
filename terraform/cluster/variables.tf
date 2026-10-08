@@ -104,9 +104,49 @@ variable "cpu_desired" {
 
 # --- GPU node groups --------------------------------------------------------
 variable "gpu_instance_type" {
-  description = "Main measurement GPU. g6.xlarge is L4 24GB at $0.8048/hr -- 25% cheaper than g5.xlarge, and Ada so it has native FP8."
+  description = "Main measurement GPU. g5.xlarge is A10G 24GB at $1.006/hr."
   type        = string
-  default     = "g6.xlarge"
+  # g5.xlarge, NOT the cheaper g6.xlarge, and the difference decides whether TC1a is met.
+  #
+  # Four L4s serve 40 req/s against the criterion's 50 -- eks.tf says so in the gpu-l40s
+  # comment, and the measured per-card figures in bench/scripts/finops_curve.py agree:
+  # 12.5 req/s on A10G against 10.0 on L4. The 16 vCPU quota allows no fifth node of
+  # either kind, so on L4 there is no way to reach 50.
+  #
+  # This default was g6.xlarge while every reported result was measured on A10G, which
+  # only worked because a gitignored terraform.tfvars on one laptop said g5.xlarge. The
+  # committed configuration did not reproduce the committed numbers, and the way that
+  # surfaces is a rebuilt cluster quietly missing the criterion by 20%.
+  default = "g5.xlarge"
+}
+
+# --- tang node nhe -----------------------------------------------------------------
+#
+# Model 1.5B khong nen an mot phan cua card ma 7B dang can. `mode: shared` chia mot card
+# lam hai, va phan con lai cho 7B khong con du de dat 50 req/s; mot card rieng, nho va
+# re, dung voi hinh dang cua cong viec hon.
+#
+# desired 0, VA SE CON 0 CHO TOI KHI QUOTA TANG. Quota G hien la 16 vCPU va moi .xlarge
+# an 4, nen bon node la tran -- ca bon deu dang can cho 7B (12.5 req/s moi card x 4 = 50,
+# vua du). Bat node nay len bay gio la lay mat mot card cua 7B va TC1a tut xuong 37.5.
+#
+# Mo bang cach xin quota len 20 vCPU, roi dat gpu_light_desired = 1. Chi phi them 0.526
+# USD/gio.
+variable "gpu_light_instance_type" {
+  description = "GPU cho model nhe. g4dn.xlarge la T4 16GB o $0.526/hr -- du rong cho 1.5B."
+  type        = string
+  default     = "g4dn.xlarge"
+}
+
+variable "gpu_light_desired" {
+  description = "Node cho tang model nhe. Giu 0 cho toi khi quota G vuot 16 vCPU."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.gpu_light_desired >= 0 && var.gpu_light_desired <= 2
+    error_message = "gpu_light_desired must be between 0 and 2."
+  }
 }
 
 variable "gpu_desired" {

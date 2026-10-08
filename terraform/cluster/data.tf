@@ -42,7 +42,9 @@ locals {
     "g6e.2xlarge" = "l40s"
     "g5.xlarge"   = "a10g"
     "g5.2xlarge"  = "a10g"
+    "g4dn.xlarge" = "t4"
   }
   gpu_type     = lookup(local.gpu_type_labels, var.gpu_instance_type, "unknown")
-  gpu_alt_type = lookup(local.gpu_type_labels, var.gpu_l40s_instance_type, "unknown")
+  gpu_alt_type   = lookup(local.gpu_type_labels, var.gpu_l40s_instance_type, "unknown")
+  gpu_light_type = lookup(local.gpu_type_labels, var.gpu_light_instance_type, "unknown")
 }

@@ -334,3 +334,51 @@ class RenderTest(_Tmp):
             self.assertTrue(path.is_file(), f"thieu {path}")
             self.assertEqual(path.read_text(encoding="utf-8"), content,
                              f"{path.name} lech voi state.yaml")
+
+
+class TierTest(_Tmp):
+    """Each model tier is its own node group, not a slice of someone else's card.
+
+    A 1.5B at 25% of a card leaves the 7B a lower ceiling than the 50 req/s it has to
+    reach. Its own small card costs half as much and borrows nothing -- but the approved
+    G quota is 16 vCPU, every .xlarge is 4, and all four main cards are already spoken
+    for, so the light tier stays at zero nodes until that quota rises.
+    """
+
+    def render_track(self, tier: str) -> dict:
+        body = make(rs.IDLE)
+        if tier != "main":
+            body["qwen2.5-7b"]["tier"] = tier
+        out = rs.render(self.load(body), out_dir=self.tmp)
+        app = yaml.safe_load(next(iter(out.values())))
+        return app["spec"]["source"]["helm"]["valuesObject"]
+
+    def test_the_main_tier_keeps_the_chart_defaults(self) -> None:
+        """Restating them would make a second copy free to drift from where everything
+        already runs."""
+        values = self.render_track("main")
+        self.assertNotIn("nodeSelector", values)
+        self.assertNotIn("tolerations", values)
+        self.assertEqual(values["replicaCount"], 4)
+
+    def test_the_light_tier_is_pinned_and_tolerates_its_taint(self) -> None:
+        values = self.render_track("light")
+        self.assertEqual(values["nodeSelector"]["tier"], "light")
+        keys = {t["key"] for t in values["tolerations"]}
+        self.assertEqual(keys, {"nvidia.com/gpu", "tier"})
+
+    def test_the_light_tier_gets_one_card_not_four(self) -> None:
+        """Reading the main tier's count would put four 1.5B pods on a node group with one
+        node, and three of them would sit Pending looking like a capacity fault."""
+        self.assertEqual(self.render_track("light")["replicaCount"], 1)
+
+    def test_an_unknown_tier_is_refused(self) -> None:
+        body = make(rs.IDLE)
+        body["qwen2.5-7b"]["tier"] = "gigantic"
+        with self.assertRaises(rs.StateError):
+            self.load(body)
+
+    def test_every_tier_declares_how_many_cards_it_has(self) -> None:
+        """A tier without an entry would raise KeyError at render time -- inside the step
+        that writes what the cluster runs."""
+        self.assertEqual(set(rs.TIER_CARDS), rs.TIERS)

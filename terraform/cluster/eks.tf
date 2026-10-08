@@ -208,6 +208,49 @@ module "eks" {
     # 50, the 16 vCPU quota allows no fifth L4, and g6e.xlarge is also 4 vCPU -- so four
     # L40S fit the quota that four L4s already fill. Still 0 by default; this group costs
     # 1.861 USD/hr per node.
+    # Tang model nhe: mot card rieng, nho va re, thay vi cat mot phan card cua 7B.
+    #
+    # Mot 1.5B o `mode: shared` chiem 25% card va de lai cho 7B 14.6 GiB -- du cho AWQ
+    # nhung lam giam tran thong luong cua chinh model dang phai dat 50 req/s. Mot T4 16GB
+    # rieng phuc vu 1.5B thoai mai (FP16 chi 2.9 GiB) voi gia bang mot nua g5.
+    #
+    # desired_size 0 va se con 0: quota G la 16 vCPU, moi .xlarge an 4, va ca bon node
+    # dang can cho 7B. Xem var.gpu_light_desired.
+    gpu-light = {
+      name           = "gpu-light"
+      subnet_ids     = local.node_subnet_ids
+      instance_types = [var.gpu_light_instance_type]
+      capacity_type  = "ON_DEMAND"
+
+      ami_type = "AL2023_x86_64_NVIDIA"
+
+      min_size = 0
+      # 2, khong phai 1: du cho mot ban sao thu hai khi can do kha dung cua tang nhe,
+      # va van nam trong quota neu 7B lui ve 3 node.
+      max_size     = 2
+      desired_size = var.gpu_light_desired
+
+      cloudinit_pre_nodeadm = local.gpu_cloudinit
+
+      labels = {
+        workload         = "inference"
+        gpu-type         = local.gpu_light_type
+        # Nhan rieng de chart co the ghim dung tang, thay vi chi noi "co GPU". Khong co
+        # no, mot pod 7B co the roi vao T4 va hong luc nap voi thong bao ve bo nho chu
+        # khong phai ve viec xep lich sai cho.
+        tier             = "light"
+        "nvidia.com/gpu" = "true"
+      }
+
+      taints = [{
+        # Chi workload khai ro moi duoc xuong day. Mot card T4 re tien rat de bi mot pod
+        # khong lien quan chiem mat.
+        key    = "tier"
+        value  = "light"
+        effect = "NO_SCHEDULE"
+      }]
+    }
+
     gpu-l40s = {
       name           = "gpu-l40s"
       subnet_ids     = local.node_subnet_ids

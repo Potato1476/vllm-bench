@@ -69,6 +69,15 @@ ALLOWED: dict[str, set[str]] = {
 # rollout actually runs: every step is a separate workflow run that loads the file again.
 NEEDS_CANDIDATE = {EVALUATING, CANARY}
 
+# Node tiers, each a separate EKS node group. Adding one here means adding a node group
+# in terraform/cluster/eks.tf with a matching `tier` label and taint.
+TIERS = {"main", "light"}
+
+# How many cards each tier has. Main is four because the approved G quota is 16 vCPU and
+# every .xlarge is four of them; light is one and stays one until that quota rises, since
+# the four main cards are exactly what 7B needs for 50 req/s at 12.5 req/s per card.
+TIER_CARDS = {"main": 4, "light": 1}
+
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{0,63}$")
 
 # Two shapes, validated apart. They are both "a string naming a thing" and it is tempting
@@ -151,6 +160,13 @@ class Track:
     previous: Ref | None = None
     canary_weight: int = 0
     candidate_since: str = ""
+    # Which GPU tier this model belongs on. "main" is the measurement fleet; "light" is
+    # the small, cheap card for models that do not need a big one.
+    #
+    # A 1.5B taking a slice of a card the 7B needs lowers the ceiling of the model that
+    # has to reach 50 req/s, which is why `mode: shared` is the wrong shape for it. Its
+    # own node is both cheaper and does not borrow from anything.
+    tier: str = "main"
 
     def to_dict(self) -> dict:
         out: dict[str, object] = {"stable": self.stable.to_dict(), "phase": self.phase}
@@ -162,6 +178,8 @@ class Track:
             out["canary_weight"] = self.canary_weight
         if self.candidate_since:
             out["candidate_since"] = self.candidate_since
+        if self.tier != "main":
+            out["tier"] = self.tier
         return out
 
 
@@ -185,7 +203,11 @@ def _parse_track(name: str, raw: object) -> Track:
         previous=Ref.parse(raw["previous"], f"{name}.previous") if raw.get("previous") else None,
         canary_weight=int(raw.get("canary_weight") or 0),
         candidate_since=str(raw.get("candidate_since") or ""),
+        tier=str(raw.get("tier") or "main"),
     )
+    if track.tier not in TIERS:
+        raise StateError(f"{name}.tier khong hop le: {track.tier!r} "
+                         f"(cho phep: {', '.join(sorted(TIERS))})")
 
     # --- the invariants the chart renders from -------------------------------------
     if track.phase in NEEDS_CANDIDATE and track.candidate is None:
@@ -329,9 +351,9 @@ def helm_values(state: State, name: str) -> dict:
     """
     track = state.track(name)
     candidate = track.candidate
-    # Four cards total. A candidate takes exactly one, which is why evaluation runs at a
-    # twelfth of production load rather than at fifty.
-    stable_replicas = 4 - (1 if candidate else 0)
+    # Four cards on the main tier; the light tier has one. A candidate takes exactly one,
+    # which is why evaluation runs at a twelfth of production load rather than at fifty.
+    stable_replicas = TIER_CARDS[track.tier] - (1 if candidate else 0)
     values: dict[str, object] = {
         "servedName": name,
         "stable": {
@@ -368,6 +390,29 @@ GENERATED_HEADER = (
 )
 
 
+def _tier_placement(tier: str) -> dict:
+    """Where this track's pods are allowed to land.
+
+    The light tier is tainted, so nothing reaches it without asking. A cheap card is
+    exactly the kind of resource an unrelated pod drifts onto, and the symptom -- the 1.5B
+    sitting Pending while a T4 runs something else -- reads as a capacity problem.
+
+    The main tier keeps the chart's own defaults: it is where everything already runs, and
+    restating them here would create a second copy free to drift.
+    """
+    if tier == "light":
+        return {
+            "nodeSelector": {"workload": "inference", "tier": "light"},
+            "tolerations": [
+                {"key": "nvidia.com/gpu", "operator": "Equal", "value": "true",
+                 "effect": "NoSchedule"},
+                {"key": "tier", "operator": "Equal", "value": "light",
+                 "effect": "NoSchedule"},
+            ],
+        }
+    return {}
+
+
 def _release_values(track: Track, ref: Ref, *, served_name: str, replicas: int) -> dict:
     """Values overriding charts/vllm for one Helm release.
 
@@ -395,6 +440,7 @@ def _release_values(track: Track, ref: Ref, *, served_name: str, replicas: int) 
         "verifyManifest": ref.verify,
         "image": _image(ref.engine),
         "models": {"a": model},
+        **_tier_placement(track.tier),
     }
 
 
@@ -424,7 +470,7 @@ def render(state: State, out_dir: Path = DEPLOY_DIR) -> dict[Path, str]:
         files[out_dir / "argocd" / "apps" / f"vllm-{name}-stable.yaml"] = _application(
             f"vllm-{name}-stable",
             _release_values(track, track.stable, served_name=name,
-                            replicas=4 - (1 if track.candidate else 0)))
+                            replicas=TIER_CARDS[track.tier] - (1 if track.candidate else 0)))
         if track.candidate:
             served = f"{name}-candidate" if track.phase == EVALUATING else name
             files[out_dir / "argocd" / "apps" / f"vllm-{name}-candidate.yaml"] = _application(
