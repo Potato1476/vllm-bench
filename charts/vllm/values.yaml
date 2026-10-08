@@ -45,6 +45,11 @@ replicaCount: 1
 # which is why the fit check below multiplies rather than subtracts.
 gpuMemoryGiB: 22.5
 
+# Verify the weights on disk against the signed manifest before vLLM opens them. True
+# everywhere that matters; false only for the checkpoints published by hand before the
+# model contract existed, which have no manifest to check against.
+verifyManifest: true
+
 # The smallest KV cache worth starting an engine with. Below this vLLM either refuses to
 # allocate or runs one sequence at a time, which measures nothing.
 minKvCacheGiB: 1.5

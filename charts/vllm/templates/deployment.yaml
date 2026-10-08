@@ -131,6 +131,41 @@ spec:
               # message, rather than inside vLLM as an unreadable load error.
               test -f /weights/config.json
               ls /weights/*.safetensors >/dev/null
+
+              # --- verify against the signed manifest --------------------------------
+              #
+              # THIS IS THE CHECK THAT COUNTS. CI verifies the signature and the sizes on
+              # S3, which proves the bucket was right AT THAT MOMENT. This proves the
+              # bytes on this node's NVMe, right now, are the ones the signature covers --
+              # on every pod start, including the ones hours later during a roll.
+              #
+              # It is also the only thing standing between a version being overwritten in
+              # place and that overwrite being served. S3 does not forbid writing over a
+              # key; nothing upstream of here would notice.
+              #
+              # Absent manifest = refuse. Weights with no manifest are weights nobody
+              # signed, and defaulting to "serve it anyway" would make every check above
+              # optional for anyone who can delete one file.
+              if [ "${VERIFY_MANIFEST}" = "true" ]; then
+                test -f /weights/manifest.json || {
+                  echo "FATAL: /weights/manifest.json thieu -- trong so khong ky"; exit 1; }
+                cd /weights
+                # One line, not a heredoc: a heredoc's body has to sit at its own
+                # indentation and that breaks the YAML block scalar this script lives in.
+                # Both tools are in amazon/aws-cli:2.36.47 -- verified, python3 3.9 and
+                # sha256sum from coreutils.
+                #
+                # sha256sum reads the manifest's own list, so an extra file on disk is not
+                # checked here; CI rejects unlisted files, and nothing loads what the
+                # manifest does not name.
+                python3 -c 'import json; print("".join(f["sha256"]+"  "+f["path"]+chr(10) for f in json.load(open("/weights/manifest.json"))["files"]), end="")' > /tmp/sums
+                sha256sum -c /tmp/sums --quiet || {
+                  echo "FATAL: trong so tren dia khong khop manifest da ky"; exit 1; }
+                echo "manifest verified: $(wc -l < /tmp/sums) file"
+              else
+                echo "VERIFY_MANIFEST=false -- bo qua kiem manifest (checkpoint cu)"
+              fi
+
               touch /weights/.sync-complete
               echo "sync complete: $(du -sh /weights | cut -f1)"
               # Proves the emptyDir landed on NVMe and not the root EBS volume. Without
@@ -139,6 +174,12 @@ spec:
           env:
             - name: S3_MODEL_URI
               value: "s3://{{ $root.Values.artifactsBucket }}/{{ include "vllm.s3Prefix" (dict "root" $root "key" $key) }}/"
+            # Default true. The escape hatch exists for the four checkpoints published by
+            # hand before the contract existed, which carry no manifest; it is not a knob
+            # to reach for when verification fails, because a failure there means the
+            # bytes are not the signed ones.
+            - name: VERIFY_MANIFEST
+              value: {{ $root.Values.verifyManifest | default true | quote }}
           volumeMounts:
             - name: weights
               mountPath: /weights
