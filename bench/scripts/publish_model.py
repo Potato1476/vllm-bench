@@ -49,7 +49,7 @@ from bench.scripts.check_model import (  # noqa: E402
 # Build leftovers that are not part of the model. Uploading them is not dangerous but it
 # is not harmless either: every one is synced onto the NVMe of every pod on every start,
 # and `.cache/` from a Hub download is hundreds of megabytes of lock and resume metadata.
-EXCLUDE_NAMES = {".DS_Store", "_READY", "manifest.json", "manifest.json.sig"}
+EXCLUDE_NAMES = {".DS_Store", "_READY", "manifest.json", "manifest.bundle"}
 EXCLUDE_DIRS = {".cache", ".git", "__pycache__"}
 
 
@@ -86,19 +86,25 @@ def build_manifest(root: Path, files: list[Path], **fields) -> dict:
 
 
 def sign(manifest_path: Path, key_uri: str, out_path: Path) -> None:
-    """Sign with cosign, without publishing to the public transparency log.
+    """Sign with cosign, keeping the result out of the public transparency log.
 
-    `--tlog-upload=false` is deliberate. Rekor is a public, append-only log; an entry
-    there announces that this organisation signed an artefact with a given digest at a
-    given time. For weights trained on internal data that is a disclosure with no
-    corresponding benefit, since verification here is against a public key committed to
-    this repo and needs no third party to be reachable at rollout time.
+    COSIGN v3 FLAGS, AND WHY THESE ONES. v2's `--output-signature` and `--tlog-upload`
+    are both gone: v3 writes a bundle -- signature plus verification metadata in one JSON
+    file -- and refuses to run without `--bundle`. Signing with `--key` and no signing
+    config performs no network call at all, so nothing reaches Rekor and there is no
+    `--tlog-upload=false` left to pass.
+
+    That silence is what we want. Rekor is a public append-only log, and an entry there
+    announces that this organisation signed an artefact with a given digest at a given
+    time. For weights built on internal data that is a disclosure buying nothing:
+    verification here is against a public key committed to this repo and needs no third
+    party reachable at rollout time.
     """
     if shutil.which("cosign") is None:
         raise CheckError("khong co cosign tren PATH (brew install cosign)")
     proc = subprocess.run(
-        ["cosign", "sign-blob", "--key", key_uri, "--tlog-upload=false",
-         "--yes", "--output-signature", str(out_path), str(manifest_path)],
+        ["cosign", "sign-blob", "--key", key_uri, "--yes",
+         "--bundle", str(out_path), str(manifest_path)],
         capture_output=True, text=True, check=False, timeout=300)
     if proc.returncode != 0:
         raise CheckError(f"cosign sign-blob that bai: {proc.stderr.strip()[:300]}")
@@ -213,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise CheckError("thieu --bucket (hoac ARTIFACTS_BUCKET)")
 
             print(f"  ky manifest bang {key_uri}")
-            sign(manifest_path, key_uri, staging / "manifest.json.sig")
+            sign(manifest_path, key_uri, staging / "manifest.bundle")
 
             print(f"  upload -> s3://{a.bucket}/{prefix}/")
             upload(staging, a.bucket, prefix)

@@ -85,7 +85,7 @@ def build_model(
     }
     manifest.update(manifest_patch or {})
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (root / "manifest.json.sig").write_bytes(b"signature-not-checked-in-these-tests")
+    (root / cm.SIGNATURE_FILE).write_bytes(b"signature-not-checked-in-these-tests")
     if ready:
         (root / "_READY").write_bytes(b"")
     return root
@@ -354,3 +354,46 @@ class PrefixTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CosignInvocationTest(_Tmp):
+    """The exact cosign flags, pinned.
+
+    They have already broken once: cosign v3 removed --output-signature and --tlog-upload
+    and refuses to sign without --bundle, which surfaced as a failed publish after five
+    gigabytes had been hashed. Asserting the argv here turns the next such change into a
+    red test instead of a command that dies partway through a long upload.
+    """
+
+    def _argv(self, run_mock) -> list[str]:
+        return list(run_mock.call_args[0][0])
+
+    def test_verification_uses_a_bundle_and_skips_the_transparency_log(self) -> None:
+        build_model(self.root)
+        with tempfile.TemporaryDirectory() as signers:
+            (Path(signers) / "someone.pub").write_bytes(b"-----BEGIN PUBLIC KEY-----")
+            with (mock.patch.object(cm.shutil, "which", return_value="/usr/bin/cosign"),
+                  mock.patch.object(cm.subprocess, "run",
+                                    return_value=mock.Mock(returncode=0)) as run):
+                signer = cm.verify_signature(cm.LocalSource(self.root), Path(signers), None)
+        self.assertEqual(signer, "someone")
+        argv = self._argv(run)
+        self.assertEqual(argv[:2], ["cosign", "verify-blob"])
+        self.assertIn("--bundle", argv)
+        # Signing with a key never writes to Rekor, so there is nothing there to verify
+        # against; without this the check fails on every artefact.
+        self.assertIn("--insecure-ignore-tlog=true", argv)
+        self.assertNotIn("--signature", argv)
+
+    def test_a_nonzero_exit_is_a_failure_even_when_cosign_warns(self) -> None:
+        """Cosign prints a warning about skipping tlog on every single call. The return
+        code decides; treating stderr as the signal would read every success as a
+        failure."""
+        build_model(self.root)
+        with tempfile.TemporaryDirectory() as signers:
+            (Path(signers) / "someone.pub").write_bytes(b"x")
+            with (mock.patch.object(cm.shutil, "which", return_value="/usr/bin/cosign"),
+                  mock.patch.object(cm.subprocess, "run",
+                                    return_value=mock.Mock(returncode=1, stderr=b"WARNING"))):
+                with self.assertRaises(cm.CheckError):
+                    cm.verify_signature(cm.LocalSource(self.root), Path(signers), None)

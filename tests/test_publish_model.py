@@ -92,7 +92,7 @@ class StagingGateTest(_Tmp):
         upload is still in progress."""
         write_raw(self.root)
         (self.root / "manifest.json").write_text("{}")
-        (self.root / "manifest.json.sig").write_bytes(b"x")
+        (self.root / cm.SIGNATURE_FILE).write_bytes(b"x")
         report = cm.check(cm.LocalSource(self.root), require_signature=False)
         self.assertFalse(report.ok)
         self.assertIn("_READY", " | ".join(f.message for f in report.findings))
@@ -233,3 +233,19 @@ class RefusalTest(_Tmp):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignFlagsTest(unittest.TestCase):
+    def test_signing_uses_a_bundle_and_makes_no_network_call(self) -> None:
+        """cosign v3 removed --output-signature and --tlog-upload; signing with --key and
+        no signing config contacts nothing, which is exactly the property we want."""
+        with mock.patch.object(pm.shutil, "which", return_value="/usr/bin/cosign"), \
+             mock.patch.object(pm.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stderr="")) as run:
+            pm.sign(Path("/tmp/manifest.json"), "awskms:///alias/k", Path("/tmp/out.bundle"))
+        argv = list(run.call_args[0][0])
+        self.assertEqual(argv[:2], ["cosign", "sign-blob"])
+        self.assertIn("--bundle", argv)
+        self.assertIn("--yes", argv)
+        for gone in ("--output-signature", "--tlog-upload", "--tlog-upload=false"):
+            self.assertNotIn(gone, argv, f"{gone} da bi cosign v3 bo")

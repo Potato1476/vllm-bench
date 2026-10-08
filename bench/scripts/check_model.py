@@ -45,6 +45,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SIGNERS_DIR = REPO_ROOT / "deploy" / "signers"
 CHART_VALUES = REPO_ROOT / "charts" / "vllm" / "values.yaml"
 
+# Cosign v3 emits a bundle: the signature plus its verification metadata, in one JSON
+# file. Named for what it is rather than kept as manifest.json.sig, which would describe
+# a bare-signature format this no longer is.
+SIGNATURE_FILE = "manifest.bundle"
+
 GATE_VALID = "valid"
 GATE_COMPATIBLE = "compatible"
 
@@ -246,7 +251,7 @@ def verify_signature(source: Source, signers_dir: Path, allowed: Iterable[str] |
         raise CheckError(f"khong co thu muc khoa cong khai: {signers_dir}")
 
     manifest = source.read_bytes("manifest.json")
-    signature = source.read_bytes("manifest.json.sig")
+    signature = source.read_bytes(SIGNATURE_FILE)
 
     candidates = sorted(p for p in signers_dir.glob("*.pub"))
     if allowed is not None:
@@ -263,18 +268,23 @@ def verify_signature(source: Source, signers_dir: Path, allowed: Iterable[str] |
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         blob = Path(tmp) / "manifest.json"
-        sig = Path(tmp) / "manifest.json.sig"
+        sig = Path(tmp) / SIGNATURE_FILE
         blob.write_bytes(manifest)
         sig.write_bytes(signature)
         for key in candidates:
+            # --bundle, not --signature: cosign v3 writes signature and verification
+            # metadata together and v2's bare-signature flags are gone. tlog verification
+            # is skipped because signing with a key never wrote to it -- see publish's
+            # sign(). Cosign prints a warning about that on every call; the return code is
+            # what decides, not the noise on stderr.
             proc = subprocess.run(
                 ["cosign", "verify-blob", "--key", str(key),
-                 "--signature", str(sig), "--insecure-ignore-tlog=true", str(blob)],
+                 "--bundle", str(sig), "--insecure-ignore-tlog=true", str(blob)],
                 capture_output=True, check=False, timeout=120)
             if proc.returncode == 0:
                 return key.stem
     raise CheckError(
-        "khong khoa cong khai nao duoc phep xac minh duoc manifest.json.sig "
+        "khong khoa cong khai nao duoc phep xac minh duoc manifest.bundle "
         f"(da thu: {', '.join(p.stem for p in candidates)})")
 
 
@@ -361,7 +371,7 @@ def check(
         if "_READY" not in listing:
             report.fail(GATE_VALID, "khong co _READY -- version dang duoc ghi dang do")
             return report
-        for name in ("manifest.json", "manifest.json.sig"):
+        for name in ("manifest.json", SIGNATURE_FILE):
             if name not in listing:
                 report.fail(GATE_VALID, f"thieu {name}")
         if not report.ok:
@@ -467,7 +477,7 @@ def _check_files(
     # unlisted file is unsigned content sitting in the same directory the engine loads
     # from -- which is how an extra config, adapter or tokenizer override gets served
     # without ever having been signed for.
-    metadata = {"manifest.json", "manifest.json.sig", "_READY"}
+    metadata = {"manifest.json", SIGNATURE_FILE, "_READY"}
     for path in sorted(set(listing) - set(declared) - metadata):
         report.fail(GATE_VALID, f"{path} co tren nguon nhung khong co trong manifest")
 

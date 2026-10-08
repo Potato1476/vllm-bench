@@ -149,7 +149,7 @@ s3://<bucket>/models/<tên-model>/<version>/
   config.json, tokenizer*, generation_config.json
   *.safetensors                 # CHỈ safetensors
   manifest.json                 # xem dưới
-  manifest.json.sig             # chữ ký của bên ghi
+  manifest.bundle               # chữ ký (bundle cosign v3) của bên ghi
   _READY                        # ghi CUỐI CÙNG
 ```
 
