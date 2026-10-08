@@ -6,11 +6,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vllm-{{ $key }}
+  # Prefixed by the release, not a fixed "vllm-". Under CD every track and every
+  # candidate is its own Helm release in one namespace, and all of them render
+  # mode: solo-a -- so a fixed name made three releases fight over one Deployment.
+  # `make vllm-up` uses the release name "vllm", so this still reads vllm-a / vllm-b
+  # exactly as before.
+  name: {{ $root.Release.Name }}-{{ $key }}
   namespace: {{ $root.Release.Namespace }}
   labels:
     app: vllm-server
     model-class: {{ $key }}
+    # The release, in the SELECTOR as well as here. Names colliding is loud -- Helm
+    # refuses to adopt a resource another release owns. Selectors colliding is silent and
+    # far worse: with only app+model-class, one track's Service matches the other track's
+    # pods, and requests for Qwen are answered by Llama with nothing reporting a fault.
+    release: {{ $root.Release.Name }}
   annotations:
     # Recorded here so `kubectl describe` answers "which configuration produced this
     # number" without cross-referencing anything.
@@ -38,11 +48,13 @@ spec:
     matchLabels:
       app: vllm-server
       model-class: {{ $key }}
+      release: {{ $root.Release.Name }}
   template:
     metadata:
       labels:
         app: vllm-server
         model-class: {{ $key }}
+        release: {{ $root.Release.Name }}
     spec:
       serviceAccountName: {{ $root.Values.serviceAccount.name }}
 

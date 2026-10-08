@@ -27,6 +27,10 @@ from bench.scripts import rollout_state as rs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Filenames carry the slug, not the model name: a Service name may not contain a dot.
+SLUG_STABLE = f"vllm-{rs.k8s_name('qwen2.5-7b')}-stable.yaml"
+SLUG_CANDIDATE = f"vllm-{rs.k8s_name('qwen2.5-7b')}-candidate.yaml"
+
 STABLE = {"weights": "models/moc-7b/2026-11-02-r3", "engine": "vllm/vllm-openai:v0.29.0"}
 CANDIDATE = {"weights": "models/moc-7b/2026-11-20-r1", "engine": "vllm/vllm-openai:v0.29.0"}
 
@@ -278,23 +282,23 @@ class RenderTest(_Tmp):
 
     def test_an_idle_track_renders_one_application(self) -> None:
         files = self.render(make(rs.IDLE))
-        self.assertEqual(sorted(files), ["vllm-qwen2.5-7b-stable.yaml"])
+        self.assertEqual(sorted(files), [SLUG_STABLE])
 
     def test_a_candidate_adds_its_own_application(self) -> None:
         files = self.render(make(rs.EVALUATING))
-        self.assertIn("vllm-qwen2.5-7b-candidate.yaml", files)
+        self.assertIn(SLUG_CANDIDATE, files)
 
     def test_abandoning_a_candidate_stops_generating_its_file(self) -> None:
         """How a rejected candidate releases its GPU: the file stops being generated, the
         PR deletes it, and the root app-of-apps prunes the Application. Left behind, it
         would still hold one of the four cards -- and would come back tomorrow when the
         cluster is rebuilt from git."""
-        self.assertNotIn("vllm-qwen2.5-7b-candidate.yaml", self.render(make(rs.IDLE)))
+        self.assertNotIn(SLUG_CANDIDATE, self.render(make(rs.IDLE)))
 
     def test_account_specific_values_never_reach_the_rendered_file(self) -> None:
         """This repo is public and Argo CD syncs from it. The bucket name carries the
         account ID, so it comes from a ConfigMap written by `make cluster-config`."""
-        content = self.render(make(rs.IDLE))["vllm-qwen2.5-7b-stable.yaml"]
+        content = self.render(make(rs.IDLE))[SLUG_STABLE]
         self.assertIn("clusterConfigMap", content)
         self.assertNotIn("artifactsBucket", content)
         self.assertNotIn("roleArn", content)
@@ -305,14 +309,14 @@ class RenderTest(_Tmp):
         body = make(rs.IDLE)
         body["qwen2.5-7b"]["stable"]["engine"] = "vllm/vllm-openai@sha256:" + "c" * 64
         values = yaml.safe_load(
-            self.render(body)["vllm-qwen2.5-7b-stable.yaml"]
+            self.render(body)[SLUG_STABLE]
         )["spec"]["source"]["helm"]["valuesObject"]
         self.assertEqual(values["image"]["digest"], "sha256:" + "c" * 64)
         self.assertEqual(values["image"]["repository"], "vllm/vllm-openai")
 
     def test_a_tag_is_joined_with_a_colon(self) -> None:
         values = yaml.safe_load(
-            self.render(make(rs.IDLE))["vllm-qwen2.5-7b-stable.yaml"]
+            self.render(make(rs.IDLE))[SLUG_STABLE]
         )["spec"]["source"]["helm"]["valuesObject"]
         self.assertEqual(values["image"]["tag"], "v0.29.0")
         self.assertNotIn("digest", values["image"])
@@ -321,7 +325,7 @@ class RenderTest(_Tmp):
         """Prune on, so a deleted file removes the workload. Self-heal off, so Argo does
         not fight a `kubectl scale` during an incident -- which is exactly when someone
         needs the cluster to stay where they put it."""
-        app = yaml.safe_load(self.render(make(rs.IDLE))["vllm-qwen2.5-7b-stable.yaml"])
+        app = yaml.safe_load(self.render(make(rs.IDLE))[SLUG_STABLE])
         automated = app["spec"]["syncPolicy"]["automated"]
         self.assertTrue(automated["prune"])
         self.assertFalse(automated["selfHeal"])
@@ -382,3 +386,49 @@ class TierTest(_Tmp):
         """A tier without an entry would raise KeyError at render time -- inside the step
         that writes what the cluster runs."""
         self.assertEqual(set(rs.TIER_CARDS), rs.TIERS)
+
+
+class UpstreamUrlTest(unittest.TestCase):
+    """The route the guardrail uses must name the Service the chart actually creates.
+
+    These are produced by two different files, and when they disagree the guardrail
+    reports the upstream as unreachable -- which reads as the engine being down, not as
+    the route being wrong. So the test renders the chart and compares.
+    """
+
+    def _service_names(self, release: str) -> set[str]:
+        import subprocess
+        out = subprocess.run(
+            ["helm", "template", release, str(ROOT / "charts" / "vllm"),
+             "--set", "clusterConfigMap=cc", "--set", "mode=solo-a"],
+            capture_output=True, text=True, check=False, timeout=120)
+        if out.returncode != 0:
+            self.skipTest("khong chay duoc helm")
+        names, kind = set(), None
+        for doc in out.stdout.split("\n---\n"):
+            if "kind: Service" in doc:
+                for line in doc.splitlines():
+                    if line.startswith("  name: "):
+                        names.add(line.split("name: ", 1)[1].strip())
+                        break
+        return names
+
+    def test_the_url_names_the_service_the_chart_renders(self) -> None:
+        track = "qwen2.5-7b"
+        release = f"vllm-{rs.k8s_name(track)}-stable"
+        rendered = self._service_names(release)
+        host = rs.upstream_url(track).split("//", 1)[1].split(".", 1)[0]
+        self.assertIn(host, rendered,
+                      f"guardrail goi {host}, chart tao {sorted(rendered)}")
+
+    def test_a_dot_never_reaches_a_service_name(self) -> None:
+        """A Service name is an RFC 1035 label: no dots. A Deployment name is an RFC 1123
+        subdomain and allows them, so half the release renders before the Service fails."""
+        self.assertNotIn(".", rs.k8s_name("qwen2.5-7b"))
+        self.assertNotIn(".", rs.upstream_url("qwen2.5-7b").split("//")[1].split(".")[0])
+
+    def test_stable_and_candidate_get_different_upstreams(self) -> None:
+        """They are separate Services now. Canary splits between these two URLs by weight
+        in the guardrail, which is why the split does not live in pod counts."""
+        self.assertNotEqual(rs.upstream_url("qwen2.5-7b", "stable"),
+                            rs.upstream_url("qwen2.5-7b", "candidate"))

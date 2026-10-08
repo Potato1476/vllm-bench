@@ -73,6 +73,17 @@ NEEDS_CANDIDATE = {EVALUATING, CANARY}
 # in terraform/cluster/eks.tf with a matching `tier` label and taint.
 TIERS = {"main", "light"}
 
+
+def k8s_name(track: str) -> str:
+    """A track name Kubernetes will accept as part of a Service name.
+
+    Model names carry dots -- qwen2.5-7b -- and a Service name may not: it has to be an
+    RFC 1035 label, letters digits and hyphens only. Deployment names are RFC 1123
+    subdomains and DO allow dots, so the mistake renders half a release successfully and
+    then fails on the Service, which reads as a cluster problem rather than a naming one.
+    """
+    return track.replace(".", "-")
+
 # How many cards each tier has. Main is four because the approved G quota is 16 vCPU and
 # every .xlarge is four of them; light is one and stays one until that quota rises, since
 # the four main cards are exactly what 7B needs for 50 req/s at 12.5 req/s per card.
@@ -467,16 +478,34 @@ def render(state: State, out_dir: Path = DEPLOY_DIR) -> dict[Path, str]:
     """
     files: dict[Path, str] = {}
     for name, track in sorted(state.tracks.items()):
-        files[out_dir / "argocd" / "apps" / f"vllm-{name}-stable.yaml"] = _application(
-            f"vllm-{name}-stable",
+        slug = k8s_name(name)
+        files[out_dir / "argocd" / "apps" / f"vllm-{slug}-stable.yaml"] = _application(
+            f"vllm-{slug}-stable",
             _release_values(track, track.stable, served_name=name,
                             replicas=TIER_CARDS[track.tier] - (1 if track.candidate else 0)))
         if track.candidate:
             served = f"{name}-candidate" if track.phase == EVALUATING else name
-            files[out_dir / "argocd" / "apps" / f"vllm-{name}-candidate.yaml"] = _application(
-                f"vllm-{name}-candidate",
+            files[out_dir / "argocd" / "apps" / f"vllm-{slug}-candidate.yaml"] = _application(
+                f"vllm-{slug}-candidate",
                 _release_values(track, track.candidate, served_name=served, replicas=1))
     return files
+
+
+def upstream_url(track: str, role: str = "stable", namespace: str = "inference") -> str:
+    """Where the guardrail should send this track's requests.
+
+    Derived from the same slug the Application is named after, so the route and the
+    Service cannot disagree. Each release owns its own Service now; during canary the
+    guardrail holds both URLs and splits between them by weight, which is why the split
+    lives there rather than in pod counts.
+    """
+    # The trailing "-a" is the chart's model key, not decoration: every CD release renders
+    # mode: solo-a, so the Service is <release>-a. Leaving it off produces a name that
+    # resolves to nothing, and the guardrail reports the upstream as unreachable rather
+    # than the route as wrong. tests/test_rollout_state.py renders the chart and asserts
+    # this string matches, so the two cannot drift.
+    return (f"http://vllm-{k8s_name(track)}-{role}-a.{namespace}"
+            ".svc.cluster.local:8000/v1")
 
 
 def _application(name: str, values: dict) -> str:

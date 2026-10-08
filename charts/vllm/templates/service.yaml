@@ -5,19 +5,23 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: vllm-{{ $key }}
+  name: {{ $root.Release.Name }}-{{ $key }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    # The ServiceMonitor selects on app=vllm-server and matches BOTH services, so
+    # The ServiceMonitor selects on app=vllm-server and matches EVERY vllm service, so
     # Prometheus scrapes each model. They stay apart in the data because vLLM tags every
     # series with model_name -- which is why the recording rules aggregate by it.
     app: vllm-server
     model-class: {{ $key }}
+    release: {{ $root.Release.Name }}
 spec:
   type: ClusterIP
   selector:
     app: vllm-server
     model-class: {{ $key }}
+    # Without the release here, this Service matches another track's pods too, because
+    # every CD release renders mode: solo-a and therefore model-class: a.
+    release: {{ $root.Release.Name }}
   ports:
     # MUST be named: the ServiceMonitor references the port by name, never by number.
     - name: http
