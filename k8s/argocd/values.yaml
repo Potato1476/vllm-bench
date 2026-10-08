@@ -1,0 +1,62 @@
+# Argo CD cho cum DA#51.
+#
+# Cum nay khong giong cum Argo CD thuong duoc cai len: no bi HUY MOI TOI va dung lai
+# moi sang. Moi lua chon duoi day deu la phan ung voi mot trong hai dieu do, hoac voi
+# viec node tooling da chat.
+#
+# NODE TOOLING DA CHAT. Ngay 07/10 hai node tooling da bi dat 67-73% CPU va job k6 phai
+# bat node thu ba moi chay duoc. Argo CD mac dinh xin nhieu hon muc can cho mot cum co
+# dung hai Application, va mot pod khong xep duoc chi hien ra la Pending -- doc nhu mot
+# truc trac lap lich chu khong nhu mot sai sot ve kich thuoc. Vi vay cpu_desired = 3
+# trong terraform/cluster/variables.tf, va moi thanh phan duoi day deu khai requests.
+
+global:
+  nodeSelector:
+    workload: tooling
+
+# Khong dung HA. Mot ban sao la du cho hai Application, va cum nay song chua toi muoi
+# hai tieng moi lan.
+redis-ha:
+  enabled: false
+controller:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+repoServer:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+server:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  # Khong ingress. Giao dien xem qua `kubectl port-forward`, giong Grafana truoc khi co
+  # ingress: mot giao dien quan tri co quyen sua moi thu trong cum khong nen co mat tren
+  # Internet trong mot cum ma chung ta co tinh mo cong khai phan chat.
+  extraArgs:
+    - --insecure          # TLS ket thuc o port-forward; khong co ingress de lam viec do
+applicationSet:
+  # Chua dung. Bat len khi so track vuot qua mot.
+  enabled: false
+notifications:
+  enabled: false
+dex:
+  # Dang nhap local admin. Khong co IdP de noi toi, va mot cum song mot buoi thi khong
+  # dang dung mot cach dang nhap can cau hinh ngoai.
+  enabled: false
+
+configs:
+  params:
+    # Dong bo 3 phut mot lan thay vi 3 phut mac dinh cua Argo cho thu muc git: mot buoc
+    # rollout ghi vao git roi cho Argo thay no, nen do tre nay nam thang trong thoi gian
+    # moi dot rollout.
+    timeout.reconciliation: 180s
+  cm:
+    # Bo qua chenh lech o nhung truong do thu khac ghi. Khong co dong nay, moi
+    # Application hien Degraded vi HPA hoac vi webhook da sua manifest, va trang thai
+    # "co lech so voi git" mat het y nghia canh bao.
+    resource.compareoptions: |
+      ignoreAggregatedRoles: true

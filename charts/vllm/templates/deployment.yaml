@@ -172,8 +172,21 @@ spec:
               # this the only symptom of a misconfigured node is "the sync got slower".
               df -h /weights | tail -1
           env:
+{{- if $root.Values.artifactsBucket }}
+            - name: S3_BUCKET
+              value: {{ $root.Values.artifactsBucket | quote }}
+{{- else }}
+            # Tu ConfigMap trong cum, khong phai tu values. Ten bucket chua account ID,
+            # va Argo CD dong bo tu mot repo cong khai -- nen gia tri nay khong the nam
+            # trong git. `make cluster-config` tao ConfigMap nay tu terraform output.
+            - name: S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $root.Values.clusterConfigMap }}
+                  key: artifactsBucket
+{{- end }}
             - name: S3_MODEL_URI
-              value: "s3://{{ $root.Values.artifactsBucket }}/{{ include "vllm.s3Prefix" (dict "root" $root "key" $key) }}/"
+              value: "s3://$(S3_BUCKET)/{{ include "vllm.s3Prefix" (dict "root" $root "key" $key) }}/"
             # Default true. The escape hatch exists for the four checkpoints published by
             # hand before the contract existed, which carry no manifest; it is not a knob
             # to reach for when verification fails, because a failure there means the
@@ -192,7 +205,7 @@ spec:
 
       containers:
         - name: vllm
-          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+          image: {{ include "vllm.engineImage" $root | quote }}
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           args:
             - --model=/weights

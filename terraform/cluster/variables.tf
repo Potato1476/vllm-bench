@@ -76,9 +76,25 @@ variable "cpu_instance_type" {
 }
 
 variable "cpu_desired" {
-  description = "Tooling nodes for gateway, guardrail and monitoring. Use 3 for the three-replica HA profile."
+  description = "Tooling nodes for gateway, guardrail, monitoring and Argo CD."
   type        = number
-  default     = 2
+
+  # 3, raised from 2 when Argo CD joined the tooling tier.
+  #
+  # Two was already tight: on 2026-10-07 the two nodes sat at 67% and 73% CPU with 625m
+  # and 510m free, and the k6 job -- which requests 1000m -- had to have a third node
+  # switched on by hand before it would schedule. Argo CD adds another 350m across five
+  # workloads on top of that.
+  #
+  # The cost of being wrong is not an error. A pod that does not fit sits Pending with
+  # "Insufficient cpu", which reads as a scheduling hiccup rather than as a sizing
+  # mistake, and the thing that fails is whichever component happened to restart last.
+  #
+  # READ THE COMMENT IN eks.tf BEFORE EXPECTING AN APPLY TO CHANGE A RUNNING CLUSTER:
+  # the upstream module ignores desired_size after creation, so this value only takes
+  # effect when the node group is created. That is every morning here, which is why
+  # committing it is the fix rather than a formality.
+  default = 3
 
   validation {
     condition     = var.cpu_desired >= 1 && var.cpu_desired <= 3 && floor(var.cpu_desired) == var.cpu_desired

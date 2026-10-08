@@ -1,0 +1,45 @@
+# SINH RA TU deploy/state.yaml -- dung sua tay.
+# Sinh lai: python3 bench/scripts/rollout_state.py render
+# PR check sinh lai va so sanh, nen mot ban sua tay se bi bat o day chu khong phai
+# o cum luc 3 gio sang.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vllm-qwen2.5-7b-stable
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Potato1476/vllm-bench.git
+    targetRevision: main
+    path: charts/vllm
+    helm:
+      valuesObject:
+        mode: solo-a
+        quantization: none
+        clusterConfigMap: cluster-config
+        replicaCount: 4
+        verifyManifest: false
+        image:
+          repository: vllm/vllm-openai
+          tag: v0.29.0
+        models:
+          a:
+            servedName: qwen2.5-7b
+            s3Prefix: models/Qwen2.5-7B-Instruct-AWQ
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: inference
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        maxDuration: 5m

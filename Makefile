@@ -26,6 +26,9 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	ha-preflight guardrail-image guardrail-up guardrail-diff guardrail-down \
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key agent-keys-list \
+	cluster-config argocd-up argocd-status argocd-password rollout-render rollout-check \
+	rollout-pause rollout-resume \
+	model-check model-publish \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
 	snapshot cleanup-volumes orphans nodes-zero teardown-check kill-nodes datasets datasets-check runner-image model-fetch models-awq \
@@ -648,6 +651,75 @@ webui-logo: ## Build the branding ConfigMap from local files. LOGO_DIR=<dir with
 	@echo "Xac nhan duong dan static o lan deploy dau -- sai duong dan KHONG bao loi:"
 	@echo "  kubectl -n $(NS) exec deploy/webui -- sh -c 'echo \$$STATIC_DIR; ls \$$STATIC_DIR'"
 
+# --- CD: rollout model va image qua Argo CD ----------------------------------
+# Trang thai nam trong deploy/state.yaml, khong nam trong cum. Cum bi huy moi toi, nen
+# bat ky thu gi mot bo dieu khien nho trong cum -- rang ung vien nay da bi loai, rang
+# dot roll moi di duoc nua chung -- deu chet theo no.
+
+cluster-config: ## Dua gia tri rieng cua tai khoan vao cum, de Argo khong can doc terraform
+# artifactsBucket chua account ID va roleArn la mot ARN; ca hai khong duoc nam trong git
+# vi repo nay cong khai va Argo CD dong bo tu chinh no. `make vllm-up` tiem thang tu
+# terraform output; Argo thi khong chay duoc terraform, nen doc tu ConfigMap nay va tu
+# ServiceAccount duoi day.
+	@arn=$$($(TF) output -raw vllm_role_arn 2>/dev/null); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null); \
+	[ -n "$$arn" ] && [ -n "$$bkt" ] || { echo "thieu terraform output -- da apply core va cluster chua?"; exit 1; }; \
+	kubectl create namespace inference --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n inference create configmap cluster-config \
+		--from-literal=artifactsBucket="$$bkt" \
+		--dry-run=client -o yaml | kubectl apply -f -; \
+	kubectl -n inference create serviceaccount vllm --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n inference annotate serviceaccount vllm \
+		eks.amazonaws.com/role-arn="$$arn" --overwrite >/dev/null; \
+	echo "  cluster-config: bucket da ghi, serviceaccount vllm da gan role"
+
+argocd-up: ## Cai Argo CD va app-of-apps. Chay sau lab-up, truoc vllm-up
+	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
+	helm repo update >/dev/null
+	@python3 bench/scripts/rollout_state.py check-rendered
+	@$(MAKE) --no-print-directory cluster-config
+	helm upgrade --install argocd argo/argo-cd \
+		--version $(CHART_ARGOCD) -n argocd --create-namespace \
+		-f k8s/argocd/values.yaml --wait --timeout 10m
+	kubectl apply -f deploy/argocd/root.yaml
+	@echo
+	@echo "Argo CD dang dong bo tu git. Theo doi: make argocd-status"
+	@echo "Mo giao dien:  kubectl -n argocd port-forward svc/argocd-server 8080:443"
+	@echo "Mat khau admin: make argocd-password"
+
+argocd-status: ## Argo dang chay bang nao, va co lech so voi git khong
+	@kubectl -n argocd get applications.argoproj.io \
+		-o custom-columns=APP:.metadata.name,DONGBO:.status.sync.status,SUCKHOE:.status.health.status \
+		--no-headers 2>/dev/null || echo "  chua cai Argo CD -- chay 'make argocd-up'"
+	@echo
+	@python3 bench/scripts/rollout_state.py validate
+
+argocd-password: ## Mat khau admin ban dau cua Argo CD
+	@kubectl -n argocd get secret argocd-initial-admin-secret \
+		-o jsonpath='{.data.password}' 2>/dev/null | base64 -d; echo
+
+rollout-render: ## Sinh lai deploy/values va deploy/argocd/apps tu state.yaml
+	@python3 bench/scripts/rollout_state.py render
+
+rollout-check: ## Kiem state.yaml hop le va cac file sinh ra khong lech (dung trong CI)
+	@python3 bench/scripts/rollout_state.py validate
+	@python3 bench/scripts/rollout_state.py check-rendered
+
+rollout-pause: ## Dung moi rollout. BAT BUOC truoc khi do tai. REASON="..."
+	@python3 bench/scripts/rollout_state.py pause --reason "$(REASON)"
+
+rollout-resume: ## Cho phep rollout chay lai
+	@python3 bench/scripts/rollout_state.py resume
+
+model-check: ## Kiem mot version model trong S3 truoc khi tin no. SOURCE=s3://...
+	@test -n "$(SOURCE)" || { echo "can SOURCE=s3://bucket/models/<ten>/<version>/"; exit 1; }
+	@python3 bench/scripts/check_model.py --source "$(SOURCE)"
+
+model-publish: ## Xuat ban mot thu muc trong so theo hop dong. FROM= NAME= VERSION= SERVED= SIGNER=
+	@python3 bench/scripts/publish_model.py --from "$(FROM)" --name "$(NAME)" \
+		--version "$(VERSION)" --served-name "$(SERVED)" --signer "$(SIGNER)" \
+		--bucket "$(ARTIFACTS)"
+
 agent-keys-list: ## Show every key, its quota and spend, and whether we can still hand it out
 # Reads BOTH sides and compares them, which is the point. LiteLLM stores only a hash, so
 # "the gateway accepts this key" and "we can still give this key to a team" are different
@@ -788,6 +860,7 @@ tunnel-down: ## Disconnect the tunnel. The hostname stays claimed in Cloudflare.
 # --- Monitoring stack -------------------------------------------------------
 CHART_GPU_OPERATOR ?= v26.7.0
 CHART_KPS          ?= 91.4.1
+CHART_ARGOCD    ?= 10.10.1   # app v3.5.4 -- tra bang `helm search repo argo/argo-cd --versions`
 
 monitoring-secret: ## Generate the Grafana admin password into a Secret (printed once)
 	@pw=$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24); \

@@ -79,11 +79,18 @@ Refuse a configuration that cannot physically start, rather than letting it fail
 OOM twenty minutes into a measurement window.
 */}}
 {{- define "vllm.validate" -}}
+{{/* Hai gia tri nay chua account ID nen khong duoc nam trong git. Co hai duong vao:
+     `make vllm-up` truyen thang tu terraform output, con Argo CD -- von dong bo tu mot
+     repo cong khai va khong chay duoc terraform -- de trong va lay tu ConfigMap
+     clusterConfigMap, do `make cluster-config` tao trong cum. Thieu ca hai thi pod se
+     len roi hong luc sync trong so, nen bat o day. */}}
+{{- if not .Values.clusterConfigMap -}}
 {{- if not .Values.artifactsBucket -}}
-{{- fail "artifactsBucket is empty -- run through `make vllm-up`, which reads it from terraform output" -}}
+{{- fail "artifactsBucket is empty -- run through `make vllm-up`, or set clusterConfigMap" -}}
 {{- end -}}
 {{- if not .Values.roleArn -}}
-{{- fail "roleArn is empty -- run through `make vllm-up`, which reads it from terraform output" -}}
+{{- fail "roleArn is empty -- run through `make vllm-up`, or set clusterConfigMap" -}}
+{{- end -}}
 {{- end -}}
 {{- if eq .Values.mode "shared" -}}
 {{- $cpu := addf (float64 .Values.models.a.resources.shared.requests.cpu) (float64 .Values.models.b.resources.shared.requests.cpu) -}}
@@ -121,5 +128,22 @@ render-time failure that names the fix.
 {{- fail (printf "model %s does not fit: %s weights need %.1f GiB, but --gpu-memory-utilization=%v of a %.1f GiB card is %.1f GiB, leaving %.1f GiB for the KV cache (minimum %.1f). Fix by setting quantization: awq, or by raising gpuMemory for this model in mode %s."
     $key $root.Values.quantization $weights $gmu $root.Values.gpuMemoryGiB $share $kv $root.Values.minKvCacheGiB $root.Values.mode) -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The engine image reference.
+
+A digest is joined with "@" and a tag with ":", and getting that wrong does not fail --
+`repo:sha256:abc…` is a perfectly legal reference to a TAG called "sha256:abc…", which
+simply does not exist, so the only symptom is ImagePullBackOff with a message that reads
+like a registry problem. deploy/state.yaml pins by digest, so this path is the normal one.
+*/}}
+{{- define "vllm.engineImage" -}}
+{{- $image := .Values.image -}}
+{{- if $image.digest -}}
+{{- printf "%s@%s" $image.repository $image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $image.repository $image.tag -}}
 {{- end -}}
 {{- end -}}

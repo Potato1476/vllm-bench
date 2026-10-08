@@ -84,6 +84,12 @@ fetcher:
 # Both supplied by `make vllm-up` from terraform output. Never committed: the IRSA role
 # is recreated with every cluster, and an ARN in git both leaks the account number and
 # goes stale silently.
+# Ten ConfigMap trong namespace inference chua artifactsBucket. Dung khi Argo CD cai
+# chart nay: Application nam trong git cong khai, nen khong duoc chua ten bucket (co
+# account ID trong do). `make cluster-config` tao ConfigMap tu terraform output.
+# Khi artifactsBucket duoi day co gia tri, no thang va ConfigMap bi bo qua.
+clusterConfigMap: ""
+
 artifactsBucket: ""
 roleArn: ""
 

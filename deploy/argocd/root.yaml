@@ -1,0 +1,30 @@
+# App-of-apps. Day la thu DUY NHAT duoc apply bang tay (qua `make argocd-up`); moi
+# Application khac deu nam trong deploy/argocd/apps/ va do Argo tu dong bo tu git.
+#
+# Vi sao can lop nay: khi mot ung vien bi bo, PR cua bot xoa file Application cua no.
+# Khong co root app voi prune bat, Argo khong biet file da bien mat va ung vien bi loai
+# van chiem mot trong bon card -- mai sau dung lai cum thi no van len.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Potato1476/vllm-bench.git
+    targetRevision: main
+    path: deploy/argocd/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true        # xoa Application khi file bi xoa khoi git
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
