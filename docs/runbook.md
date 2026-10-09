@@ -628,6 +628,16 @@ dịch cả đường lên — nghĩa là không thể trừ đi sau khi đo xon
 
 ## Bẫy đã biết
 
+- **`lab-down` treo 5 phút ở `kubectl delete namespace`, không phải vì mạng.** Namespace
+  kẹt ở `Terminating` vì APIService `v1beta1.metrics.k8s.io` còn sót sau khi
+  metrics-server đã bị xoá: Kubernetes không hoàn tất discovery được nên từ chối kết thúc
+  việc xoá, **dù chính nó báo "All content successfully removed"**. Mọi nội dung đã sạch;
+  chỉ cái vỏ discovery chặn. Xem nguyên nhân thật bằng
+
+      kubectl get ns <ten> -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}'
+
+  rồi gỡ bằng `kubectl delete apiservice v1beta1.metrics.k8s.io`. Việc huỷ đi tiếp ngay.
+  Bỏ qua thì vẫn xong, chỉ mất trọn 5 phút timeout cho mỗi namespace còn lại.
 - **GPU Operator xung đột driver.** AMI `AL2023_x86_64_NVIDIA` đã cài sẵn driver NVIDIA,
   container toolkit và device plugin. Khi cài NVIDIA GPU Operator lên trên, bắt buộc đặt
   `driver.enabled=false`, `toolkit.enabled=false`, `devicePlugin.enabled=false`. Bỏ qua
