@@ -12,7 +12,7 @@ Kế hoạch tuần 4 là **FinOps** và **đưa nền tảng vào tay người 
 
 Phần FinOps **đã xong và các con số đã đổi**, theo hướng khắt khe hơn. Phần người dùng thật **chưa đạt**: TC4 vẫn 0/7, và lý do không nằm ở kỹ thuật.
 
-Tuần 4 phát sinh một khối công việc lớn không có trong kế hoạch: **luồng CI/CD**. Mentor của nhóm Deployment Quality Gate nêu rằng không có luồng CD đưa model mới ra phục vụ thì các cổng kiểm tra phía trước không có chỗ tác động. Nhóm đánh giá nhận xét này đúng và đã dựng phần đó trong tuần.
+Tuần 4 phát sinh một khối công việc lớn không có trong kế hoạch: **luồng CD**. Mentor của nhóm Deployment Quality Gate nêu rằng không có luồng CD đưa model mới ra phục vụ thì các cổng kiểm tra phía trước không có chỗ tác động. Nhóm đánh giá nhận xét này đúng và đã dựng phần đó trong tuần. Phần CI không dựng lại ở đây mà sẽ phối hợp với nhóm Deployment Quality Gate, nhóm đã có sẵn tầng quét và ký image.
 
 Tuần này cũng là tuần tìm ra **nhiều lỗi nhất từ đầu dự án** — mười bốn lỗi, phần lớn thuộc loại báo một kết quả sai mà không báo lỗi ở đâu. Mục 4 liệt kê đầy đủ.
 
@@ -65,34 +65,75 @@ Lần chạy đối kháng trên hệ thống đạt availability 100% và 100% 
 
 ---
 
-## 2. FinOps — số liệu đã đổi, theo hướng khắt khe hơn
+## 2. FinOps — Nguyễn Lê Minh
 
-Mô hình TC2 trước đây chạy trên **giả định** 1300 token vào / 45 token ra. Tuần này đo thật trên 34.275 request đã phục vụ, đọc từ trường `usage` do API trả về:
+Hai báo cáo đã hoàn thành và nằm trong repo.
 
-| | giả định cũ | **đo được 07/10** |
+### 2.1. Chi phí vận hành thực tế — [`reports/aws-continuous-cost-2026-10-07.md`](aws-continuous-cost-2026-10-07.md)
+
+Đối soát từ AWS Billing và AWS Price List, giai đoạn 01/09–06/10/2026:
+
+* **86,79 USD** chi phí `Usage` trước credit cho toàn tài khoản — EC2 Compute 60,32; EKS 22,81; RDS 1,72; VPC 0,64; EBS 0,61; S3 0,34; Cost Explorer API 0,33.
+* Đơn giá đã đối soát từ chính hoá đơn, không lấy từ bảng giá: `g5.xlarge` 1,006 USD/giờ, `g6.xlarge` 0,8048, `m7i.large` 0,1008.
+* Nếu giữ nguyên cấu hình 4 GPU A10G và chạy **liên tục**: **107,21 USD/ngày**, **3.216,25 USD/30 ngày**.
+
+Báo cáo nêu rõ một giới hạn quan trọng: **không được lấy chi phí lịch sử chạy lab theo giờ làm việc để suy ra chi phí production 24/7**. Cụm chỉ bật vào 8 ngày trong giai đoạn đó, và tag `project` chưa dùng được để phân bổ trong Cost Explorer, nên 86,79 USD xác nhận **đơn giá**, không phải tổng chi phí riêng của DA#51.
+
+### 2.2. TCO production 24/7 — [`reports/production-cost-estimation-tco-2026-10-05.md`](production-cost-estimation-tco-2026-10-05.md)
+
+Cấu hình tham chiếu **P2**: 2 GPU L4 + 4 CPU node + 2 Aurora instance + Redis có replica, trên 2 AZ. Chi phí giữ cấu hình **2.263,01 USD/30 ngày**.
+
+Tại **10 req/s trung bình 24/7**:
+
+| Phương án | Ngày | Tháng 30 ngày |
+|---|---|---|
+| **Tự host Qwen 7B, 2× L4 (P2)** | **76,47 USD** | **2.294,01 USD** |
+| Qwen2.5-7B / OpenRouter–Phala | 167,24 | 5.017,28 |
+| GPT-4o mini / OpenAI | 233,49 | 7.004,67 |
+| Gemini 3.5 Flash-Lite / Google | 480,08 | 14.402,46 |
+| Llama 3.1 8B / OpenRouter–DeepInfra | 64,11 | 1.923,24 |
+
+Điểm hoà vốn so với Qwen API: **khoảng 3,00 req/s**, tương đương 258.856 request/ngày. Tại 10 req/s, tự host rẻ hơn **2.723,27 USD/30 ngày**, bằng **54,3%** tổng chi phí hệ thống.
+
+Báo cáo giữ ba điều kiện đọc số mà nhóm đánh giá là phần giá trị nhất của nó:
+
+* **Dòng Llama rẻ hơn nhưng chưa xác nhận tương đương chất lượng.** Giá rẻ hơn không tự động là phương án thay thế phù hợp.
+* **Hoà vốn Llama 14,67 req/s vượt khả năng P2 giữ tải khi mất một AZ** (~10 req/s), nên không được quảng bá con số đó như một lời hứa.
+* **Tỷ lệ tiết kiệm phải ghi rõ mẫu số** là toàn hệ thống hay riêng inference; hai tỷ lệ không thay thế nhau.
+
+### 2.3. Token đã đo lại — các con số trên cần cập nhật
+
+Cả hai báo cáo dùng **giả định 1300 token vào / 45 token ra**. Tuần này đã đo thật trên **34.275 request đã phục vụ**, đọc từ trường `usage` do API trả về:
+
+| | giả định | **đo được 07/10** |
 |---|---|---|
 | Token vào | 1300 | **1142** |
 | Token ra (trung bình) | 45 | **36,5** |
-| Hệ số gọi lại | 1,0175 | **1,0168** — khớp, không cần sửa |
+| Hệ số gọi lại | 1,0175 | **1,0168** — khớp, giữ nguyên |
 
 Dùng trung bình chứ không dùng trung vị, vì chi phí tuyến tính theo token còn phân phối đầu ra bị lệch (p50 38, p90 65, max 192).
 
-**Điều này làm TC2 khó hơn, không dễ hơn.** Ít token mỗi request nghĩa là API bên ngoài rẻ hơn mỗi request, nên tự vận hành cần nhiều tải hơn mới thắng:
+**Điều này làm TC2 khó hơn, không dễ hơn.** Ít token mỗi request nghĩa là API bên ngoài rẻ hơn mỗi request, còn tự host vẫn trả tiền **thời gian thuê máy** chứ không trả theo token — nên tự host cần nhiều tải hơn mới thắng:
 
-| | trước | sau |
+| Theo mô hình P2 của Minh | công bố (1300/45) | **tính lại (1142/36,5)** |
 |---|---|---|
-| Hoà vốn | 1,75 req/s | **2,00 req/s** |
-| Đạt TC2 (tiết kiệm ≥30%) | 2,45 req/s | **2,85 req/s** |
+| Chi phí API mỗi 1.000 model call | 0,1466 USD | **0,1282 USD** (−12,6%) |
+| Điểm hoà vốn | ~3,00 req/s | **~3,43 req/s** |
+| Tiết kiệm tại 10 req/s | 2.723,27 USD (54,3%) | **~2.236 USD (49,4%)** |
 
-Chi tiêu thật trong giai đoạn: **86,79 USD** tổng, toàn bộ nằm trong credit. Trong đó **19,01 USD là phụ phí EKS extended support** — đã được chặn bằng một điều kiện Terraform từ chối plan nếu phiên bản Kubernetes không nằm trong standard support.
+Các số tính lại là **ước tính từ chính các tiểu mục đã công bố của Minh**, không phải chạy lại toàn bộ mô hình; việc tính lại chính thức thuộc tuần 5. Kết luận không đổi: **TC2 vẫn đạt ở 10 req/s** với biên 49,4% so với ngưỡng 30%, nhưng biên hẹp lại.
+
+Trên mô hình lab nhỏ hơn của nhóm (4 card, không có dự phòng AZ), cùng phép thay token làm hoà vốn dịch từ 1,75 lên **2,00 req/s** và ngưỡng tiết kiệm 30% từ 2,45 lên **2,85 req/s**.
 
 ---
 
-## 3. CI/CD — khối công việc lớn nhất của tuần
+## 3. Luồng CD — khối công việc lớn nhất của tuần
 
 ### 3.1. Vì sao làm
 
-Mentor nhóm Deployment Quality Gate nêu: nếu không có luồng CD đưa model mới ra phục vụ thì CI và các cổng chất lượng phía trước không có chỗ tác động. Nhóm đồng ý và dựng trong tuần.
+Mentor nhóm Deployment Quality Gate nêu: nếu không có luồng CD đưa model mới ra phục vụ thì các cổng chất lượng phía trước không có chỗ tác động. Nhóm đồng ý và dựng phần CD trong tuần.
+
+**Phạm vi phân chia rõ:** DA#51 làm **luồng CD** — hợp đồng model, các cổng kiểm, kiểm lúc nạp, máy trạng thái rollout và Argo CD. **Phần CI sẽ phối hợp với nhóm Deployment Quality Gate**, nhóm đã có sẵn tầng quét Trivy, Conftest, ký Cosign và policy Kyverno. Dựng lại những thứ đó ở đây là trùng việc.
 
 ### 3.2. Hợp đồng model
 
@@ -109,7 +150,7 @@ Bốn điều từ chối, mỗi điều có lý do cụ thể:
 
 ### 3.3. Kiểm lại lúc nạp
 
-Init container băm lại từng file sau khi sync xuống NVMe và từ chối khởi động nếu lệch hoặc thiếu manifest. CI chứng minh bucket đúng *tại thời điểm kiểm*; bước này chứng minh **đúng thứ GPU sắp mở**, trên mỗi lần pod khởi động. Nó cũng là thứ duy nhất chặn giữa việc một version bị ghi đè tại chỗ và việc bản ghi đè được phục vụ.
+Init container băm lại từng file sau khi sync xuống NVMe và từ chối khởi động nếu lệch hoặc thiếu manifest. Cổng kiểm phía trước chứng minh bucket đúng *tại thời điểm kiểm*; bước này chứng minh **đúng thứ GPU sắp mở**, trên mỗi lần pod khởi động. Nó cũng là thứ duy nhất chặn giữa việc một version bị ghi đè tại chỗ và việc bản ghi đè được phục vụ.
 
 Đã chạy thử trong chính image sẽ dùng: file nguyên vẹn qua, sửa một byte trượt, xoá manifest trượt.
 
@@ -129,7 +170,7 @@ Khoá công khai nằm trong git có chủ ý: thêm một bên được phép �
 
 Tới cuối tuần, phần đã dựng: hợp đồng model, các cổng, kiểm lúc nạp, máy trạng thái, Argo CD đồng bộ, hai track model.
 
-**Chưa có và vẫn làm tay:** Job đánh giá, Job canary, workflow GitHub, và định tuyến có trọng số trong guardrail. Chuyển giai đoạn hiện vẫn gõ lệnh.
+**Chưa có và vẫn làm tay:** Job đánh giá, Job canary, Job theo dõi sau promote, và định tuyến có trọng số trong guardrail. Chuyển giai đoạn hiện vẫn gõ lệnh.
 
 ---
 
@@ -199,15 +240,15 @@ Trọng tâm: **đóng TC4** và **tự động hoá nốt luồng CD**.
 
 * **TC4.** Bàn giao key và hướng dẫn tích hợp cho các đề án, mục tiêu ≥5 đề án gọi thật vào nền tảng. Đây là việc phối hợp, không phải việc code.
 * **Hoàn tất CD.** Job đánh giá, Job canary, Job theo dõi sau promote, và định tuyến có trọng số trong guardrail.
-* **CI trên GitHub Actions.** Tầng kiểm trên mỗi pull request, build và ký image guardrail trên `main`.
+* **Phối hợp CI với nhóm Deployment Quality Gate.** Chốt đường `include` gate của nhóm đó, và thống nhất policy `ML-001` kiểm trường nào để init container khai checksum đúng chỗ.
 * **Địa chỉ ổn định và TLS** qua Cloudflare Tunnel — hiện là điều kiện chặn với mọi đề án ở mạng khác.
 
 ### Nguyễn Lê Minh
 
 * **Cấu hình giá token trong LiteLLM**, để hạn mức có hiệu lực và TC2 tính được ngay trong gateway.
-* **Hoàn tất báo cáo TCO** với số token đã đo lại.
+* **Tính lại TCO với token 1142/36,5** — mục 2.3. Cập nhật điểm hoà vốn và tỷ lệ tiết kiệm trong cả hai báo cáo chi phí.
 * Tiếp tục phần warehouse: tính năng trả lời câu hỏi dữ liệu bằng SQLite read-only đã vào trong tuần.
 
 ### Ngân sách
 
-Chi tiêu tới nay **86,79 USD** trên hạn mức 200. Phiên demo dùng **2 node GPU** thay vì 4 — khoảng **2,4 USD/giờ** gồm cả tooling và Aurora, bằng một nửa cấu hình đo tải.
+Chi tiêu tới nay **86,79 USD** trên hạn mức 200 (đối soát trong báo cáo mục 2.1). Phiên demo dùng **2 node GPU** thay vì 4 — khoảng **2,4 USD/giờ** gồm cả tooling và Aurora, bằng một nửa cấu hình đo tải.
