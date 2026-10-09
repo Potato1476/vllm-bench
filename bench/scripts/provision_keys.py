@@ -188,6 +188,10 @@ def main() -> int:
     parser.add_argument("--master-key", required=True)
     parser.add_argument("--agents", type=Path, default=AGENTS)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--emit-secret", type=Path,
+                        help="ghi {alias: key} dang JSON ra file nay, de nguoi goi dua vao "
+                             "Secret. Khong in ra man hinh: ban ro chi nen di tu day sang "
+                             "cum, khong qua log cua terminal hay cua CI.")
     parser.add_argument("--rotate", action="store_true",
                         help="delete existing keys and mint new ones, so every key printed "
                              "is usable. The plaintext of an existing key cannot be read "
@@ -225,17 +229,36 @@ def main() -> int:
                         rotate=args.rotate, team_id=limit["team_id"])
 
     print()
-    print(f"  {'agent':18} {'trang thai':12} key")
+    # --- where the plaintext goes -------------------------------------------------
+    #
+    # LiteLLM stores only a hash, so a key not captured at this moment cannot be read
+    # back from the proxy later. Until now it was printed and nothing else, which left
+    # `make agent-key` and the key listing with nothing to show -- the whole handover
+    # story depends on a copy existing somewhere, and the terminal scrollback is not
+    # somewhere.
+    #
+    # With --emit-secret the plaintext goes to a file the caller feeds straight into the
+    # cluster Secret and deletes, and is NOT printed. A key on screen is a key in the
+    # terminal history, in a CI log, and in whatever is recording the demo.
+    emitting = getattr(args, "emit_secret", None)
+    print(f"  {'agent':18} {'trang thai':12} {'key' if not emitting else ''}")
     failures = 0
+    minted: dict[str, str] = {}
     for alias, status, token in results:
         if status.startswith("FAILED"):
             failures += 1
-        # Printed in full: these are freshly minted keys for a lab that is torn down
-        # tonight, and their whole purpose is to be handed to a client. They are never
-        # written to a file -- `make agent-keys` reads them back from the proxy.
-        shown = token if (status == "created" or not token) else "(khong doc lai duoc -- dung --rotate)"
+        elif status == "created" and token:
+            minted[alias] = token
+        if emitting:
+            shown = ""
+        else:
+            shown = token if (status == "created" or not token) else "(khong doc lai duoc -- dung --rotate)"
         print(f"  {alias:18} {status:12} {shown}")
     print()
+    if emitting:
+        emitting.write_text(json.dumps(minted, ensure_ascii=False), encoding="utf-8")
+        emitting.chmod(0o600)
+        print(f"  {len(minted)} key da ghi ra {emitting} (khong in ra man hinh).")
     if failures:
         print(f"  {failures} agent that bai.", file=sys.stderr)
         return 1

@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Báo cáo tiến độ Tuần 4 – DA#51</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm;
+    @bottom-left { content: "DA#51 · Báo cáo tiến độ Tuần 4"; font: 8pt Inter, Roboto, Helvetica, sans-serif; color: #6b7280; }
+    @bottom-right { content: counter(page) " / " counter(pages); font: 8pt Inter, Roboto, Helvetica, sans-serif; color: #6b7280; } }
+  :root { --ink:#111827; --muted:#6b7280; --line:#d1d5db; --head:#1e3a5f; --tint:#eef3f9; --ok:#166534; --okbg:#e8f5ec; --warn:#92400e; --warnbg:#fdf3e1; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.55 Inter, Roboto, "Helvetica Neue", Arial, sans-serif; color: var(--ink); margin: 0; }
+  header.doc { border-bottom: 2.5px solid var(--head); padding-bottom: 10px; margin-bottom: 14px; }
+  header.doc .kicker { font-size: 8.5pt; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  header.doc h1 { font-size: 20pt; margin: 2px 0 8px; color: var(--head); line-height: 1.2; }
+  .meta { display: grid; grid-template-columns: 90px 1fr; gap: 2px 10px; font-size: 9.5pt; }
+  .meta dt { color: var(--muted); } .meta dd { margin: 0; }
+  h2 { font-size: 13pt; color: var(--head); border-bottom: 1px solid var(--line); padding-bottom: 3px; margin: 22px 0 8px; break-after: avoid; }
+  h3 { font-size: 10.5pt; margin: 14px 0 4px; break-after: avoid; }
+  p { margin: 5px 0; } ul, ol { margin: 4px 0 6px; padding-left: 20px; } li { margin: 2px 0; }
+  code { font: 8.8pt "SF Mono", Menlo, Consolas, monospace; background: #f3f4f6; padding: 0 3px; border-radius: 3px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--head); color: #fff; font-weight: 600; }
+  tbody tr:nth-child(even) td { background: #f9fafb; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); background: var(--okbg); font-weight: 700; text-align: center; }
+  tr.hl td { background: var(--tint) !important; font-weight: 600; }
+  .note { border-left: 3px solid var(--head); background: var(--tint); padding: 6px 10px; margin: 8px 0; font-size: 9.3pt; break-inside: avoid; }
+  .note.warn { border-color: #d97706; background: var(--warnbg); }
+  figure { margin: 10px 0; break-inside: avoid; text-align: center; }
+  figure img { max-width: 100%; border: 1px solid var(--line); }
+  figcaption { font-size: 8.8pt; color: #374151; margin-top: 4px; text-align: left; }
+  figcaption b { color: var(--head); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pair figure { margin: 0; }
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 8px 0; break-inside: avoid; }
+  .flow div { border: 1px solid var(--line); border-top: 3px solid var(--head); padding: 5px 7px; font-size: 8.8pt; }
+  .flow b { display: block; font: 600 9pt "SF Mono", Menlo, monospace; color: var(--head); }
+  .flow span { color: var(--muted); font-size: 8pt; }
+  .kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; }
+  .kpi div { border: 1px solid var(--line); padding: 6px 8px; break-inside: avoid; }
+  .kpi b { display: block; font-size: 15pt; color: var(--head); } .kpi span { font-size: 8.3pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="kicker">Báo cáo tiến độ · Tuần 4</div>
+  <h1>Nền tảng Serving LLM nội bộ tích hợp Guardrail &amp; Observability</h1>
+  <dl class="meta">
+    <dt>Nhóm</dt><dd>DA#51 — Nguyễn Gia Bảo, Nguyễn Lê Minh</dd>
+    <dt>Giai đoạn</dt><dd>Tuần 4 (05/10 – 09/10/2026)</dd>
+    <dt>Ngày báo cáo</dt><dd>09/10/2026</dd>
+    <dt>Repository</dt><dd><code>github.com/Potato1476/vllm-bench</code> @ <code>main</code> (62142f8)</dd>
+  </dl>
+</header>
+
+<h2>Tóm tắt kết quả</h2>
+<p>Cả 6 hạng mục nghiệm thu đạt. Hệ thống đạt trần tải 50 req/s toàn cụm, phục vụ 2 mô hình qua Argo CD và 8 Virtual Key cho 7 đề án cùng 1 tài khoản pilot.</p>
+
+<div class="kpi">
+  <div><b>1.590 ms</b><span>p95 tại 50 req/s (ngưỡng 3.000 ms)</span></div>
+  <div><b>99,7228%</b><span>Availability, cận dưới CI 95%</span></div>
+  <div><b>100% / 0%</b><span>Chặn tấn công / chặn nhầm</span></div>
+  <div><b>54,3%</b><span>Tiết kiệm TCO so với Cloud API @10 req/s</span></div>
+</div>
+
+<table>
+  <thead><tr><th style="width:12%">Tiêu chí</th><th style="width:30%">Yêu cầu</th><th style="width:9%">Trạng thái</th><th>Kết quả đo được</th></tr></thead>
+  <tbody>
+    <tr><td><b>TC1a</b></td><td>p95 latency &lt; 3.000 ms tại 50 req/s toàn cụm</td><td class="ok">ĐẠT</td><td>1.590 ms, dư 47% ngân sách latency</td></tr>
+    <tr><td><b>TC1b</b></td><td>Availability toàn cụm ≥ 99,5%</td><td class="ok">ĐẠT</td><td>99,7228% (cận dưới 95% CI, 34.354 probe), không có lỗi 5xx</td></tr>
+    <tr><td><b>TC2</b></td><td>Tiết kiệm chi phí ≥ 30% so với Cloud API</td><td class="ok">ĐẠT</td><td>2 báo cáo FinOps; chi phí AWS thực tế 01/09–06/10 là $86,79; tiết kiệm 49,4% – 54,3% tại 10 req/s</td></tr>
+    <tr><td><b>TC3</b></td><td>Chặn tấn công ≥ 95%, chặn nhầm ≤ 2%</td><td class="ok">ĐẠT</td><td>Chặn 100%, chặn nhầm 0% trên 294 mẫu offline và 349 mẫu live cluster</td></tr>
+    <tr><td><b>TC4</b></td><td>Phục vụ đồng thời ≥ 5 đề án</td><td class="ok">ĐẠT</td><td>8 Virtual Key (7 đề án + 1 pilot) qua LiteLLM Gateway, RBAC, hạn mức $10,0/đề án</td></tr>
+    <tr><td><b>CD</b></td><td>CD tự động, phục vụ đa mô hình</td><td class="ok">ĐẠT</td><td>Argo CD App-of-Apps điều phối Qwen2.5-7B và Qwen2.5-1.5B trên cụm 4 node GPU</td></tr>
+  </tbody>
+</table>
+
+<h2>1. Hạ tầng GitOps và cơ chế CD khi rollout mô hình mới</h2>
+<p>Tệp <code>deploy/state.yaml</code> trong Git là nguồn sự thật duy nhất. Argo CD phát hiện thay đổi và đồng bộ trạng thái xuống cụm Kubernetes (auto sync bật).</p>
+
+<h3>1.1. Chu trình rollout</h3>
+<div class="flow">
+  <div><b>1 · idle</b>Bản <code>stable</code> nhận 100% traffic.</div>
+  <div><b>2 · evaluating</b>Ứng viên chạy ở endpoint nội bộ riêng; test độc lập về chất lượng, Guardrail, latency. Không đạt thì hủy, về <code>idle</code>.</div>
+  <div><b>3 · canary</b>Cấp 10–25% traffic thật cho ứng viên.</div>
+  <div><b>4 · promoting</b>Ứng viên thành <code>stable</code>; Argo CD rolling update thay bản cũ.</div>
+  <div><b>5 · watching</b>Hậu kiểm theo chỉ số; sẵn sàng rollback về bản trước.</div>
+</div>
+
+<h3>1.2. Model Contract</h3>
+<ul>
+  <li><b>Định dạng:</b> chỉ nhận <code>safetensors</code>; từ chối Torch Pickle (<code>.bin</code>, <code>.pt</code>, <code>.ckpt</code>).</li>
+  <li><b>Toàn vẹn:</b> <code>manifest.json</code> chứa SHA-256 từng tệp, ký bằng AWS KMS (ECC P-256).</li>
+  <li><b>Xác thực lúc nạp:</b> Init Container tính lại SHA-256 trên NVMe cục bộ của GPU node trước khi giao cho vLLM; sai lệch thì không khởi động.</li>
+</ul>
+
+<h3>1.3. Đa mô hình trên cụm</h3>
+<p>Ứng dụng <code>root</code> (path <code>deploy/argocd/apps</code>) quản lý 2 ứng dụng con trỏ vào <code>charts/vllm</code>, namespace <code>inference</code>: <code>vllm-qwen2-5-7b-stable</code> và <code>vllm-qwen2-5-1-5b-stable</code>. Cả 3 ứng dụng ở trạng thái Healthy và Synced to <code>main</code> (62142f8).</p>
+
+<figure>
+  <img src="images/tuan4/fig1-argocd-overview.png" alt="Argo CD Applications">
+  <figcaption><b>Hình 1.</b> Argo CD, danh sách ứng dụng: <code>root</code>, <code>vllm-qwen2-5-1-5b-stable</code>, <code>vllm-qwen2-5-7b-stable</code> đều Healthy / Synced / Sync OK, target revision <code>main</code>.</figcaption>
+</figure>
+<figure>
+  <img src="images/tuan4/fig2-argocd-root-tree.png" alt="Argo CD root tree">
+  <figcaption><b>Hình 2.</b> Cây ứng dụng <code>root</code> (App-of-Apps): đồng bộ xuống 2 ứng dụng con của 2 mô hình. Last sync OK, auto sync enabled.</figcaption>
+</figure>
+<div class="pair">
+  <figure>
+    <img src="images/tuan4/fig3-argocd-1.5b.png" alt="Argo CD 1.5B">
+    <figcaption><b>Hình 3.</b> <code>vllm-qwen2-5-1-5b-stable</code>: Service, Deployment (rev:2), ReplicaSet và Pod 1/1 running, Healthy.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/tuan4/fig4-argocd-7b.png" alt="Argo CD 7B">
+    <figcaption><b>Hình 4.</b> <code>vllm-qwen2-5-7b-stable</code>: cùng cấu trúc, Pod 1/1 running, Healthy, Sync OK tới 62142f8.</figcaption>
+  </figure>
+</div>
+
+<h2>2. Gateway quản lý đa đề án (TC4 – LiteLLM)</h2>
+<ul>
+  <li><b>Quản trị tập trung:</b> LiteLLM Dashboard (<code>/ui</code>, v1.90.2) liệt kê, tạo và thu hồi Virtual Key.</li>
+  <li><b>8 Virtual Key:</b> <code>da19</code>, <code>da20</code>, <code>da32</code>, <code>da39</code>, <code>da41</code>, <code>da44</code>, <code>da45</code> và <code>moc-da-pilot</code>; tất cả Active, thuộc Team <code>moc-shared</code>.</li>
+  <li><b>RBAC:</b> mỗi key chỉ gọi được <code>qwen2.5-7b</code> và <code>qwen2.5-1.5b</code>.</li>
+  <li><b>Ngân sách:</b> $10,0 cho mỗi đề án, cách ly chi tiêu giữa các nhóm.</li>
+  <li><b>Lưu trữ khóa:</b> LiteLLM chỉ giữ bản hash; chuỗi <code>sk-…</code> bản rõ nằm trong Kubernetes Secret <code>llm-serving/agent-keys</code> phục vụ bàn giao.</li>
+</ul>
+<figure>
+  <img src="images/tuan4/fig5-litellm-keys.png" alt="LiteLLM Virtual Keys">
+  <figcaption><b>Hình 5.</b> LiteLLM, Virtual Keys: "Showing 1 – 8 of 8 results". Khung chụp hiển thị 6 key đầu (<code>moc-da-pilot</code>, <code>da45</code>, <code>da44</code>, <code>da41</code>, <code>da39</code>, <code>da32</code>), trạng thái Active, Team <code>moc-shared</code>. Cột model và budget nằm ngoài khung chụp.</figcaption>
+</figure>
+
+<h2>3. Giao diện chatbot nghiệp vụ (Open WebUI – MOC Copilot)</h2>
+<ul>
+  <li><b>Người dùng:</b> chuyên viên phân tích GreenSM. Kết nối LiteLLM bằng tài khoản <code>moc-da-pilot</code>.</li>
+  <li><b>Chọn mô hình:</b> dropdown chuyển giữa <code>qwen2.5-7b</code> (tác vụ phức tạp) và <code>qwen2.5-1.5b</code> (tác vụ đơn giản).</li>
+  <li><b>Khởi tạo admin:</b> hook <code>lifecycle.postStart</code> trong Helm chart tạo tài khoản <code>admin@da51.lab</code> từ Secret khi pod khởi động; đăng nhập trực tiếp, không qua màn hình setup.</li>
+  <li><b>Guardrail:</b> tắt các tác vụ nền tự sinh (tiêu đề, tag, gợi ý câu hỏi) để log kiểm toán của pipeline Guardrail chỉ gồm câu hỏi người dùng.</li>
+</ul>
+<div class="pair">
+  <figure>
+    <img src="images/tuan4/fig6-webui-model-select.png" alt="Open WebUI model dropdown">
+    <figcaption><b>Hình 6.</b> Dropdown chọn mô hình: <code>qwen2.5-7b</code>, <code>qwen2.5-1.5b</code>.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/tuan4/fig7-webui-chat-7b.png" alt="Chat 7B">
+    <figcaption><b>Hình 7.</b> Qwen2.5-7B: câu hỏi về định nghĩa chỉ số và grain bảng đặt chuyến; câu trả lời kèm mã trích dẫn <code>[METRIC-…]</code>.</figcaption>
+  </figure>
+</div>
+<figure>
+  <img src="images/tuan4/fig8-webui-chat-1.5b.png" alt="Chat 1.5B">
+  <figcaption><b>Hình 8.</b> Qwen2.5-1.5B: câu hỏi kiểm tra dữ liệu và trạm sạc; câu trả lời kèm mã <code>[KB-FRESHNESS]</code>, <code>[METRIC-CHARGE-001]</code>.</figcaption>
+</figure>
+
+<h2>4. Năng lực serving và benchmark (TC1a, TC1b, TC3)</h2>
+<p><b>Cấu hình đo:</b> ramp 30 phút, 8 mức tải từ 1 đến 50 req/s, tổng 34.354 probe request; 4× NVIDIA A10G (EC2 <code>g5.xlarge</code>); Semantic Cache tắt để đo sức tải thật của engine và Guardrail.</p>
+<table>
+  <thead><tr><th>Tải (req/s)</th><th class="num">Request</th><th class="num">p50 (ms)</th><th class="num">p95 (ms)</th><th class="num">p99 (ms)</th><th class="num">Availability</th><th>TC1a</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td class="num">171</td><td class="num">587</td><td class="num">1.036</td><td class="num">1.444</td><td class="num">100,00%</td><td>Đạt</td></tr>
+    <tr><td>10</td><td class="num">1.700</td><td class="num">563</td><td class="num">1.082</td><td class="num">2.007</td><td class="num">99,94%</td><td>Đạt</td></tr>
+    <tr><td>20</td><td class="num">3.388</td><td class="num">540</td><td class="num">1.881</td><td class="num">6.522</td><td class="num">99,71%</td><td>Đạt</td></tr>
+    <tr><td>30</td><td class="num">5.086</td><td class="num">556</td><td class="num">1.180</td><td class="num">1.827</td><td class="num">99,71%</td><td>Đạt</td></tr>
+    <tr><td>40</td><td class="num">6.787</td><td class="num">629</td><td class="num">1.660</td><td class="num">5.412</td><td class="num">99,81%</td><td>Đạt</td></tr>
+    <tr><td>45</td><td class="num">7.631</td><td class="num">641</td><td class="num">1.466</td><td class="num">2.450</td><td class="num">99,74%</td><td>Đạt</td></tr>
+    <tr class="hl"><td>50</td><td class="num">8.486</td><td class="num">694</td><td class="num">1.590</td><td class="num">2.549</td><td class="num">99,82%</td><td>ĐẠT</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><b>TC1a:</b> p95 tại 50 req/s là 1.590 ms, thấp hơn ngưỡng 3.000 ms.</li>
+  <li><b>TC1b:</b> availability 99,7228% (cận dưới một phía 95% CI, 34.354 probe), vượt ngưỡng 99,5%. Toàn bộ request bị từ chối (0,23%) do Guardrail grounding chặn đúng quy tắc; không có 5xx hoặc timeout.</li>
+  <li><b>TC3:</b> chặn 100% mẫu tấn công jailbreak / prompt injection, chặn nhầm 0% trên 294 mẫu offline và 349 mẫu live cluster.</li>
+</ul>
+<div class="note warn">p99 tại 20 và 40 req/s tăng đột biến (6.522 ms, 5.412 ms) trong khi p95 vẫn dưới ngưỡng. Chưa có tiêu chí p99; sẽ kiểm tra đuôi latency ở tuần 5.</div>
+
+<h2>5. FinOps và tối ưu TCO (TC2)</h2>
+<h3>5.1. Chi phí AWS thực tế</h3>
+<p>Tổng chi phí 01/09 – 06/10/2026: <b>$86,79</b> (usage thực tế trước credit, toàn tài khoản). Đơn giá đối soát từ hóa đơn: <code>g5.xlarge</code> (A10G) $1,006/giờ; <code>g6.xlarge</code> (L4) $0,8048/giờ; <code>m7i.large</code> $0,1008/giờ. Chi tiết: <code>reports/aws-continuous-cost-2026-10-07.md</code>.</p>
+
+<h3>5.2. TCO production 24/7 tại 10 req/s</h3>
+<p>Cấu hình tham chiếu P2 (Multi-AZ): 2 GPU L4, 4 CPU node, Aurora Multi-AZ, Redis HA; chi phí cố định $2.263,01/tháng. Chi tiết: <code>reports/production-cost-estimation-tco-2026-10-05.md</code>.</p>
+<table>
+  <thead><tr><th>Phương án</th><th class="num">$/ngày</th><th class="num">$/tháng (30 ngày)</th><th>Chênh lệch</th></tr></thead>
+  <tbody>
+    <tr class="hl"><td>Tự host Qwen 7B (P2)</td><td class="num">76,47</td><td class="num">2.294,01</td><td>Mốc so sánh</td></tr>
+    <tr><td>Qwen2.5-7B qua Cloud API (Phala)</td><td class="num">167,24</td><td class="num">5.017,28</td><td>Tự host rẻ hơn 54,3%</td></tr>
+    <tr><td>GPT-4o mini (OpenAI)</td><td class="num">233,49</td><td class="num">7.004,67</td><td>Tự host rẻ hơn 67,2%</td></tr>
+    <tr><td>Gemini 3.5 Flash-Lite (Google)</td><td class="num">480,08</td><td class="num">14.402,46</td><td>Tự host rẻ hơn 84,1%</td></tr>
+  </tbody>
+</table>
+<p><b>Điểm hòa vốn:</b> 3,00 – 3,43 req/s (~259.000 request/ngày). Từ 10 req/s trở lên, tự host tiết kiệm 49,4% – 54,3%, so với yêu cầu 30% của TC2.</p>
+
+<h2>6. Kế hoạch Tuần 5</h2>
+<table>
+  <thead><tr><th style="width:20%">Phụ trách</th><th>Hạng mục</th></tr></thead>
+  <tbody>
+    <tr><td>Nguyễn Gia Bảo</td><td><ul>
+      <li>Kết hợp tầng CI với nhóm Deployment Quality Gate: quét image (Trivy), kiểm tra manifest (Conftest), ký image (Cosign), policy Kyverno <code>ML-001</code>.</li>
+      <li>Soạn tài liệu đặc tả kiến trúc kỹ thuật: Serving, pipeline Guardrail, GitOps CD, Model Contract.</li></ul></td></tr>
+    <tr><td>Nguyễn Lê Minh</td><td><ul>
+      <li>Tài liệu bàn giao và tích hợp cho các nhóm đề án: API Reference, mẫu code (Python, cURL, LangChain), quy trình cấp và quản lý Virtual Key.</li>
+      <li>Runbook vận hành: giám sát Grafana, vận hành cụm vLLM đa mô hình, sao lưu và phục hồi.</li></ul></td></tr>
+  </tbody>
+</table>
+<p><b>Ngân sách:</b> chi tiêu lũy kế $86,79 / $200,00 AWS được cấp. Duy trì bật/tắt cụm GPU theo lịch làm việc.</p>
+
+</body>
+</html>

@@ -611,8 +611,22 @@ agent-keys: ## Configure shared 3000 RPM team and refresh agent virtual keys
 	key=$$(kubectl -n llm-serving get secret litellm-secrets \
 		-o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d); \
 	[ -n "$$key" ] || { echo "khong doc duoc master key"; exit 1; }; \
+	tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT INT TERM; \
 	PYTHONPATH=. python3 bench/scripts/provision_keys.py \
-		--base-url "$$base" --master-key "$$key" $(if $(DRY_RUN),--dry-run,)
+		--base-url "$$base" --master-key "$$key" \
+		$(if $(ROTATE),--rotate,) \
+		$(if $(DRY_RUN),--dry-run,--emit-secret "$$tmp"); \
+	$(if $(DRY_RUN),:,if [ -s "$$tmp" ] && [ "$$(cat "$$tmp")" != "{}" ]; then \
+		python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
+print('\n'.join(f'--from-literal={k}={v}' for k,v in d.items()))" "$$tmp" \
+			| xargs kubectl -n llm-serving create secret generic agent-keys \
+				--dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+		echo "  da luu ban ro vao Secret llm-serving/agent-keys"; \
+		echo "  doc mot key: make agent-key AGENT=da19"; \
+	else \
+		echo "  khong co key MOI nao -- LiteLLM chi luu hash nen khong doc lai duoc"; \
+		echo "  ban ro cua key da ton tai. Muon co ban ro: make agent-keys ROTATE=1"; \
+	fi)
 
 litellm-smoke: ## Verify auth, model routing, completion and streaming via LiteLLM
 	@MODEL=$(if $(filter solo-b,$(MODE)),qwen2.5-1.5b,qwen2.5-7b) \

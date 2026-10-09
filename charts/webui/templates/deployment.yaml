@@ -121,6 +121,31 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    python3 -c "
+                    import os
+                    from open_webui.utils.auth import get_password_hash
+                    from open_webui.models.auths import Auths
+                    from open_webui.models.users import Users
+
+                    email = os.environ.get('WEBUI_ADMIN_EMAIL', '').strip().lower()
+                    password = os.environ.get('WEBUI_ADMIN_PASSWORD')
+                    if email and password and not Users.get_user_by_email(email):
+                        hashed = get_password_hash(password)
+                        Auths.insert_new_auth(
+                            email=email,
+                            password=hashed,
+                            name='Admin',
+                            profile_image_url='/user.png',
+                            role='admin'
+                        )
+                    "
           volumeMounts:
             - name: data
               mountPath: /app/backend/data
