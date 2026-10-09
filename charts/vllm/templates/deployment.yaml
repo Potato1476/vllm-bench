@@ -204,7 +204,13 @@ spec:
             # to reach for when verification fails, because a failure there means the
             # bytes are not the signed ones.
             - name: VERIFY_MANIFEST
-              value: {{ $root.Values.verifyManifest | default true | quote }}
+              # KHONG dung `| default true`. Trong Go template, `false` la mot gia tri
+              # RONG, nen `false | default true` tra ve true -- va mot co tat an toan
+              # khong the tat duoc la cach te nhat de hong: deploy/state.yaml khai
+              # verify: false kem ly do, Application truyen false, va pod van nhan true.
+              # Trieu chung la ca hai model khong khoi dong duoc voi thong bao "trong so
+              # khong ky", doc nhu loi du lieu chu khong nhu mot bay cu phap.
+              value: {{ ne $root.Values.verifyManifest false | quote }}
           volumeMounts:
             - name: weights
               mountPath: /weights

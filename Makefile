@@ -434,6 +434,17 @@ guardrail-image: guardrails-test ## Build and push the guardrail service image t
 	reg=$${repo%%/*}; \
 	aws ecr get-login-password --region $(REGION) \
 		| docker login --username AWS --password-stdin "$$reg"; \
+	: ; \
+	: "Bo qua khi tag da ton tai. GUARDRAIL_TAG la hash cua chinh ma nguon va ECR dat" ; \
+	: "tag bat bien, nen cung mot ma nguon push lan hai bi tu choi: 'tag invalid ...' " ; \
+	: "'cannot be overwritten'. Do la ket qua DUNG -- image can dung da nam san o do --" ; \
+	: "bi bao nhu mot loi, va no lam moi lan trien khai khong sua code dung giua chung." ; \
+	if aws ecr describe-images --repository-name vllm-bench/guardrail \
+		--image-ids imageTag=$(GUARDRAIL_TAG) --region $(REGION) >/dev/null 2>&1; then \
+		echo "  tag $(GUARDRAIL_TAG) da co trong ECR -- ma nguon khong doi, bo qua build"; \
+		echo "GUARDRAIL_IMAGE=$$repo:$(GUARDRAIL_TAG)"; \
+		exit 0; \
+	fi; \
 	docker build --platform linux/amd64 -f services/llm_pipeline/Dockerfile \
 		-t "$$repo:$(GUARDRAIL_TAG)" .; \
 	docker push "$$repo:$(GUARDRAIL_TAG)"; \
