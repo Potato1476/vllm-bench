@@ -27,6 +27,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	litellm-secret litellm-up litellm-diff litellm-down litellm-smoke \
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key agent-keys-list \
 	cluster-config argocd-up argocd-status argocd-password rollout-render rollout-check \
+	litellm-ui-password \
 	rollout-pause rollout-resume \
 	model-check model-publish \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
@@ -489,12 +490,14 @@ guardrail-up: ha-preflight ## Install/upgrade the OpenAI-compatible guardrail se
 	helm upgrade --install guardrail charts/guardrail \
 		-n llm-serving --create-namespace \
 		$(if $(HA),-f charts/guardrail/values-ha.yaml) \
+		-f deploy/values/guardrail-routes.yaml \
 		--set image.repository="$$repo" --set image.tag="$(GUARDRAIL_TAG)" \
 		--wait --timeout 5m
 
 guardrail-diff: ## Render guardrail manifests without applying them
 	helm template guardrail charts/guardrail -n llm-serving \
 		$(if $(HA),-f charts/guardrail/values-ha.yaml) \
+		-f deploy/values/guardrail-routes.yaml \
 		--set image.repository=PLACEHOLDER --set image.tag=$(GUARDRAIL_TAG)
 
 guardrail-down: ## Remove the guardrail release but keep the namespace
@@ -503,6 +506,10 @@ guardrail-down: ## Remove the guardrail release but keep the namespace
 # --- LiteLLM gateway --------------------------------------------------------
 # Master/salt keys stay in a Kubernetes Secret and never pass through Helm values or
 # git. DATABASE_URL can override the Aurora URL resolved from the data-tier outputs.
+litellm-ui-password: ## Mat khau dang nhap giao dien quan ly key cua LiteLLM (user: admin)
+	@kubectl -n llm-serving get secret litellm-secrets \
+		-o jsonpath='{.data.UI_PASSWORD}' 2>/dev/null | base64 -d; echo
+
 litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL override)
 	@if [ -n "$(HA)" ] && [ -n "$(ALLOW_NO_DB)" ]; then echo "HA requires Aurora/PostgreSQL; remove ALLOW_NO_DB=1"; exit 1; fi
 	@kubectl create namespace llm-serving --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -539,8 +546,13 @@ litellm-secret: ## Create/update LiteLLM secrets from Aurora (or DATABASE_URL ov
 		echo "budgets and spend accounting -- so no per-agent labels either."; \
 		exit 1; \
 	fi; \
+	ui=$$(kubectl -n llm-serving get secret litellm-secrets \
+		-o jsonpath='{.data.UI_PASSWORD}' 2>/dev/null | base64 -d || true); \
+	[ -n "$$ui" ] || ui=$$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20); \
 	set -- --from-literal=LITELLM_MASTER_KEY="$$master" \
-		--from-literal=LITELLM_SALT_KEY="$$salt"; \
+		--from-literal=LITELLM_SALT_KEY="$$salt" \
+		--from-literal=UI_USERNAME=admin \
+		--from-literal=UI_PASSWORD="$$ui"; \
 	if [ -n "$$db" ]; then set -- "$$@" --from-literal=DATABASE_URL="$$db"; \
 	else echo "  chay KHONG co database: mat virtual key, budget va spend tracking"; fi; \
 	kubectl -n llm-serving create secret generic litellm-secrets "$$@" \

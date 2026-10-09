@@ -178,6 +178,16 @@ class Track:
     # has to reach 50 req/s, which is why `mode: shared` is the wrong shape for it. Its
     # own node is both cheaper and does not borrow from anything.
     tier: str = "main"
+    # How many cards this track's stable deployment gets. Declared per track rather than
+    # derived from the tier, because "how many cards does a model deserve" is a decision
+    # about the workload, not about the hardware: a 1.5B answering classification needs
+    # one card no matter how many the tier has, and a 7B under measurement wants all of
+    # them. Defaults to the whole tier, which is the single-track case.
+    cards: int | None = None
+
+    @property
+    def card_count(self) -> int:
+        return self.cards if self.cards is not None else TIER_CARDS[self.tier]
 
     def to_dict(self) -> dict:
         out: dict[str, object] = {"stable": self.stable.to_dict(), "phase": self.phase}
@@ -191,6 +201,8 @@ class Track:
             out["candidate_since"] = self.candidate_since
         if self.tier != "main":
             out["tier"] = self.tier
+        if self.cards is not None:
+            out["cards"] = self.cards
         return out
 
 
@@ -215,7 +227,13 @@ def _parse_track(name: str, raw: object) -> Track:
         canary_weight=int(raw.get("canary_weight") or 0),
         candidate_since=str(raw.get("candidate_since") or ""),
         tier=str(raw.get("tier") or "main"),
+        cards=int(raw["cards"]) if raw.get("cards") is not None else None,
     )
+    if track.cards is not None and not 1 <= track.cards <= TIER_CARDS[
+            track.tier if track.tier in TIERS else "main"]:
+        raise StateError(
+            f"{name}.cards = {track.cards}; phai trong 1..{TIER_CARDS.get(track.tier, 4)} "
+            f"cho tang {track.tier}")
     if track.tier not in TIERS:
         raise StateError(f"{name}.tier khong hop le: {track.tier!r} "
                          f"(cho phep: {', '.join(sorted(TIERS))})")
@@ -364,7 +382,7 @@ def helm_values(state: State, name: str) -> dict:
     candidate = track.candidate
     # Four cards on the main tier; the light tier has one. A candidate takes exactly one,
     # which is why evaluation runs at a twelfth of production load rather than at fifty.
-    stable_replicas = TIER_CARDS[track.tier] - (1 if candidate else 0)
+    stable_replicas = track.card_count - (1 if candidate else 0)
     values: dict[str, object] = {
         "servedName": name,
         "stable": {
@@ -482,12 +500,20 @@ def render(state: State, out_dir: Path = DEPLOY_DIR) -> dict[Path, str]:
         files[out_dir / "argocd" / "apps" / f"vllm-{slug}-stable.yaml"] = _application(
             f"vllm-{slug}-stable",
             _release_values(track, track.stable, served_name=name,
-                            replicas=TIER_CARDS[track.tier] - (1 if track.candidate else 0)))
+                            replicas=track.card_count - (1 if track.candidate else 0)))
         if track.candidate:
             served = f"{name}-candidate" if track.phase == EVALUATING else name
             files[out_dir / "argocd" / "apps" / f"vllm-{slug}-candidate.yaml"] = _application(
                 f"vllm-{slug}-candidate",
                 _release_values(track, track.candidate, served_name=served, replicas=1))
+    # The guardrail's upstream map, generated from the same tracks. Hand-maintaining it
+    # beside state.yaml is how a track gets added and then answers "model is not routed by
+    # guardrail" -- a message that reads like a broken deployment rather than two files
+    # that disagree about a Service name.
+    routes = {name: upstream_url(name) for name in sorted(state.tracks)}
+    files[out_dir / "values" / "guardrail-routes.yaml"] = (
+        GENERATED_HEADER
+        + yaml.safe_dump({"models": routes}, sort_keys=False, allow_unicode=True))
     return files
 
 
@@ -595,7 +621,8 @@ def main(argv: list[str] | None = None) -> int:
             # Files that exist but are no longer generated: an abandoned candidate's
             # Application and values. Leaving one behind would keep a GPU occupied by a
             # version the rollout already rejected.
-            existing = {p for p in (DEPLOY_DIR / "argocd" / "apps").glob("*.yaml")}
+            existing = {p for d in ("argocd/apps", "values")
+                        for p in (DEPLOY_DIR / d).glob("*.yaml")}
             stale = sorted(existing - set(wanted))
             if a.command == "render":
                 for path, content in sorted(wanted.items()):

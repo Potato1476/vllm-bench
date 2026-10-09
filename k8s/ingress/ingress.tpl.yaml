@@ -197,8 +197,72 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm-a
+                # Ten Service do Argo CD tao, theo release cua track -- khong con la
+                # "vllm-a" co dinh. Deo len day bang tay la cach ingress tro vao hu khong
+                # sau mot lan doi track; deploy/argocd/apps/ la nguon su that.
+                name: vllm-qwen2-5-7b-stable-a
                 port:
                   name: http
     - host: vllm.da51.lab
       http: *vllm
+---
+# Giao dien quan ly API key cua LiteLLM: xem key nao dang ton tai, model nao moi key
+# duoc goi, han muc va chi tieu. Day la "noi luu tru API key" ma de tai can trung bay --
+# va no la trang co san cua LiteLLM, khong phai thu phai tu viet.
+#
+# Dung chung Service voi API (cung cong 4000), chi khac host, de giao dien quan tri khong
+# nam chung duong voi cong cho cac de an goi vao. Dang nhap bang UI_USERNAME/UI_PASSWORD
+# trong secret litellm-secrets; `make litellm-ui-password` doc ra.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: litellm-ui
+  namespace: llm-serving
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # Chi IP cua nhom. Day la trang quan tri co quyen cap va thu hoi key cho moi de an;
+    # no khong di chung dien mo cong khai voi chat.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: keys.%%IP%%.nip.io
+      http: &litellmui
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: litellm-private
+                port:
+                  name: http
+    - host: keys.da51.lab
+      http: *litellmui
+---
+# Giao dien Argo CD: xem luong CD -- Application nao dang dong bo, lech gi so voi git,
+# lich su tung lan trien khai.
+#
+# backend-protocol HTTPS vi argocd-server noi TLS o chinh no. k8s/argocd/values.yaml dat
+# --insecure de no phuc vu HTTP, nhung co nay giu lai de doi mot dong la chuyen duoc.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "%%CLIENT%%"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: argocd.%%IP%%.nip.io
+      http: &argocd
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  name: http
+    - host: argocd.da51.lab
+      http: *argocd

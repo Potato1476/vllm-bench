@@ -5,7 +5,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: vllm-qwen2-5-7b-stable
+  name: vllm-qwen2-5-1-5b-stable
   namespace: argocd
   finalizers:
   - resources-finalizer.argocd.argoproj.io
@@ -27,8 +27,8 @@ spec:
           tag: v0.29.0
         models:
           a:
-            servedName: qwen2.5-7b
-            s3Prefix: models/Qwen2.5-7B-Instruct-AWQ
+            servedName: qwen2.5-1.5b
+            s3Prefix: models/Qwen2.5-1.5B-Instruct-AWQ
   destination:
     server: https://kubernetes.default.svc
     namespace: inference

@@ -282,7 +282,7 @@ class RenderTest(_Tmp):
 
     def test_an_idle_track_renders_one_application(self) -> None:
         files = self.render(make(rs.IDLE))
-        self.assertEqual(sorted(files), [SLUG_STABLE])
+        self.assertEqual(sorted(files), ["guardrail-routes.yaml", SLUG_STABLE])
 
     def test_a_candidate_adds_its_own_application(self) -> None:
         files = self.render(make(rs.EVALUATING))
@@ -432,3 +432,56 @@ class UpstreamUrlTest(unittest.TestCase):
         in the guardrail, which is why the split does not live in pod counts."""
         self.assertNotEqual(rs.upstream_url("qwen2.5-7b", "stable"),
                             rs.upstream_url("qwen2.5-7b", "candidate"))
+
+
+class GuardrailRoutesTest(_Tmp):
+    """The guardrail's upstream map is generated, not maintained by hand.
+
+    Adding a track and forgetting the route produces "model is not routed by guardrail" --
+    which reads like a broken deployment rather than two files disagreeing about a Service
+    name, and sends the next half hour into the wrong system.
+    """
+
+    def _routes(self, body: dict) -> dict:
+        out = rs.render(self.load(body), out_dir=self.tmp)
+        content = next(c for p, c in out.items() if p.name == "guardrail-routes.yaml")
+        return yaml.safe_load(content)["models"]
+
+    def test_every_track_gets_a_route(self) -> None:
+        body = make(rs.IDLE)
+        body["qwen2.5-1.5b"] = {"stable": dict(CANDIDATE), "phase": rs.IDLE, "cards": 1}
+        routes = self._routes(body)
+        self.assertEqual(sorted(routes), ["qwen2.5-1.5b", "qwen2.5-7b"])
+
+    def test_the_route_matches_the_url_helper(self) -> None:
+        """Same derivation as upstream_url, which a separate test ties to the Service the
+        chart actually renders. One chain, so a change cannot break half of it."""
+        self.assertEqual(self._routes(make(rs.IDLE))["qwen2.5-7b"],
+                         rs.upstream_url("qwen2.5-7b"))
+
+
+class CardCountTest(_Tmp):
+    """How many cards a track gets is a decision about the workload, not the hardware."""
+
+    def test_a_track_can_take_fewer_cards_than_its_tier_has(self) -> None:
+        body = make(rs.IDLE)
+        body["qwen2.5-7b"]["cards"] = 1
+        values = yaml.safe_load(
+            rs.render(self.load(body), out_dir=self.tmp)[
+                self.tmp / "argocd" / "apps" / SLUG_STABLE]
+        )["spec"]["source"]["helm"]["valuesObject"]
+        self.assertEqual(values["replicaCount"], 1)
+
+    def test_a_candidate_still_takes_one_of_them(self) -> None:
+        """With one card declared and a candidate present, stable drops to zero rather
+        than silently asking for two cards the track does not have."""
+        body = make(rs.EVALUATING)
+        body["qwen2.5-7b"]["cards"] = 2
+        track = self.load(body).track("qwen2.5-7b")
+        self.assertEqual(rs.helm_values(self.load(body), "qwen2.5-7b")["stable"]["replicas"], 1)
+
+    def test_more_cards_than_the_tier_has_is_refused(self) -> None:
+        body = make(rs.IDLE)
+        body["qwen2.5-7b"]["cards"] = 9
+        with self.assertRaises(rs.StateError):
+            self.load(body)

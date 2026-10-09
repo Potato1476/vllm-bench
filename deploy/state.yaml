@@ -4,10 +4,29 @@
 # paused: true dung MOI rollout o buoc ke tiep. Bat truoc khi do tai -- mot lan
 # rollout chen vao giua phep do lam cum chi con 3/4 dung luong va so TC1a sai.
 paused: false
+
+# Hai track, moi track mot card. Day la cach nen tang chung minh "da mo hinh": hai
+# mo hinh khac co, phuc vu dong thoi, moi cai co vong doi rollout rieng -- chu khong
+# phai mot bo trong so duoi hai ten.
+#
+# cards: 1 cho ca hai. Voi 4 card thi 7B se lay het de do TC1a; o day muc tieu la
+# demo nen hai card la du va re hon mot nua.
 qwen2.5-7b:
   stable:
     weights: models/Qwen2.5-7B-Instruct-AWQ
     engine: vllm/vllm-openai:v0.29.0
+    # Checkpoint dua len S3 bang tay truoc khi co hop dong model, nen khong co manifest
+    # de doi chieu. Ngoai le co thoi han: xuat ban lai theo hop dong roi xoa hai dong nay.
     verify: false
-    reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
+    reason: "checkpoint dua len tay truoc khi co hop dong model; chua co manifest"
+  cards: 1
+  phase: idle
+
+qwen2.5-1.5b:
+  stable:
+    weights: models/Qwen2.5-1.5B-Instruct-AWQ
+    engine: vllm/vllm-openai:v0.29.0
+    verify: false
+    reason: "checkpoint dua len tay truoc khi co hop dong model; chua co manifest"
+  cards: 1
   phase: idle

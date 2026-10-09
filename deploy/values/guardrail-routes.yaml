@@ -1,0 +1,7 @@
+# SINH RA TU deploy/state.yaml -- dung sua tay.
+# Sinh lai: python3 bench/scripts/rollout_state.py render
+# PR check sinh lai va so sanh, nen mot ban sua tay se bi bat o day chu khong phai
+# o cum luc 3 gio sang.
+models:
+  qwen2.5-1.5b: http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1
+  qwen2.5-7b: http://vllm-qwen2-5-7b-stable-a.inference.svc.cluster.local:8000/v1
