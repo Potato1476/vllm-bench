@@ -181,8 +181,10 @@
       "access_level": "internal-demo",
       "budget_usd": 10,
       "models": [
-        "qwen2.5-7b"
-      ]
+        "qwen2.5-7b",
+        "qwen2.5-1.5b"
+      ],
+      "note": "Chat UI. Duoc goi ca hai model de nguoi dung chon duoc tren giao dien; qwen2.5-7b la mac dinh vi 1.5B can ep trich dan luc giai ma de giu grounding -- danh doi hop ly cho agent tu dong, khong hop ly cho dong nghiep doc cau tra loi nhu mot loi khuyen."
     }
   ]
 }
