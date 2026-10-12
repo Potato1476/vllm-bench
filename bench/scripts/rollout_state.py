@@ -267,6 +267,18 @@ def _parse_track(name: str, raw: object) -> Track:
                          f"(cho phep: {', '.join(sorted(TIERS))})")
 
     # --- the invariants the chart renders from -------------------------------------
+    # Mot track chi co MOT card thi khong rollout duoc: ung vien lay card duy nhat, va
+    # stable tut xuong 0 pod trong khi bang route van gui traffic that vao Service cua no.
+    # Day khong phai suy dien -- `helm_values` tinh stable = card_count - 1, nen cards: 1
+    # cho ra replicas: 0 trong khi route canary van chia 75% sang day.
+    #
+    # Bat o day vi cai gia cua viec khong bat la production tat trong luc demo, chu khong
+    # phai mot thong bao loi.
+    if track.candidate is not None and track.card_count < 2:
+        raise StateError(
+            f"{name}: cards={track.card_count} ma dang co candidate -- stable se con 0 pod "
+            "trong khi guardrail van dinh tuyen traffic that vao no. Mot track can it nhat "
+            "2 card de rollout duoc: dat cards: 2 roi `make rollout-render`.")
     if track.phase in NEEDS_CANDIDATE and track.candidate is None:
         raise StateError(
             f"{name}: phase={track.phase} nhung khong co candidate. Chart render tu file "
@@ -418,11 +430,25 @@ def roll_back(state: State, name: str, *, reason: str = "", now: str = "") -> St
     return state
 
 
+def can_host_candidate(track: Track) -> str:
+    """Ly do track nay chua rollout duoc, hoac chuoi rong neu duoc.
+
+    Tra ve ly do chu khong nem loi, de controller bao cao duoc thay vi do ca luot chay:
+    mot track thieu card la viec cau hinh, khong phai su co.
+    """
+    if track.phase != IDLE:
+        return f"dang o phase {track.phase}; mot track chi chay mot rollout mot luc"
+    if track.card_count < 2:
+        return (f"chi co {track.card_count} card; rollout can it nhat 2 de stable khong "
+                "tut xuong 0 pod luc ung vien chiem card. Dat cards: 2 trong state.yaml")
+    return ""
+
+
 def set_candidate(state: State, name: str, candidate: Ref, *, now: str = "") -> State:
     track = state.track(name)
-    if track.phase != IDLE:
-        raise StateError(
-            f"{name}: dang o phase {track.phase}; mot track chi chay mot rollout mot luc")
+    reason = can_host_candidate(track)
+    if reason:
+        raise StateError(f"{name}: {reason}")
     track.candidate = candidate
     track.phase = EVALUATING
     track.candidate_since = now

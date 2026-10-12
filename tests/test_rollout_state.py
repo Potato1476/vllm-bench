@@ -613,3 +613,57 @@ class RejectionTest(_Tmp):
         again = rs.load(path).track("qwen2.5-7b")
         self.assertEqual(again.watermark, "2026-10-12T09:14:00Z")
         self.assertEqual(again.rejected[0]["weights"], "models/m/1")
+
+
+class SingleCardTrackTest(_Tmp):
+    """Một track một card thì không rollout được, và đó phải là lỗi chứ không phải
+    replicas: 0.
+
+    Phát hiện khi lên kế hoạch chạy thật: state đã commit dùng `cards: 1`, và
+    `helm_values` tính stable = card_count - 1, nên ứng viên vừa xuất hiện là stable tụt
+    xuống 0 pod — trong khi bảng route canary vẫn gửi 75% traffic thật vào Service của
+    stable. Các test khác không bắt được vì chúng dùng mặc định 4 card."""
+
+    def test_a_one_card_track_refuses_a_candidate(self) -> None:
+        body = make(rs.EVALUATING)
+        body["qwen2.5-7b"]["cards"] = 1
+        with self.assertRaises(rs.StateError) as cm:
+            self.load(body)
+        self.assertIn("0 pod", str(cm.exception))
+
+    def test_set_candidate_says_how_to_fix_it(self) -> None:
+        body = make(rs.IDLE)
+        body["qwen2.5-7b"]["cards"] = 1
+        state = self.load(body)
+        with self.assertRaises(rs.StateError) as cm:
+            rs.set_candidate(state, "qwen2.5-7b",
+                             rs.Ref(CANDIDATE["weights"], CANDIDATE["engine"]), now="t")
+        self.assertIn("cards: 2", str(cm.exception))
+
+    def test_two_cards_keeps_one_stable_pod_serving(self) -> None:
+        body = make(rs.EVALUATING)
+        body["qwen2.5-7b"]["cards"] = 2
+        values = rs.helm_values(self.load(body), "qwen2.5-7b")
+        self.assertEqual(values["stable"]["replicas"], 1)
+        self.assertEqual(values["candidate"]["replicas"], 1)
+
+    def test_a_one_card_track_is_still_valid_while_idle(self) -> None:
+        """Một card vẫn hợp lệ khi không rollout: track 1.5B cố ý chỉ có một."""
+        body = make(rs.IDLE)
+        body["qwen2.5-7b"]["cards"] = 1
+        self.assertEqual(self.load(body).track("qwen2.5-7b").card_count, 1)
+
+    def test_the_committed_state_can_host_a_rollout(self) -> None:
+        """Track nào trong catalog cũng phải rollout được, nếu không thì model mới lên S3
+        sẽ bị bỏ qua với một dòng `skipped` mà không ai đọc."""
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from bench.scripts import rollout_controller as rc
+        state = rs.load(ROOT / "deploy" / "state.yaml")
+        catalog = rc.load_catalog(state=state)
+        tracked = [n for n, e in catalog.items() if e.auto_rollout]
+        self.assertTrue(tracked, "khong track nao bat auto_rollout")
+        for name in tracked:
+            with self.subTest(name):
+                self.assertEqual(rs.can_host_candidate(state.track(name)), "",
+                                 f"{name} khong rollout duoc")

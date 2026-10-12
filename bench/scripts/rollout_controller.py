@@ -258,6 +258,11 @@ def _propose(state: rs.State, name: str, entry: Watch, store: Store, gate: Gate,
     track = state.track(name)
     if not entry.auto_rollout:
         return
+    blocked = rs.can_host_candidate(track)
+    if blocked:
+        # Khong phai su co, nen khong do ca luot chay: cac track khac van tien duoc.
+        out.add(Event(name, "skipped", f"chua rollout duoc -- {blocked}"), changes=False)
+        return
     floor = parse_time(track.watermark) if track.watermark else None
     known = {track.stable.weights} | ({track.previous.weights} if track.previous else set()) \
         | {r["weights"] for r in track.rejected}
