@@ -237,10 +237,16 @@ class HelmValuesTest(_Tmp):
         self.assertEqual(values["candidate"]["servedName"], "qwen2.5-7b-candidate")
         self.assertEqual(values["canaryWeight"], 0)
 
-    def test_a_canary_candidate_joins_the_main_name(self) -> None:
-        values = rs.helm_values(self.load(make(rs.CANARY)), "qwen2.5-7b")
-        self.assertEqual(values["candidate"]["servedName"], "qwen2.5-7b")
-        self.assertEqual(values["canaryWeight"], 25)
+    def test_the_candidate_answers_to_both_names_in_every_phase(self) -> None:
+        """Which name production uses is the guardrail's route table. A served-name
+        change between evaluating and canary would restart the candidate pod -- fifteen
+        minutes of sync and hash -- between passing evaluation and taking traffic."""
+        for phase in (rs.EVALUATING, rs.CANARY):
+            values = rs.helm_values(self.load(make(phase)), "qwen2.5-7b")
+            self.assertEqual(values["candidate"]["servedName"], "qwen2.5-7b-candidate")
+            self.assertEqual(values["candidate"]["servedAliases"], ["qwen2.5-7b"])
+        self.assertEqual(rs.helm_values(self.load(make(rs.CANARY)), "qwen2.5-7b")
+                         ["canaryWeight"], 25)
 
     def test_the_verify_flag_reaches_the_chart(self) -> None:
         body = make(rs.IDLE)
@@ -280,9 +286,10 @@ class RenderTest(_Tmp):
         out = rs.render(self.load(body), out_dir=self.tmp)
         return {p.name: c for p, c in out.items()}
 
-    def test_an_idle_track_renders_one_application(self) -> None:
+    def test_an_idle_track_renders_one_application_and_no_jobs(self) -> None:
         files = self.render(make(rs.IDLE))
-        self.assertEqual(sorted(files), ["guardrail-routes.yaml", SLUG_STABLE])
+        self.assertEqual(sorted(files), ["assets.yaml", "guardrail-routes.yaml",
+                                         "rollout-control.yaml", SLUG_STABLE])
 
     def test_a_candidate_adds_its_own_application(self) -> None:
         files = self.render(make(rs.EVALUATING))
@@ -485,3 +492,124 @@ class CardCountTest(_Tmp):
         body["qwen2.5-7b"]["cards"] = 9
         with self.assertRaises(rs.StateError):
             self.load(body)
+
+
+class RolloutControlTest(_Tmp):
+    """deploy/rollout/: the live routes and the Jobs that measure a candidate."""
+
+    def routes(self, body: dict) -> dict:
+        return rs.route_table(self.load(body))
+
+    def test_idle_routes_the_track_to_stable_only(self) -> None:
+        self.assertEqual(self.routes(make(rs.IDLE)),
+                         {"qwen2.5-7b": rs.upstream_url("qwen2.5-7b")})
+
+    def test_an_evaluating_candidate_is_unreachable_under_the_production_name(self) -> None:
+        routes = self.routes(make(rs.EVALUATING))
+        self.assertEqual([u["version"] for u in routes["qwen2.5-7b"]], ["stable"])
+        self.assertEqual(routes["qwen2.5-7b-candidate"][0]["url"],
+                         rs.upstream_url("qwen2.5-7b", "candidate"))
+
+    def test_canary_splits_by_the_weight_in_the_file(self) -> None:
+        routes = self.routes(make(rs.CANARY))
+        weights = {u["version"]: u["weight"] for u in routes["qwen2.5-7b"]}
+        self.assertEqual(weights, {"stable": 75, "candidate": 25})
+
+    def test_the_guardrail_accepts_every_table_this_renders(self) -> None:
+        """The two sides of the contract, checked against each other: a table the
+        guardrail rejects keeps the previous one in force, and the canary would run on
+        the evaluation routes without anything saying so."""
+        from services.llm_pipeline import app
+        for phase in rs.PHASES:
+            body = make(phase)
+            if phase in (rs.PROMOTING, rs.WATCHING):
+                body["qwen2.5-7b"]["previous"] = dict(CANDIDATE)
+            with self.subTest(phase):
+                app.validate_routes(self.routes(body))
+
+    def test_each_phase_gets_the_job_that_judges_it(self) -> None:
+        expect = {rs.IDLE: [], rs.EVALUATING: ["eval"], rs.CANARY: ["canary"],
+                  rs.PROMOTING: [], rs.WATCHING: ["watch"]}
+        for phase, kinds in expect.items():
+            body = make(phase)
+            if phase in (rs.PROMOTING, rs.WATCHING):
+                body["qwen2.5-7b"]["previous"] = dict(CANDIDATE)
+            with self.subTest(phase):
+                self.assertEqual([k for k, _, _ in rs.jobs_for(self.load(body))], kinds)
+
+    def test_evaluation_and_canary_share_an_id_and_watch_follows_stable(self) -> None:
+        """The id names the VERSION, so all three reports for one rollout sit together
+        under runs/rollout/<id>/ and a rebuilt cluster finds them."""
+        cand = rs.Ref.parse(CANDIDATE, "c")
+        self.assertEqual(rs.jobs_for(self.load(make(rs.EVALUATING)))[0][2],
+                         rs.rollout_id("qwen2.5-7b", cand))
+        self.assertEqual(rs.jobs_for(self.load(make(rs.CANARY)))[0][2],
+                         rs.rollout_id("qwen2.5-7b", cand))
+        watching = make(rs.WATCHING, stable=dict(CANDIDATE), previous=dict(STABLE))
+        self.assertEqual(rs.jobs_for(self.load(watching))[0][2],
+                         rs.rollout_id("qwen2.5-7b", cand))
+
+    def test_job_names_are_valid_kubernetes_names(self) -> None:
+        import re
+        ref = rs.Ref("models/" + "x" * 200, "vllm/vllm-openai:v0.29.0")
+        for kind in rs.JOB_DEADLINES:
+            name = rs._job(kind, "qwen2.5-1.5b", rs.rollout_id("qwen2.5-1.5b", ref))["metadata"]["name"]
+            self.assertLessEqual(len(name), 63)
+            self.assertRegex(name, re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"))
+
+    def test_the_job_never_names_the_bucket(self) -> None:
+        files = rs.render(self.load(make(rs.EVALUATING)), out_dir=self.tmp)
+        job = next(c for p, c in files.items() if p.name.startswith("job-eval-"))
+        self.assertIn("s3://$(S3_BUCKET)/runs/rollout/", job)
+        self.assertIn("configMapKeyRef", job)
+
+    def test_the_job_image_is_the_one_the_chart_already_pulls(self) -> None:
+        chart = yaml.safe_load((ROOT / "charts" / "vllm" / "values.yaml").read_text())
+        fetcher = chart["fetcher"]
+        self.assertEqual(rs.JOB_IMAGE, f"{fetcher['repository']}:{fetcher['tag']}")
+
+    def test_the_assets_carry_the_current_script(self) -> None:
+        assets = rs._assets()
+        self.assertEqual(assets["rollout_jobs.py"], rs.JOBS_SCRIPT.read_text(encoding="utf-8"))
+        self.assertEqual(len(assets["gold.jsonl"].splitlines()), 144)
+        self.assertGreater(len(assets["attacks.jsonl"].splitlines()), 100)
+
+
+class RejectionTest(_Tmp):
+    def test_rejecting_a_candidate_returns_to_idle_and_remembers_why(self) -> None:
+        state = rs.reject(self.load(make(rs.CANARY)), "qwen2.5-7b", "p95", now="t1")
+        track = state.track("qwen2.5-7b")
+        self.assertEqual(track.phase, rs.IDLE)
+        self.assertIsNone(track.candidate)
+        self.assertEqual(track.rejected[-1], {"weights": CANDIDATE["weights"],
+                                              "reason": "p95", "at": "t1"})
+
+    def test_a_version_refused_before_deploy_does_not_move_the_phase(self) -> None:
+        state = rs.reject(self.load(make(rs.IDLE)), "qwen2.5-7b", "chu ky",
+                          weights="models/moc-7b/x")
+        self.assertEqual(state.track("qwen2.5-7b").phase, rs.IDLE)
+        self.assertEqual(state.track("qwen2.5-7b").rejected[-1]["weights"], "models/moc-7b/x")
+
+    def test_the_list_is_bounded(self) -> None:
+        state = self.load(make(rs.IDLE))
+        for i in range(rs.REJECTED_KEPT + 5):
+            rs.reject(state, "qwen2.5-7b", "x", weights=f"models/m/{i}")
+        rejected = state.track("qwen2.5-7b").rejected
+        self.assertEqual(len(rejected), rs.REJECTED_KEPT)
+        self.assertEqual(rejected[-1]["weights"], f"models/m/{rs.REJECTED_KEPT + 4}")
+
+    def test_a_rollback_records_the_version_it_threw_out(self) -> None:
+        body = make(rs.WATCHING, stable=dict(CANDIDATE), previous=dict(STABLE))
+        state = rs.roll_back(self.load(body), "qwen2.5-7b", reason="availability", now="t")
+        track = state.track("qwen2.5-7b")
+        self.assertEqual(track.stable.weights, STABLE["weights"])
+        self.assertEqual(track.rejected[-1]["weights"], CANDIDATE["weights"])
+
+    def test_watermark_and_rejections_survive_a_dump(self) -> None:
+        state = rs.reject(self.load(make(rs.IDLE)), "qwen2.5-7b", "x", weights="models/m/1")
+        state.track("qwen2.5-7b").watermark = "2026-10-12T09:14:00Z"
+        path = self.tmp / "out.yaml"
+        rs.dump(state, path)
+        again = rs.load(path).track("qwen2.5-7b")
+        self.assertEqual(again.watermark, "2026-10-12T09:14:00Z")
+        self.assertEqual(again.rejected[0]["weights"], "models/m/1")

@@ -1,0 +1,32 @@
+# SINH RA TU deploy/state.yaml -- dung sua tay.
+# Sinh lai: python3 bench/scripts/rollout_state.py render
+# PR check sinh lai va so sanh, nen mot ban sua tay se bi bat o day chu khong phai
+# o cum luc 3 gio sang.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rollout-control
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Potato1476/vllm-bench.git
+    targetRevision: main
+    path: deploy/rollout
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: benchmark
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        maxDuration: 5m

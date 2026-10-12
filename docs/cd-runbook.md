@@ -57,8 +57,8 @@ make rollout-check          # kiem lech -- chay trong CI
 | phase | Nghĩa là gì | Chiếm mấy card |
 |---|---|---|
 | `idle` | chỉ có bản đang chạy | 4 stable |
-| `evaluating` | ứng viên có tên riêng, không nhận traffic thật | 3 + 1 |
-| `canary` | ứng viên vào pool chính ở `canary_weight`% | 3 + 1 |
+| `evaluating` | ứng viên lên 1 card; guardrail chỉ đưa tên `<model>-candidate` tới nó | 3 + 1 |
+| `canary` | guardrail chia `canary_weight`% traffic thật của `<model>` sang ứng viên | 3 + 1 |
 | `promoting` | ứng viên đã thành stable, pod đang cuốn | 4 |
 | `watching` | đã cuốn xong, còn trong cửa sổ quay về được | 4 |
 
@@ -74,6 +74,89 @@ make rollout-resume
 
 Một lần rollout chen vào giữa phép đo làm cụm **chỉ còn 3/4 dung lượng**, và con số TC1a
 thu được sẽ sai mà không có gì báo. `paused` nằm trong git nên lần tạm dừng cũng có lịch sử.
+
+---
+
+## Rollout tự động — không ai bấm gì
+
+Bên ghi đặt một version đúng hợp đồng vào thư mục được theo dõi
+([`deploy/catalog.yaml`](../deploy/catalog.yaml)). Từ đó:
+
+```
+ S3: models/qwen2.5-7b/<version>/_READY
+        │  rollout.yml, 15 phút/lần (hoặc ngay khi có tin SQS)
+        ▼
+ cổng CPU: chữ ký, đủ file, safetensors, vừa card ── trượt ─► rejected + issue
+        │ PR → rollout-check xanh → tự merge → Argo
+        ▼
+ evaluating  Job rollout-eval: 144 câu vàng, 154 tấn công, 12 req/s ── trượt ─► rejected
+        │ PR
+        ▼
+ canary 25%  Job rollout-canary: 15 phút, so 2 bản theo metric model_version ── trượt ─► rejected
+        │ PR  (mở issue "promoted")
+        ▼
+ promoting   pod stable cuốn từng cái sang bản mới; controller chờ 25 phút
+        │ PR
+        ▼
+ watching    Job rollout-watch: 60 phút, availability ≥ 99,5%, p95 ≤ 3 s ── trượt ─► quay về previous
+        │ PR  (đóng issue)
+        ▼
+ idle
+```
+
+**Ai làm gì:**
+
+| Thành phần | Chạy ở đâu | Việc |
+|---|---|---|
+| `rollout_controller.py` | GitHub Actions (`rollout.yml`) | đọc S3, quyết định, sửa `deploy/state.yaml`, mở PR |
+| `rollout-check.yml` | GitHub Actions, trên mọi PR | state hợp lệ, file sinh ra khớp, chart render được, test |
+| Argo CD | trong cụm | đồng bộ `deploy/argocd/apps/` và `deploy/rollout/` |
+| `rollout_jobs.py` | Job trong cụm, namespace `benchmark` | đo, ghi báo cáo `runs/rollout/<id>/<bước>.json` |
+| guardrail | trong cụm | đọc bảng route từ ConfigMap `guardrail-routes`, mỗi 5 giây |
+
+**Controller không bao giờ huỷ ứng viên vì im lặng.** Nó không nhìn thấy cụm, nên không
+phân biệt được "Job đang chạy" với "cụm đang tắt buổi tối". Hạn giờ nằm trong Job; Job
+luôn để lại báo cáo, kể cả khi trượt vì hết giờ hay vì lỗi. Im lặng quá 6 giờ chỉ được ghi
+là `stalled` trong tóm tắt lần chạy, cho người xem.
+
+**Mỗi version chỉ được thử một lần.** `watermark` trong state ghi thời điểm `_READY` của
+version mới nhất đã xét; mọi thứ cũ hơn bị bỏ qua mãi mãi, kể cả khi bị loại. Muốn thử lại
+một bản đã trượt: xuất bản nó thành version mới.
+
+### Xem nó đang làm gì
+
+```bash
+make argocd-status                     # phase tung track
+make rollout-jobs                      # Job dang chay + log Job moi nhat
+make rollout-step                      # lan chay ke se lam gi (khong ghi gi)
+make rollout-report ID=<id> KIND=eval  # bao cao Job da ghi
+```
+
+`<id>` có trong tên Job (`rollout-eval-<id>`) và trong PR của bot.
+
+### Cài đặt một lần
+
+1. `terraform -chdir=terraform/core apply` — tạo role OIDC chỉ-đọc cho Actions.
+2. Tạo một GitHub App trên repo: quyền **Contents: write**, **Pull requests: write**.
+   Cài vào repo. Lấy App ID và private key.
+3. Repo → Settings → Secrets and variables → Actions:
+
+   | Loại | Tên | Giá trị |
+   |---|---|---|
+   | Secret | `ROLLOUT_ROLE_ARN` | `terraform -chdir=terraform/core output -raw github_rollout_role_arn` |
+   | Secret | `ARTIFACTS_BUCKET` | `terraform -chdir=terraform/core output -raw artifacts_bucket_name` |
+   | Secret | `ROLLOUT_APP_PRIVATE_KEY` | private key của App |
+   | Secret | `MODEL_QUEUE_URL` | tuỳ chọn, URL SQS của bên ghi |
+   | Variable | `ROLLOUT_APP_ID` | App ID |
+   | Variable | `AWS_REGION` | `us-east-1` |
+
+   Bucket và role để ở **Secret** chứ không phải Variable chỉ để được che trong log: log
+   Actions của repo công khai là công khai, và cả hai đều chứa account ID.
+4. Settings → General → bật **Allow auto-merge**. Settings → Branches → bảo vệ `main`:
+   bắt buộc PR, bắt buộc check **`rollout-check`**.
+
+Thiếu bước 3 thì `rollout.yml` tự bỏ qua, không báo lỗi. Thiếu bước 4 thì bot vẫn chạy
+nhưng tự chờ check rồi mới merge — không bao giờ merge khi check chưa xanh.
 
 ---
 
@@ -176,12 +259,19 @@ card đang phải đạt 50 req/s, trong khi một card T4 riêng rẻ hơn mộ
 | Pod `Pending`, `Insufficient cpu` | node tooling hết chỗ; `cpu_desired` phải là 3 |
 | `ImagePullBackOff` trên engine | digest nối sai dấu, xem `image:` trong Application |
 | Argo không dọn ứng viên đã bỏ | root app phải bật `prune`; kiểm `deploy/argocd/root.yaml` |
+| Job rollout `CreateContainerConfigError` | thiếu ConfigMap `cluster-config` ở namespace `benchmark` — chạy `make cluster-config` |
+| Job báo `AccessDenied` khi ghi báo cáo | ServiceAccount `bench-runner` chưa gắn role — `make cluster-config` |
+| Canary trượt "khong request nao toi ung vien" | guardrail chưa thấy bảng route mới: ConfigMap `guardrail-routes` có trong `llm-serving` không? guardrail có được cài lại sau khi thêm mount không (`make guardrail-up`)? |
+| `guardrail_route_reload_failures_total` tăng | file route sai; guardrail giữ bảng cũ. Xem log guardrail |
+| Bot không mở PR mới | PR trước của nhánh `rollout/bot` chưa merge — xem check của nó |
+| Lần chạy ghi `stalled` | Job chưa để lại báo cáo sau 6 giờ: cụm tắt, hoặc Job chết — `make rollout-jobs` |
 
-Quay về bản trước:
+Quay về bản trước bằng tay (bước theo dõi tự làm việc này khi trượt):
 
 ```bash
 python3 bench/scripts/rollout_state.py rollback --track qwen2.5-7b
-make rollout-render && git commit -am "rollback" && git push
+make rollout-render && git checkout -b rollback && git commit -am "rollback" && git push
+# mo PR -- main duoc bao ve, ke ca voi nguoi
 ```
 
 Argo nhận thay đổi trong vòng 3 phút. Mỗi pod phải sync và băm lại nên **mất tới 20 phút**.
@@ -190,14 +280,17 @@ Argo nhận thay đổi trong vòng 3 phút. Mỗi pod phải sync và băm lạ
 
 ## Chưa làm
 
-Chạy được rồi: hợp đồng model, các cổng, kiểm lúc nạp, máy trạng thái, Argo CD đồng bộ.
+Chạy được rồi: hợp đồng model, các cổng CPU, kiểm lúc nạp, máy trạng thái, Argo CD,
+guardrail chia traffic có trọng số, ba Job đánh giá / canary / theo dõi, controller và hai
+workflow.
 
-Chưa có — vẫn phải làm tay:
+Chưa có:
 
-- **Job đánh giá và Job canary.** Hiện chuyển phase bằng tay qua
-  `rollout_state.py advance`. Chưa có gì tự chấm ứng viên.
-- **`.github/workflows/`.** Chưa có CI. `make rollout-check` là bài kiểm sẽ chạy ở đó.
-- **Định tuyến có trọng số trong guardrail.** `canary_weight` đã có trong state và trong
-  Application, nhưng guardrail chưa biết chia traffic theo nó — nên phase `canary` hiện tại
-  chỉ là 1 trong 4 pod, tức 25% theo số pod chứ không theo tỷ lệ đặt được.
-- **Job theo dõi 60 phút sau promote.**
+- **Chưa chạy đầu-cuối trên cụm thật.** Mọi bước đã qua test, controller đã đọc S3 thật,
+  Job đã chạy trong đúng image `amazon/aws-cli` — nhưng một vòng đầy đủ cần cụm 4 GPU
+  khoảng 2 giờ (xem §8 của plan).
+- **Cài đặt GitHub** ở mục trên: App, secret, branch protection. Làm trên giao diện GitHub,
+  không phải file.
+- **CD cho image guardrail** (`images.yml` + smoke test) và Renovate cho image upstream.
+  Rollout ở đây chỉ đổi trọng số; đổi engine vLLM vẫn sửa tay `engine:` trong state.
+- **Quay về sau promote mất tới 20 phút**, vì pod phải sync và băm lại trọng số cũ.

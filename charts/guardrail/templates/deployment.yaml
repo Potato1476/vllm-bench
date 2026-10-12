@@ -46,6 +46,17 @@ spec:
           env:
             - name: MODEL_ROUTES_JSON
               value: {{ toJson .Values.models | quote }}
+            {{- if .Values.routes.configMap }}
+            # The live route table during a rollout. MODEL_ROUTES_JSON above is the table
+            # the pod boots with; this file, when present, replaces it and is re-read
+            # every few seconds, so a canary weight changes without restarting anything.
+            # Argo writes it from deploy/state.yaml. The volume is optional: no ConfigMap
+            # (no Argo, or a cluster brought up by hand) means the env table stands.
+            - name: MODEL_ROUTES_FILE
+              value: /etc/guardrail/routes/routes.json
+            - name: ROUTES_RELOAD_SECONDS
+              value: {{ .Values.routes.reloadSeconds | quote }}
+            {{- end }}
             - name: DEFAULT_ACCESS_LEVEL
               value: {{ .Values.defaultAccessLevel | quote }}
             - name: UPSTREAM_TIMEOUT_SECONDS
@@ -134,10 +145,18 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
+          {{- $sidecar := and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
+          {{- if or $sidecar .Values.routes.configMap }}
           volumeMounts:
+            {{- if $sidecar }}
             - name: redis-socket
               mountPath: /run/redis
+            {{- end }}
+            {{- if .Values.routes.configMap }}
+            - name: routes
+              mountPath: /etc/guardrail/routes
+              readOnly: true
+            {{- end }}
           {{- end }}
           startupProbe:
             httpGet: {path: /health/readiness, port: http}
@@ -197,10 +216,22 @@ spec:
             - name: redis-socket
               mountPath: /run/redis
         {{- end }}
-      {{- if and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
+      {{- $sidecar := and .Values.semanticCache.enabled (eq .Values.semanticCache.redis.mode "sidecar") }}
+      {{- if or $sidecar .Values.routes.configMap }}
       volumes:
+        {{- if $sidecar }}
         - name: redis-socket
           emptyDir:
             medium: Memory
             sizeLimit: 8Mi
+        {{- end }}
+        {{- if .Values.routes.configMap }}
+        # A ConfigMap mounted as a directory, NOT with subPath: kubelet only refreshes
+        # whole-directory mounts, and a subPath mount would freeze the routes at whatever
+        # they were when the pod started -- the canary weight would never move.
+        - name: routes
+          configMap:
+            name: {{ .Values.routes.configMap }}
+            optional: true
+        {{- end }}
       {{- end }}

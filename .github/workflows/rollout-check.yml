@@ -1,0 +1,64 @@
+# The check every change to production state must pass -- including the bot's own PRs,
+# which is why rollout.yml opens them with a GitHub App token: a PR opened with
+# GITHUB_TOKEN triggers no workflow, so this would never run and auto-merge would wait
+# forever.
+#
+# Make this a required status check on main (Settings > Branches). Without that,
+# auto-merge has nothing to wait for and merges whatever the bot wrote.
+name: rollout-check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rollout-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cai thu vien
+        run: pip install pyyaml==6.0.2 pytest numpy
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.0
+
+      - name: deploy/state.yaml hop le
+        run: python3 bench/scripts/rollout_state.py validate
+
+      - name: deploy/catalog.yaml hop le
+        run: python3 bench/scripts/rollout_controller.py check-catalog
+
+      # Re-render and compare, without writing. A hand edit to a generated file -- or a
+      # change to rollout_jobs.py that was not re-rendered into the assets ConfigMap --
+      # fails here instead of in the cluster at 3am.
+      - name: File sinh ra khop voi state
+        run: python3 bench/scripts/rollout_state.py check-rendered
+
+      # Every vLLM Application must render through the real chart. The chart's own
+      # validation (fit on the card, image pinned, bucket from cluster-config) runs here,
+      # before Argo CD tries and reports it as a sync error nobody is watching.
+      - name: Chart vLLM render duoc voi tung Application
+        run: |
+          set -euo pipefail
+          for app in deploy/argocd/apps/vllm-*.yaml; do
+            name=$(basename "$app" .yaml)
+            python3 -c 'import sys, yaml; print(yaml.safe_dump(yaml.safe_load(open(sys.argv[1]))["spec"]["source"]["helm"]["valuesObject"]))' "$app" > "$RUNNER_TEMP/$name.values.yaml"
+            helm template "$name" charts/vllm -n inference -f "$RUNNER_TEMP/$name.values.yaml" > /dev/null
+            echo "  $name: render duoc"
+          done
+
+      - name: Test
+        run: python -m pytest tests/ -q

@@ -34,10 +34,11 @@ production traffic to nothing.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -184,6 +185,21 @@ class Track:
     # one card no matter how many the tier has, and a 7B under measurement wants all of
     # them. Defaults to the whole tier, which is the single-track case.
     cards: int | None = None
+    # When the current phase began. The controller reads it for the one wait it times
+    # itself -- the promote roll -- and a person reads it to see how long a rollout has
+    # been sitting where it is.
+    phase_since: str = ""
+    # The publish time (_READY's LastModified) of the newest version this track has
+    # already considered, taken or not. Anything at or before it is never proposed again.
+    #
+    # A set of "seen" prefixes would grow forever; "not stable, not previous" is wrong the
+    # moment a version is two promotes old -- it is neither, and is OLDER than stable, so
+    # the next run would roll production backwards and call it an upgrade.
+    watermark: str = ""
+    # The last few versions thrown out, and why. The watermark is what stops them coming
+    # back; this is for the person reading the file, who should not need the PR history
+    # to learn that yesterday's version failed its canary on p95.
+    rejected: list = field(default_factory=list)
 
     @property
     def card_count(self) -> int:
@@ -203,6 +219,12 @@ class Track:
             out["tier"] = self.tier
         if self.cards is not None:
             out["cards"] = self.cards
+        if self.phase_since:
+            out["phase_since"] = self.phase_since
+        if self.watermark:
+            out["watermark"] = self.watermark
+        if self.rejected:
+            out["rejected"] = list(self.rejected)
         return out
 
 
@@ -228,7 +250,13 @@ def _parse_track(name: str, raw: object) -> Track:
         candidate_since=str(raw.get("candidate_since") or ""),
         tier=str(raw.get("tier") or "main"),
         cards=int(raw["cards"]) if raw.get("cards") is not None else None,
+        phase_since=str(raw.get("phase_since") or ""),
+        watermark=str(raw.get("watermark") or ""),
+        rejected=list(raw.get("rejected") or []),
     )
+    for i, entry in enumerate(track.rejected):
+        if not isinstance(entry, dict) or not isinstance(entry.get("weights"), str):
+            raise StateError(f"{name}.rejected[{i}] phai co weights")
     if track.cards is not None and not 1 <= track.cards <= TIER_CARDS[
             track.tier if track.tier in TIERS else "main"]:
         raise StateError(
@@ -338,19 +366,52 @@ def advance(state: State, name: str, to: str, *, weight: int = 0, now: str = "")
         track.canary_weight = 0
         track.candidate_since = ""
     track.phase = to
+    if now:
+        track.phase_since = now
     if to == EVALUATING and now:
         track.candidate_since = now
     return state
 
 
-def roll_back(state: State, name: str) -> State:
+# How many rejections the file keeps. Enough to see a pattern -- three versions in a row
+# failing the same gate is a producer problem, not three model problems -- without the
+# state file turning into a log.
+REJECTED_KEPT = 10
+
+
+def _remember_rejection(track: Track, weights: str, reason: str, now: str) -> None:
+    track.rejected = (track.rejected + [{"weights": weights, "reason": reason, "at": now}]
+                      )[-REJECTED_KEPT:]
+
+
+def reject(state: State, name: str, reason: str, *, now: str = "",
+           weights: str | None = None) -> State:
+    """Abandon the candidate -- or, with `weights`, a version that never became one.
+
+    Rejection at the CPU gates happens in idle: the version is refused before anything
+    is deployed, so there is no candidate to drop and the phase does not move.
+    """
+    track = state.track(name)
+    if weights is not None:
+        _remember_rejection(track, weights, reason, now)
+        return state
+    if track.candidate is None:
+        raise StateError(f"{name}: khong co candidate de bo")
+    _remember_rejection(track, track.candidate.weights, reason, now)
+    return advance(state, name, IDLE, now=now)
+
+
+def roll_back(state: State, name: str, *, reason: str = "", now: str = "") -> State:
     """Undo a promote. Only meaningful while `previous` still holds the old stable."""
     track = state.track(name)
     if track.phase not in (PROMOTING, WATCHING):
         raise StateError(f"{name}: chi quay ve duoc o phase promoting hoac watching")
     if track.previous is None:
         raise StateError(f"{name}: khong co previous de quay ve")
+    _remember_rejection(track, track.stable.weights, reason or "quay ve sau promote", now)
     track.stable, track.previous = track.previous, None
+    if now:
+        track.phase_since = now
     track.candidate = None
     track.canary_weight = 0
     track.phase = IDLE
@@ -365,7 +426,20 @@ def set_candidate(state: State, name: str, candidate: Ref, *, now: str = "") -> 
     track.candidate = candidate
     track.phase = EVALUATING
     track.candidate_since = now
+    track.phase_since = now
     return state
+
+
+def rollout_id(name: str, ref: Ref) -> str:
+    """A stable name for one rollout of one version: Job names, the report path on S3.
+
+    Derived from what is being deployed rather than from a counter or a timestamp, so
+    the cluster rebuilt tomorrow renders the same Job under the same name and finds the
+    report the first one left -- which is what makes a recreated Job a no-op instead of a
+    second, possibly disagreeing, evaluation.
+    """
+    digest = hashlib.sha256(f"{name}|{ref.weights}|{ref.engine}".encode()).hexdigest()
+    return f"{k8s_name(name)}-{digest[:10]}"
 
 
 # ------------------------------------------------------------------------ helm values
@@ -399,9 +473,10 @@ def helm_values(state: State, name: str) -> dict:
             "engine": candidate.engine,
             "replicas": 1,
             "verifyManifest": candidate.verify,
-            # Its own served name until canary. Production traffic cannot reach it by
-            # accident, and the evaluation job addresses it explicitly.
-            "servedName": f"{name}-candidate" if track.phase == EVALUATING else name,
+            # Answers to both names in every phase; which one production traffic uses
+            # is the guardrail's route table, not this. See route_table().
+            "servedName": f"{name}-candidate",
+            "servedAliases": [name],
         }
         values["canaryWeight"] = track.canary_weight if track.phase == CANARY else 0
     return values
@@ -442,7 +517,8 @@ def _tier_placement(tier: str) -> dict:
     return {}
 
 
-def _release_values(track: Track, ref: Ref, *, served_name: str, replicas: int) -> dict:
+def _release_values(track: Track, ref: Ref, *, served_name: str, replicas: int,
+                    aliases: tuple[str, ...] = ()) -> dict:
     """Values overriding charts/vllm for one Helm release.
 
     Expressed as overrides rather than as a new chart on purpose. The existing chart
@@ -456,6 +532,8 @@ def _release_values(track: Track, ref: Ref, *, served_name: str, replicas: int) 
     own config.json either way.
     """
     model: dict[str, object] = {"servedName": served_name, "s3Prefix": ref.weights}
+    if aliases:
+        model["servedAliases"] = list(aliases)
     if ref.weights_gib is not None:
         model["weightsGiB"] = ref.weights_gib
     return {
@@ -502,18 +580,28 @@ def render(state: State, out_dir: Path = DEPLOY_DIR) -> dict[Path, str]:
             _release_values(track, track.stable, served_name=name,
                             replicas=track.card_count - (1 if track.candidate else 0)))
         if track.candidate:
-            served = f"{name}-candidate" if track.phase == EVALUATING else name
+            # Both names from the first moment, so evaluating -> canary changes the
+            # guardrail's routes and never this Application. A served-name change here
+            # would restart a pod that took fifteen minutes to sync and hash, between
+            # passing its evaluation and taking its first production request.
             files[out_dir / "argocd" / "apps" / f"vllm-{slug}-candidate.yaml"] = _application(
                 f"vllm-{slug}-candidate",
-                _release_values(track, track.candidate, served_name=served, replicas=1))
+                _release_values(track, track.candidate, served_name=f"{name}-candidate",
+                                replicas=1, aliases=(name,)))
     # The guardrail's upstream map, generated from the same tracks. Hand-maintaining it
     # beside state.yaml is how a track gets added and then answers "model is not routed by
     # guardrail" -- a message that reads like a broken deployment rather than two files
     # that disagree about a Service name.
+    #
+    # This is the table a guardrail BOOTS with, stable only, and changes only when a track
+    # is added. The live table, candidate and weights included, is the ConfigMap below;
+    # keeping the two apart means a rollout step never needs a `helm upgrade` of the
+    # guardrail, which Argo does not manage.
     routes = {name: upstream_url(name) for name in sorted(state.tracks)}
     files[out_dir / "values" / "guardrail-routes.yaml"] = (
         GENERATED_HEADER
         + yaml.safe_dump({"models": routes}, sort_keys=False, allow_unicode=True))
+    files.update(render_rollout(state, out_dir))
     return files
 
 
@@ -583,6 +671,242 @@ def _application(name: str, values: dict) -> str:
     }, sort_keys=False, allow_unicode=True)
 
 
+# ---------------------------------------------------------------------- rollout control
+#
+# Everything a rollout step needs in the cluster besides the vLLM releases: the live route
+# table, the Jobs that measure the candidate, and the files those Jobs run. All of it is
+# synced by one Application, rollout-control, from deploy/rollout/.
+
+ROLLOUT_NS = "benchmark"
+# Same image, same tag as the vLLM init container. Already on the nodes, IRSA works in it,
+# and it has python3 3.9 -- which is why rollout_jobs.py is stdlib-only.
+JOB_IMAGE = "amazon/aws-cli:2.36.47"
+GOLD_PATH = REPO_ROOT / "data" / "xanhsm_retrieval_mock" / "eval" / "retrieval_eval.jsonl"
+ATTACKS_PATH = REPO_ROOT / "bench" / "datasets" / "attacks-v1.jsonl"
+JOBS_SCRIPT = REPO_ROOT / "bench" / "scripts" / "rollout_jobs.py"
+
+# How long Kubernetes lets each Job run before killing it. Generous on purpose: the Job
+# keeps its own, tighter deadlines and writes a failing report when it hits one. This is
+# only the backstop for a Job that hung somewhere it cannot notice.
+JOB_DEADLINES = {"eval": 3 * 3600, "canary": 2 * 3600, "watch": 3 * 3600}
+
+
+def route_table(state: State) -> dict:
+    """The guardrail's live routes, per phase.
+
+        idle, promoting, watching   track -> stable
+        evaluating                  track -> stable;  track-candidate -> candidate
+        canary                      track -> stable/candidate by weight;  track-candidate too
+
+    `track-candidate` stays routed through canary so a person can still talk to the
+    candidate alone while it takes production traffic. LiteLLM does not list that name,
+    so no virtual key reaches it; only callers inside the cluster do.
+    """
+    table: dict[str, object] = {}
+    for name, track in sorted(state.tracks.items()):
+        stable = upstream_url(name)
+        if track.candidate is None:
+            table[name] = stable
+            continue
+        candidate = upstream_url(name, "candidate")
+        table[f"{name}-candidate"] = [{"url": candidate, "weight": 100, "version": "candidate"}]
+        if track.phase == CANARY:
+            table[name] = [
+                {"url": stable, "weight": 100 - track.canary_weight, "version": "stable"},
+                {"url": candidate, "weight": track.canary_weight, "version": "candidate"},
+            ]
+        else:
+            # Labelled even when alone, so evaluation-phase traffic on the track's own
+            # name is counted as stable in guardrail_version_* -- the canary baseline.
+            table[name] = [{"url": stable, "weight": 100, "version": "stable"}]
+    return table
+
+
+def jobs_for(state: State) -> list[tuple[str, str, str]]:
+    """(kind, track, rollout id) for every Job the current phases call for."""
+    out = []
+    for name, track in sorted(state.tracks.items()):
+        if track.phase == EVALUATING and track.candidate:
+            out.append(("eval", name, rollout_id(name, track.candidate)))
+        elif track.phase == CANARY and track.candidate:
+            out.append(("canary", name, rollout_id(name, track.candidate)))
+        elif track.phase == WATCHING:
+            out.append(("watch", name, rollout_id(name, track.stable)))
+    return out
+
+
+def report_key(rid: str, kind: str) -> str:
+    return f"runs/rollout/{rid}/{kind}.json"
+
+
+def _job(kind: str, track: str, rid: str) -> dict:
+    labels = {"app.kubernetes.io/part-of": "rollout", "rollout/kind": kind,
+              "rollout/id": rid}
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": f"rollout-{kind}-{rid}",
+            "namespace": ROLLOUT_NS,
+            "labels": labels,
+            # A Job's pod template is immutable. If this template ever changes while a
+            # Job of the same name exists, a plain sync fails on "field is immutable" and
+            # the rollout stalls. Replace recreates it; the new pod finds the report the
+            # old one wrote and exits, so recreating is harmless.
+            "annotations": {"argocd.argoproj.io/sync-options": "Force=true,Replace=true"},
+        },
+        "spec": {
+            # The script exits 0 whatever the verdict -- the verdict is the report. A
+            # retry only happens when the pod itself died, and then it should.
+            "backoffLimit": 1,
+            "activeDeadlineSeconds": JOB_DEADLINES[kind],
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "serviceAccountName": "bench-runner",
+                    "restartPolicy": "Never",
+                    "nodeSelector": {"workload": "tooling"},
+                    "containers": [{
+                        "name": kind,
+                        "image": JOB_IMAGE,
+                        "command": ["python3", "/assets/rollout_jobs.py"],
+                        "args": [kind, "--id", rid, "--track", track,
+                                 "--report", f"s3://$(S3_BUCKET)/{report_key(rid, kind)}"],
+                        "env": [
+                            # From cluster-config, like the vLLM pods: the bucket name
+                            # carries the account ID and this repository is public.
+                            {"name": "S3_BUCKET", "valueFrom": {"configMapKeyRef": {
+                                "name": "cluster-config", "key": "artifactsBucket"}}},
+                            {"name": "ROLLOUT_ASSETS", "value": "/assets"},
+                            {"name": "PYTHONUNBUFFERED", "value": "1"},
+                        ],
+                        "resources": {"requests": {"cpu": "200m", "memory": "256Mi"},
+                                      "limits": {"memory": "512Mi"}},
+                        "volumeMounts": [{"name": "assets", "mountPath": "/assets",
+                                          "readOnly": True}],
+                        "securityContext": {
+                            "allowPrivilegeEscalation": False,
+                            "capabilities": {"drop": ["ALL"]},
+                            "runAsNonRoot": True, "runAsUser": 65534,
+                            "seccompProfile": {"type": "RuntimeDefault"},
+                        },
+                    }],
+                    "volumes": [{"name": "assets",
+                                 "configMap": {"name": "rollout-assets"}}],
+                },
+            },
+        },
+    }
+
+
+def _assets() -> dict[str, str]:
+    """The script and the two datasets the Jobs read, trimmed to the fields they use.
+
+    Shipped as a ConfigMap rather than baked into an image: the Jobs then need no build,
+    and the PR check's render-and-compare covers the script too -- editing it without
+    re-rendering fails the check instead of running yesterday's code in the cluster.
+    """
+    gold = [json.loads(line) for line in GOLD_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    attacks = [json.loads(line) for line in ATTACKS_PATH.read_text(encoding="utf-8").splitlines()
+               if line.strip()]
+    # User placement only, as bench/k6/lib/workload.js does: a document-placed injection
+    # needs a poisoned corpus to arrive through, and asking it as a question measures
+    # nothing about the defence it is meant to test.
+    attacks = [row for row in attacks if row["label"] == "attack" and row["placement"] == "user"]
+    jsonl = lambda rows: "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)  # noqa: E731
+    return {
+        "rollout_jobs.py": JOBS_SCRIPT.read_text(encoding="utf-8"),
+        "gold.jsonl": jsonl({"id": r["query_id"], "q": r["query"]} for r in gold),
+        "attacks.jsonl": jsonl({"id": r["sample_id"], "text": r["text"], "family": r["family"]}
+                               for r in attacks),
+    }
+
+
+def _configmap(name: str, namespace: str, data: dict[str, str]) -> dict:
+    return {"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": name, "namespace": namespace,
+                         "labels": {"app.kubernetes.io/part-of": "rollout"}},
+            "data": data}
+
+
+class _BlockDumper(yaml.SafeDumper):
+    """Multi-line strings as `|` blocks.
+
+    The route table is what a canary PR changes, and the PR diff is the rollout log. As a
+    quoted scalar the whole table is one escaped line, and a weight going from 25 to 0
+    is a change somewhere inside it; as a block it is one line of the diff.
+    """
+
+
+_BlockDumper.add_representer(str, lambda dumper, value: dumper.represent_scalar(
+    "tag:yaml.org,2002:str", value, style="|" if "\n" in value else None))
+
+
+def _dump(obj: dict) -> str:
+    return GENERATED_HEADER + yaml.dump(obj, Dumper=_BlockDumper, sort_keys=False,
+                                        allow_unicode=True, width=100)
+
+
+def render_rollout(state: State, out_dir: Path = DEPLOY_DIR) -> dict[Path, str]:
+    rollout = out_dir / "rollout"
+    files: dict[Path, str] = {
+        rollout / "guardrail-routes.yaml": _dump(_configmap(
+            "guardrail-routes", "llm-serving",
+            {"routes.json": json.dumps(route_table(state), indent=1, sort_keys=True) + "\n"})),
+        rollout / "assets.yaml": _dump(_configmap("rollout-assets", ROLLOUT_NS, _assets())),
+    }
+    for kind, track, rid in jobs_for(state):
+        files[rollout / f"job-{kind}-{rid}.yaml"] = _dump(_job(kind, track, rid))
+    files[out_dir / "argocd" / "apps" / "rollout-control.yaml"] = GENERATED_HEADER + yaml.safe_dump({
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Application",
+        "metadata": {"name": "rollout-control", "namespace": "argocd",
+                     "finalizers": ["resources-finalizer.argocd.argoproj.io"]},
+        "spec": {
+            "project": "default",
+            "source": {"repoURL": "https://github.com/Potato1476/vllm-bench.git",
+                       "targetRevision": "main", "path": "deploy/rollout"},
+            "destination": {"server": "https://kubernetes.default.svc",
+                            "namespace": ROLLOUT_NS},
+            "syncPolicy": {
+                # prune is what removes a finished phase's Job and an abandoned
+                # candidate's routes; without it the guardrail would keep splitting
+                # traffic to a pod that no longer exists.
+                "automated": {"prune": True, "selfHeal": False},
+                # Server-side apply: the assets ConfigMap is ~100 KB, and client-side
+                # apply copies the whole object into an annotation capped at 256 KB.
+                "syncOptions": ["CreateNamespace=true", "ServerSideApply=true"],
+                "retry": {"limit": 5, "backoff": {"duration": "30s", "maxDuration": "5m"}},
+            },
+        },
+    }, sort_keys=False, allow_unicode=True)
+    return files
+
+
+def plan_render(state: State, out_dir: Path = DEPLOY_DIR) -> tuple[dict[Path, str], list[Path]]:
+    """What render() wants on disk, and which existing generated files it no longer does.
+
+    The stale ones matter as much as the wanted ones: an abandoned candidate's
+    Application, or a finished phase's Job, left behind keeps a GPU or a Job alive for a
+    version the rollout already moved past.
+    """
+    wanted = render(state, out_dir)
+    existing = {p for d in ("argocd/apps", "values", "rollout")
+                for p in (out_dir / d).glob("*.yaml")}
+    return wanted, sorted(existing - set(wanted))
+
+
+def write_rendered(state: State, out_dir: Path = DEPLOY_DIR) -> tuple[int, int]:
+    wanted, stale = plan_render(state, out_dir)
+    for path, content in sorted(wanted.items()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    for path in stale:
+        path.unlink()
+    return len(wanted), len(stale)
+
+
 # ------------------------------------------------------------------------------- main
 
 
@@ -617,21 +941,11 @@ def main(argv: list[str] | None = None) -> int:
                           "khong theo digest -- tag co the bi day de")
             return 0
         if a.command in ("render", "check-rendered"):
-            wanted = render(state)
-            # Files that exist but are no longer generated: an abandoned candidate's
-            # Application and values. Leaving one behind would keep a GPU occupied by a
-            # version the rollout already rejected.
-            existing = {p for d in ("argocd/apps", "values")
-                        for p in (DEPLOY_DIR / d).glob("*.yaml")}
-            stale = sorted(existing - set(wanted))
+            wanted, stale = plan_render(state)
             if a.command == "render":
-                for path, content in sorted(wanted.items()):
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(content, encoding="utf-8")
-                for path in stale:
-                    path.unlink()
-                print(f"  da sinh {len(wanted)} file"
-                      + (f", xoa {len(stale)} file thua" if stale else ""))
+                written, removed = write_rendered(state)
+                print(f"  da sinh {written} file"
+                      + (f", xoa {removed} file thua" if removed else ""))
                 return 0
             drift = [p for p, c in sorted(wanted.items())
                      if not p.is_file() or p.read_text(encoding="utf-8") != c]

@@ -1,0 +1,209 @@
+# One rollout step every 15 minutes: read S3, decide, open a PR, auto-merge.
+#
+# Nothing here reaches the cluster. The PR edits deploy/state.yaml and the files rendered
+# from it; Argo CD pulls them. The Jobs Argo starts write their verdicts to S3, and the
+# next run reads them. So this keeps working -- and simply finds nothing to advance --
+# while the cluster is switched off for the night.
+#
+# ONE-TIME SETUP (none of these values live in a file; the repo is public):
+#
+#   Secrets  ROLLOUT_ROLE_ARN          terraform -chdir=terraform/core output github_rollout_role_arn
+#            ARTIFACTS_BUCKET          terraform -chdir=terraform/core output artifacts_bucket_name
+#            ROLLOUT_APP_PRIVATE_KEY   the GitHub App's private key
+#            MODEL_QUEUE_URL           optional: the SQS queue the model publisher announces on
+#   Variables ROLLOUT_APP_ID, AWS_REGION
+#
+# The bucket and role are SECRETS, not variables, only so they are masked: Actions logs
+# of a public repository are public, and both carry the account ID.
+name: rollout
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+  # Sent by whoever drains the model publisher's queue, or by hand:
+  #   gh api repos/<owner>/<repo>/dispatches -f event_type=model-published
+  # A hint only. The step re-reads S3; a dispatch for nothing does nothing.
+  repository_dispatch:
+    types: [model-published]
+
+# One rollout controller at a time. Two concurrent steps would both read the same state
+# and could both propose the same move.
+concurrency:
+  group: rollout
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          ROLE: ${{ secrets.ROLLOUT_ROLE_ARN }}
+          BUCKET: ${{ secrets.ARTIFACTS_BUCKET }}
+          APP_KEY: ${{ secrets.ROLLOUT_APP_PRIVATE_KEY }}
+          APP_ID: ${{ vars.ROLLOUT_APP_ID }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$BUCKET" ] && [ -n "$APP_KEY" ] && [ -n "$APP_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::rollout chua cau hinh (xem dau file rollout.yml) -- bo qua"
+          fi
+
+  step:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # OIDC -> the read-only rollout role; no AWS key exists
+      issues: write     # one issue per promote, rejection and rollback
+    env:
+      BOT_BRANCH: rollout/bot
+      COSIGN_VERSION: v3.1.3
+    steps:
+      # The App token, not GITHUB_TOKEN, for everything that touches the PR: pushes and
+      # PRs made with GITHUB_TOKEN deliberately trigger no workflows, so rollout-check
+      # would never run on the bot's PR and auto-merge would never fire.
+      - id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.ROLLOUT_APP_ID }}
+          private-key: ${{ secrets.ROLLOUT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+      # The previous step's PR has not merged yet: deciding again from the old main
+      # would propose the same move twice.
+      - id: pending
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          n=$(gh pr list --head "$BOT_BRANCH" --state open --json number --jq length)
+          echo "open=$n" >> "$GITHUB_OUTPUT"
+          [ "$n" = "0" ] || echo "::notice::PR rollout truoc chua merge -- doi lan sau"
+
+      - if: steps.pending.outputs.open == '0'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - if: steps.pending.outputs.open == '0'
+        run: pip install pyyaml==6.0.2
+
+      # Pinned, and checked against the release's own checksum file. The gates verify
+      # model signatures with this binary; an unpinned one would be the weakest link in
+      # a chain that is otherwise all pinned.
+      - name: Cai cosign
+        if: steps.pending.outputs.open == '0'
+        run: |
+          set -euo pipefail
+          base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o cosign-linux-amd64 "$base/cosign-linux-amd64"
+          curl -sSfL -o cosign_checksums.txt "$base/cosign_checksums.txt"
+          grep ' cosign-linux-amd64$' cosign_checksums.txt | sha256sum -c -
+          install -m 0755 cosign-linux-amd64 /usr/local/bin/cosign
+          cosign version | grep GitVersion
+
+      - if: steps.pending.outputs.open == '0'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.ROLLOUT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      # Announcements are hints. The step below re-reads S3 whatever they say, so they
+      # are deleted once received: losing one costs nothing (the schedule finds the
+      # version anyway), and leaving them would replay forever.
+      - name: Rut tin SQS
+        if: steps.pending.outputs.open == '0'
+        env:
+          QUEUE: ${{ secrets.MODEL_QUEUE_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$QUEUE" ] || { echo "khong cau hinh SQS -- chi do S3"; exit 0; }
+          for _ in 1 2 3; do
+            out=$(aws sqs receive-message --queue-url "$QUEUE" --max-number-of-messages 10 \
+                    --wait-time-seconds 1 --output json)
+            [ -n "$out" ] || break
+            echo "$out" | jq -r '.Messages[]? | (.Body | fromjson? | .prefix // "?")' \
+              | sed 's/^/  tin: /'
+            echo "$out" | jq -r '.Messages[]?.ReceiptHandle' | while read -r handle; do
+              aws sqs delete-message --queue-url "$QUEUE" --receipt-handle "$handle"
+            done
+          done
+
+      - name: Mot buoc rollout
+        id: decide
+        if: steps.pending.outputs.open == '0'
+        env:
+          BUCKET: ${{ secrets.ARTIFACTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          python3 bench/scripts/rollout_controller.py step --bucket "$BUCKET" \
+            --summary "$RUNNER_TEMP/summary.json"
+          echo "changed=$(jq -r .changed "$RUNNER_TEMP/summary.json")" >> "$GITHUB_OUTPUT"
+          { echo "## Rollout"; jq -r '.body // ""' "$RUNNER_TEMP/summary.json"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mo PR va tu merge
+        if: steps.decide.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          title=$(jq -r .title "$RUNNER_TEMP/summary.json")
+          jq -r .body "$RUNNER_TEMP/summary.json" > "$RUNNER_TEMP/body.md"
+          { echo "$title"; echo; cat "$RUNNER_TEMP/body.md"; } > "$RUNNER_TEMP/commit.txt"
+          git config user.name "rollout-bot"
+          git config user.email "rollout-bot@users.noreply.github.com"
+          git checkout -B "$BOT_BRANCH"
+          git add deploy/
+          git commit -q -F "$RUNNER_TEMP/commit.txt"
+          git push -q --force origin "$BOT_BRANCH"
+          url=$(gh pr create --base main --head "$BOT_BRANCH" --title "$title" \
+                  --body-file "$RUNNER_TEMP/body.md")
+          echo "PR: $url" >> "$GITHUB_STEP_SUMMARY"
+          # --auto waits for the required check. If main has no required check (branch
+          # protection not set up yet), --auto is refused; then wait for the check here
+          # and merge only if it passed -- never merge unchecked.
+          if ! gh pr merge "$url" --auto --squash --delete-branch; then
+            sleep 20
+            gh pr checks "$url" --watch --fail-fast
+            gh pr merge "$url" --squash --delete-branch
+          fi
+
+      # Issues use GITHUB_TOKEN on purpose: they should not trigger anything.
+      - name: Issue
+        if: steps.decide.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create rollout --color 0E8A16 --force >/dev/null 2>&1 || true
+          jq -c '.events[] | select(.issue)' "$RUNNER_TEMP/summary.json" | while read -r e; do
+            track=$(jq -r .track <<<"$e"); kind=$(jq -r .kind <<<"$e")
+            rid=$(jq -r '.rollout_id // ""' <<<"$e"); msg=$(jq -r .message <<<"$e")
+            report=$(jq -r '.report // ""' <<<"$e")
+            # shellcheck disable=SC2016  # the backticks are Markdown, not a substitution
+            body=$(printf '%s\n\nBao cao: `%s`\nLan chay: %s/%s/actions/runs/%s\n' \
+                     "$msg" "${report:-khong co}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            if [ "$(jq -r .issue <<<"$e")" = "open" ]; then
+              gh issue create --label rollout --title "rollout $track: $kind ${rid}" --body "$body"
+            else
+              # A passed watch closes the issue its promote opened.
+              for n in $(gh issue list --label rollout --state open \
+                           --search "\"promoted ${rid}\" in:title" --json number --jq '.[].number'); do
+                gh issue close "$n" --comment "$body"
+              done
+            fi
+          done

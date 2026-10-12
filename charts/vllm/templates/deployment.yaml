@@ -228,7 +228,18 @@ spec:
           args:
             - --model=/weights
             # Stable API name, so benchmark configs survive a checkpoint change.
-            - --served-model-name={{ $m.servedName }}
+            #
+            # Aliases are how a rollout candidate answers to two names at once: its own
+            # (<track>-candidate, which only the evaluation Job calls) and the track's
+            # (which the guardrail sends during canary). Serving both from the start means
+            # moving from evaluation to canary is a routing change in the guardrail and
+            # never a restart of a pod that took fifteen minutes to sync and hash.
+            # The flag takes a list, so each name is its own argument.
+            - --served-model-name
+            - {{ $m.servedName | quote }}
+            {{- range $m.servedAliases }}
+            - {{ . | quote }}
+            {{- end }}
             - --dtype={{ $m.dtype }}
             - --max-model-len={{ $m.maxModelLen }}
             # The value that divides the card. In shared mode the two models' shares must

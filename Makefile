@@ -28,7 +28,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	webui-secret webui-admin-password webui-logo webui-up webui-export webui-down agent-key agent-keys-list \
 	cluster-config argocd-up argocd-status argocd-password rollout-render rollout-check \
 	litellm-ui-password \
-	rollout-pause rollout-resume \
+	rollout-pause rollout-resume rollout-step rollout-jobs rollout-report \
 	model-check model-publish \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
@@ -709,6 +709,21 @@ cluster-config: ## Dua gia tri rieng cua tai khoan vao cum, de Argo khong can do
 	kubectl -n inference annotate serviceaccount vllm \
 		eks.amazonaws.com/role-arn="$$arn" --overwrite >/dev/null; \
 	echo "  cluster-config: bucket da ghi, serviceaccount vllm da gan role"
+	@# Cac Job rollout (danh gia, canary, theo doi) chay o namespace benchmark bang role
+	@# bench-runner: doc models/ va datasets/, ghi runs/ -- ghi bao cao, khong dung duoc
+	@# trong so. Cung ConfigMap cluster-config, vi Job cung can ten bucket ma khong duoc
+	@# doc no tu git.
+	@runner=$$($(TF) output -raw bench_runner_role_arn 2>/dev/null); \
+	bkt=$$($(TFC) output -raw artifacts_bucket_name 2>/dev/null); \
+	[ -n "$$runner" ] || { echo "thieu output bench_runner_role_arn -- apply cluster chua?"; exit 1; }; \
+	kubectl create namespace benchmark --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n benchmark create configmap cluster-config \
+		--from-literal=artifactsBucket="$$bkt" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n benchmark create serviceaccount bench-runner --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	kubectl -n benchmark annotate serviceaccount bench-runner \
+		eks.amazonaws.com/role-arn="$$runner" --overwrite >/dev/null; \
+	echo "  cluster-config: namespace benchmark san sang cho Job rollout"
 
 argocd-up: ## Cai Argo CD va app-of-apps. Chay sau lab-up, truoc vllm-up
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
@@ -735,12 +750,31 @@ argocd-password: ## Mat khau admin ban dau cua Argo CD
 	@kubectl -n argocd get secret argocd-initial-admin-secret \
 		-o jsonpath='{.data.password}' 2>/dev/null | base64 -d; echo
 
-rollout-render: ## Sinh lai deploy/values va deploy/argocd/apps tu state.yaml
+rollout-render: ## Sinh lai deploy/values, deploy/argocd/apps va deploy/rollout tu state.yaml
 	@python3 bench/scripts/rollout_state.py render
 
-rollout-check: ## Kiem state.yaml hop le va cac file sinh ra khong lech (dung trong CI)
+rollout-check: ## Kiem state.yaml, catalog.yaml va cac file sinh ra khong lech (dung trong CI)
 	@python3 bench/scripts/rollout_state.py validate
+	@python3 bench/scripts/rollout_controller.py check-catalog
 	@python3 bench/scripts/rollout_state.py check-rendered
+
+rollout-step: ## Chay mot buoc controller tu may nay, KHONG ghi gi -- xem lan chay ke se lam gi
+# Dung dung code cua rollout.yml, voi credential AWS cua ban thay cho role OIDC. --dry-run:
+# buoc that chi duoc di qua PR, de lich su nam o git.
+	@test -n "$(ARTIFACTS)" || { echo "artifacts bucket unknown -- run: make core-up"; exit 1; }
+	@python3 bench/scripts/rollout_controller.py step --bucket "$(ARTIFACTS)" --dry-run
+
+rollout-jobs: ## Job rollout dang chay trong cum, va log cua Job moi nhat
+	@kubectl -n benchmark get jobs -l app.kubernetes.io/part-of=rollout \
+		-o custom-columns=JOB:.metadata.name,XONG:.status.succeeded,LOI:.status.failed,TU:.status.startTime \
+		2>/dev/null || echo "  chua co namespace benchmark"
+	@job=$$(kubectl -n benchmark get jobs -l app.kubernetes.io/part-of=rollout \
+		--sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1); \
+	[ -z "$$job" ] || { echo; kubectl -n benchmark logs "$$job" --tail=30; }
+
+rollout-report: ## Doc bao cao cua mot lan rollout. ID=<rollout id> KIND=eval|canary|watch
+	@test -n "$(ID)" && test -n "$(KIND)" || { echo "can ID= va KIND="; exit 1; }
+	@aws s3 cp "s3://$(ARTIFACTS)/runs/rollout/$(ID)/$(KIND).json" - --only-show-errors
 
 rollout-pause: ## Dung moi rollout. BAT BUOC truoc khi do tai. REASON="..."
 	@python3 bench/scripts/rollout_state.py pause --reason "$(REASON)"

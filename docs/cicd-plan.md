@@ -126,9 +126,10 @@ App nằm trong secret của GitHub Actions, không nằm trong file nào.
 
 Cách `rollout.yml` lái quy trình:
 
-- một lượt chạy lái cả quy trình: mở PR, chờ merge, chờ báo cáo trên S3, mở PR bước kế (giới hạn
-  6 giờ một job);
-- lịch 15 phút một lần tiếp tục rollout dở dang, ví dụ khi cụm đang tắt;
+- mỗi lượt chạy đi **đúng một bước**: đọc S3, quyết định, mở PR, bật tự merge rồi thoát. Lượt
+  sau (15 phút) thấy báo cáo của Job và đi bước kế. Không lượt nào ngồi chờ, nên cụm tắt cả đêm
+  cũng không làm treo job nào — lượt chạy chỉ thấy không có gì để làm;
+- PR trước của bot chưa merge thì lượt chạy bỏ qua, để không đề xuất cùng một bước hai lần;
 - `concurrency` đảm bảo mỗi lúc chỉ có một rollout;
 - các workflow khác bỏ qua thay đổi chỉ nằm trong `deploy/state.yaml` (`paths-ignore`), để PR của
   bot không kích hoạt build image hay bộ test nặng.
@@ -202,16 +203,17 @@ gì.
 
 ### 4.3 Tự phát hiện và các cổng
 
-`models/catalog.yaml` khai model nào được theo dõi — do người sửa qua PR:
+`deploy/catalog.yaml` khai model nào được theo dõi — do người sửa qua PR:
 
 ```yaml
-paused: false                    # công tắc dừng khẩn cho MỌI rollout, model lẫn image
-
 qwen2.5-7b:
-  watch: models/moc-7b/          # nơi bên ghi đặt các version mới
+  watch: models/qwen2.5-7b/      # nơi bên ghi đặt các version mới
+  allowed_signers: [external]    # tên file trong deploy/signers/
   auto_rollout: true             # qua hết cổng là lên production
-  allowed_signers: [training-pipeline]
+  canary_weight: 25
 ```
+
+Công tắc `paused` nằm ở đầu `deploy/state.yaml` (`make rollout-pause REASON=...`).
 
 `watch-models.yml` chạy 15 phút một lần, liệt kê `_READY` mới dưới các thư mục được theo dõi. Có
 nhiều version mới thì lấy version mới nhất, bỏ các bản cũ hơn.
@@ -360,11 +362,12 @@ Image vẫn ký keyless (§5.1), vì hoàn cảnh khác: image build từ repo p
 | `charts/vllm` | Deployment `stable` + `candidate`, mỗi bên có trọng số và engine riêng; số pod stable = 4 trừ số ứng viên; init container băm và so manifest; tên phục vụ của ứng viên |
 | `services/llm_pipeline/app.py` | `MODEL_ROUTES_JSON` nhận nhiều upstream có trọng số; nhãn `model_version` trên metric; test |
 | `charts/guardrail` và các chart khác | image sinh từ `deploy/state.yaml`, theo digest |
-| `models/catalog.yaml`, `deploy/state.yaml` | mới |
+| `deploy/catalog.yaml`, `deploy/state.yaml` | mới |
 | `deploy/signers/*.pub` | khoá công khai của các bên được phép ký model |
 | `deploy/argocd/` | Application cho `vllm`, `guardrail`; chart khác chuyển dần |
-| `k8s/rollout/` | Job đánh giá, canary, smoke, theo dõi; ghi báo cáo lên `runs/rollout/<id>/` |
-| `.github/workflows/` | `pr.yml`, `images.yml`, `watch-models.yml`, `rollout.yml` |
+| `deploy/rollout/` (sinh ra) | ConfigMap route của guardrail; Job đánh giá, canary, theo dõi; ConfigMap chứa script + dữ liệu cho Job. Báo cáo lên `runs/rollout/<id>/` |
+| `bench/scripts/rollout_jobs.py`, `rollout_controller.py` | ba Job trong cụm; controller một-bước-mỗi-lần-chạy |
+| `.github/workflows/` | `rollout-check.yml` (PR), `rollout.yml` (gộp cả việc dò S3 — không cần `watch-models.yml` riêng). `pr.yml`, `images.yml` chưa làm |
 | `renovate.json` | theo dõi image upstream, ghim digest |
 | `terraform/core` | OIDC provider của GitHub + role cho Actions (đọc `models/`, đọc `runs/rollout/`, đẩy ECR); role IRSA cho Job rollout; khoá KMS ký model, key policy chỉ cho đúng role của bên ghi `kms:Sign` |
 | `terraform/cluster/variables.tf` | `cpu_desired = 3` mặc định — `desired_size` chỉ có hiệu lực lúc tạo node group |

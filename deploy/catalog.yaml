@@ -1,0 +1,20 @@
+# Model nao CD tu theo doi, o dau tren S3, va ai duoc phep ky. Nguoi sua qua PR.
+#
+#   watch            prefix noi ben ghi dat cac version: <watch><version>/_READY
+#   allowed_signers  ten file trong deploy/signers/ (bo .pub). Them mot ben ghi moi la
+#                    them khoa cong khai cua ho vao do VA ten ho vao day -- ca hai deu qua
+#                    review, vi day la danh sach ai duoc dua model len production.
+#   auto_rollout     false: van kiem va bao, nhung khong tu dua len.
+#   canary_weight    phan tram traffic cho ung vien o buoc canary (1..50).
+#
+# Kiem bang: python3 bench/scripts/rollout_controller.py check-catalog
+qwen2.5-7b:
+  watch: models/qwen2.5-7b/
+  allowed_signers: [external]
+  auto_rollout: true
+  canary_weight: 25
+qwen2.5-1.5b:
+  watch: models/qwen2.5-1.5b/
+  allowed_signers: [external]
+  auto_rollout: true
+  canary_weight: 25

@@ -12,8 +12,10 @@ tested by ``make guardrails-test`` without pulling a second web framework depend
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -22,6 +24,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -94,13 +97,157 @@ FORCE_CITATION_MODELS = frozenset(
 )
 CORPUS_PATH = os.getenv("CORPUS_PATH", str(DEFAULT_CORPUS))
 WAREHOUSE_PATH = Path(os.getenv("WAREHOUSE_PATH", str(warehouse.DEFAULT_PATH)))
-MODEL_ROUTES = json.loads(os.getenv(
+# WHERE EACH MODEL NAME IS SERVED, AND -- DURING A CANARY -- IN WHAT PROPORTION.
+#
+# A route is either a URL, or a list of {url, weight, version} entries. The list form exists
+# for exactly one reason: a canary has to send part of a model's traffic to the candidate
+# engine, and the split has to live HERE rather than in pod counts. Splitting by pods would
+# put both versions behind one Service, and then nothing could say which version produced
+# which answer -- so quality could only be compared before the candidate saw real traffic,
+# never during. Splitting here lets every request be labelled with the version that served
+# it, and canary analysis compares the two on live traffic.
+#
+# The single-URL form is unchanged, so every existing route and test keeps working.
+ROUTE_VERSIONS = ("stable", "candidate")
+
+
+@dataclass(frozen=True)
+class Upstream:
+    url: str
+    weight: int = 100
+    version: str = "stable"
+
+
+def _as_upstreams(value: Any) -> tuple[Upstream, ...]:
+    if isinstance(value, str):
+        return (Upstream(value),)
+    if isinstance(value, Upstream):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        out = []
+        for entry in value:
+            if isinstance(entry, Upstream):
+                out.append(entry)
+            elif isinstance(entry, dict):
+                out.append(Upstream(str(entry.get("url", "")),
+                                    int(entry.get("weight", 100)),
+                                    str(entry.get("version", "stable"))))
+            else:
+                raise ValueError(f"route entry must be an object: {entry!r}")
+        return tuple(out)
+    raise ValueError(f"route must be a URL or a list of upstreams: {value!r}")
+
+
+def validate_routes(raw: Any) -> dict[str, Any]:
+    """Refuse a route table that cannot be served, at load time rather than per request.
+
+    The failure this guards is a ConfigMap edited into a shape nothing can route: weights
+    summing to zero, a version name the metrics do not know, two "stable" entries. Caught
+    here, the previous table stays in force and the reload failure is counted. Caught per
+    request, it would surface as a stream of 400s on a model that was working a minute ago.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("model routes must be a non-empty object")
+    for name, value in raw.items():
+        upstreams = _as_upstreams(value)
+        if not upstreams:
+            raise ValueError(f"{name}: no upstreams")
+        versions = [u.version for u in upstreams]
+        if len(set(versions)) != len(versions):
+            raise ValueError(f"{name}: duplicate version in {versions}")
+        for u in upstreams:
+            if not u.url.startswith(("http://", "https://")):
+                raise ValueError(f"{name}: upstream url must be http(s): {u.url!r}")
+            if u.version not in ROUTE_VERSIONS:
+                # Bounded on purpose: version becomes a Prometheus label.
+                raise ValueError(f"{name}: version must be one of {ROUTE_VERSIONS}")
+            if u.weight < 0:
+                raise ValueError(f"{name}: negative weight")
+        if sum(u.weight for u in upstreams) <= 0:
+            raise ValueError(f"{name}: weights sum to zero")
+    return dict(raw)
+
+
+MODEL_ROUTES = validate_routes(json.loads(os.getenv(
     "MODEL_ROUTES_JSON",
     json.dumps({
         "qwen2.5-7b": "http://vllm-a.inference.svc.cluster.local:8000/v1",
         "qwen2.5-1.5b": "http://vllm-b.inference.svc.cluster.local:8000/v1",
     }),
-))
+)))
+
+# Routes can also come from a mounted ConfigMap, re-read while serving. This is how a
+# rollout reaches the guardrail without a person: Argo CD syncs the ConfigMap from git,
+# the kubelet refreshes the mounted file, and the next request picks it up. The guardrail
+# itself is installed by `make guardrail-up` -- its image lives in an account-specific
+# registry, which cannot be written into a public repo -- so a values change would need a
+# human to run helm. A file it re-reads does not.
+#
+# Absent or unreadable, MODEL_ROUTES_JSON stays in force: a missing ConfigMap must not turn
+# into a guardrail that routes nothing.
+MODEL_ROUTES_FILE = os.getenv("MODEL_ROUTES_FILE", "")
+ROUTES_RELOAD_SECONDS = float(os.getenv("ROUTES_RELOAD_SECONDS", "5"))
+_routes_lock = threading.Lock()
+_routes_state: dict[str, Any] = {"checked": 0.0, "digest": None}
+
+
+def _maybe_reload_routes(now: float | None = None) -> bool:
+    """Re-read MODEL_ROUTES_FILE if it changed. True when a new table took effect.
+
+    Compared by content digest, not mtime: a ConfigMap update swaps a symlink, and whether
+    the mtime of the resolved file moves is a detail of the kubelet that is not worth
+    depending on for something this cheap to hash.
+    """
+    global MODEL_ROUTES
+    if not MODEL_ROUTES_FILE:
+        return False
+    now = time.monotonic() if now is None else now
+    if now - _routes_state["checked"] < ROUTES_RELOAD_SECONDS:
+        return False
+    with _routes_lock:
+        if now - _routes_state["checked"] < ROUTES_RELOAD_SECONDS:
+            return False
+        _routes_state["checked"] = now
+        try:
+            data = Path(MODEL_ROUTES_FILE).read_bytes()
+        except OSError:
+            return False
+        digest = hashlib.sha256(data).hexdigest()
+        if digest == _routes_state["digest"]:
+            return False
+        try:
+            routes = validate_routes(json.loads(data))
+        except (ValueError, json.JSONDecodeError, TypeError) as exc:
+            _routes_state["digest"] = digest   # do not re-parse the same bad file
+            _telemetry.inc("guardrail_route_reload_failures_total", {})
+            print(f"route reload rejected, keeping previous table: {exc}", flush=True)
+            return False
+        MODEL_ROUTES = routes
+        _routes_state["digest"] = digest
+        print(f"routes reloaded: {sorted(routes)}", flush=True)
+        return True
+
+
+def _upstreams(model: str) -> tuple[Upstream, ...]:
+    value = MODEL_ROUTES.get(model)
+    return _as_upstreams(value) if value is not None else ()
+
+
+def _pick_upstream(model: str, rand=random.random) -> Upstream:
+    """The engine that serves THIS request. Chosen once, then reused for every engine call
+    the request makes -- a grounding retry sent to the other version would have its answer
+    credited to the wrong one, and lose the prefix cache the first call warmed."""
+    live = [u for u in _upstreams(model) if u.weight > 0]
+    if not live:
+        raise ValueError(f"model is not routed by guardrail: {model}")
+    if len(live) == 1:
+        return live[0]
+    point = rand() * sum(u.weight for u in live)
+    for upstream in live:
+        point -= upstream.weight
+        if point < 0:
+            return upstream
+    return live[-1]
 
 # THE NON-RAG SERVING PROFILE, AND WHY IT RIDES ON THE MODEL NAME.
 #
@@ -323,6 +470,17 @@ class Metrics:
             "Calls from the guardrail service to vLLM.",
             ("model", "outcome"),
         ),
+        # What canary analysis compares. Only requests that reached an engine are counted,
+        # labelled with the version that served them; refusals at the input stage and
+        # cache hits carry no version, because neither engine produced them.
+        "guardrail_version_requests_total": (
+            "Requests that reached an engine, by serving version, outcome and stage.",
+            ("model", "model_version", "outcome", "stage"),
+        ),
+        "guardrail_route_reload_failures_total": (
+            "Route files rejected on reload; the previous table stayed in force.",
+            (),
+        ),
         "guardrail_pii_findings_total": (
             "PII findings by direction, kind and action; values are never exported.",
             ("direction", "kind", "action"),
@@ -375,6 +533,11 @@ class Metrics:
         ),
     }
     HISTOGRAMS = {
+        "guardrail_version_duration_seconds": (
+            "End-to-end guardrail time for requests that reached an engine, by version.",
+            ("model", "model_version"),
+            (0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 30.0, 120.0),
+        ),
         "guardrail_request_duration_seconds": (
             "End-to-end time spent in the guardrail hop, including vLLM.",
             ("outcome", "model"),
@@ -794,11 +957,10 @@ def _force_citation(
 
 
 def _call_vllm(
-    model: str, payload: dict[str, Any], traceparent: str | None = None
+    model: str, payload: dict[str, Any], traceparent: str | None = None,
+    upstream: Upstream | None = None,
 ) -> dict[str, Any]:
-    base = MODEL_ROUTES.get(model)
-    if not base:
-        raise ValueError(f"model is not routed by guardrail: {model}")
+    base = (upstream or _pick_upstream(model)).url
     headers = {"Authorization": "Bearer none", "Content-Type": "application/json"}
     # Hand vLLM the current span as its parent. It only acts on this when started with
     # --otlp-traces-endpoint; otherwise the header is ignored and the engine's time still
@@ -1121,7 +1283,14 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "endpoint not found")
             return
         started = time.monotonic()
+        _maybe_reload_routes()
         model_label = "unknown"
+        # Which engine version answered. "none" until an engine is actually called, so a
+        # request refused at the input stage or served from cache is never counted against
+        # either version -- canary analysis compares what the two engines produced, and
+        # neither produced those.
+        version_label = "none"
+        chosen: Upstream | None = None
         outcome = "error"
         terminal_stage = "internal"
         upstream_elapsed = 0.0
@@ -1177,6 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
                     f"model is not routed by guardrail: {model}",
                 )
                 return
+            chosen = _pick_upstream(engine_model)
+            root.set("guardrail.model_version", chosen.version)
 
             # n > 1 IS A GUARDRAIL BYPASS, not merely an unsupported option.
             #
@@ -1253,8 +1424,10 @@ class Handler(BaseHTTPRequestHandler):
                                               tracing.KIND_CLIENT)
                     spans.append(plan_span)
                     try:
+                        version_label = chosen.version
                         plan_response = _call_vllm(
-                            engine_model, plan_payload, traceparent=plan_span.traceparent())
+                            engine_model, plan_payload, traceparent=plan_span.traceparent(),
+                            upstream=chosen)
                         audit["usage"] = plan_response.get("usage")
                         try:
                             sql = warehouse.parse_plan(_answer(plan_response))
@@ -1280,7 +1453,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         repair_response = _call_vllm(
                             engine_model, repair_payload,
-                            traceparent=repair_span.traceparent())
+                            traceparent=repair_span.traceparent(), upstream=chosen)
                         sql = warehouse.parse_plan(_answer(repair_response))
                         if sql is None:
                             raise plan_error
@@ -1501,10 +1674,12 @@ class Handler(BaseHTTPRequestHandler):
             spans.append(upstream_span)
             upstream_span.set("guardrail.model", model_label)
             try:
+                version_label = chosen.version
                 upstream = _call_vllm(
                     engine_model,
                     _upstream_payload(payload, prepared, engine_model),
                     traceparent=upstream_span.traceparent(),
+                    upstream=chosen,
                 )
                 upstream_outcome = "success"
                 _trace_usage(upstream_span, upstream)
@@ -1570,6 +1745,7 @@ class Handler(BaseHTTPRequestHandler):
                         engine_model,
                         retry_payload,
                         traceparent=retry_span.traceparent(),
+                        upstream=chosen,
                     )
                     second = pipeline.finalise(
                         _undatamark(_answer(retried), _session(agent, access)),
@@ -1678,7 +1854,13 @@ class Handler(BaseHTTPRequestHandler):
                 "trace_id": root.trace_id if root.sampled else "",
                 "cache": {"hit": False},
             })
-            if semantic_cache is not None and cache_eligible:
+            # Never cache what the candidate said. A cached answer outlives the rollout that
+            # produced it: if the candidate is then rejected, its answers would go on being
+            # served from Redis to everyone, under the stable model's name, by a version
+            # that failed its gates. Candidate traffic is a minority during canary, so the
+            # cost is a slightly lower hit rate for fifteen minutes.
+            if (semantic_cache is not None and cache_eligible
+                    and (chosen is None or chosen.version == "stable")):
                 assert checked.canonical is not None
                 try:
                     semantic_cache.store(
@@ -1746,6 +1928,15 @@ class Handler(BaseHTTPRequestHandler):
             _tracer.submit(spans)
             _audit(root.trace_id, outcome, terminal_stage, model_label, elapsed, audit)
             _count(outcome, terminal_stage, model_label)
+            if version_label != "none":
+                _telemetry.inc("guardrail_version_requests_total", {
+                    "model": model_label, "model_version": version_label,
+                    "outcome": outcome, "stage": terminal_stage,
+                })
+                _telemetry.observe(
+                    "guardrail_version_duration_seconds",
+                    {"model": model_label, "model_version": version_label}, elapsed,
+                )
             _telemetry.observe(
                 "guardrail_request_duration_seconds",
                 {"outcome": outcome, "model": model_label}, elapsed,

@@ -42,6 +42,19 @@ s3://<bucket>/models/<tên-model>/<version>/
 
 **`<tên-model>` và `<version>`** phải khớp `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 
+**CD chỉ theo dõi các thư mục khai trong
+[`deploy/catalog.yaml`](../deploy/catalog.yaml).** Hiện là:
+
+| Thư mục | Thành model | `served_name` bắt buộc |
+|---|---|---|
+| `models/qwen2.5-7b/` | `qwen2.5-7b` | `qwen2.5-7b` |
+| `models/qwen2.5-1.5b/` | `qwen2.5-1.5b` | `qwen2.5-1.5b` |
+
+Ghi vào thư mục khác thì version vẫn nằm đó, nhưng **không có gì xảy ra**. Muốn đặt tên
+khác (vd `moc-7b`), báo DA#51 để sửa `deploy/catalog.yaml` qua PR — việc đó cũng là chỗ
+khai bên ký nào được phép đưa model vào thư mục ấy. `served_name` trong manifest phải
+đúng tên ở cột cuối; lệch là bị từ chối trước khi tốn GPU.
+
 **`<version>` không bao giờ được ghi đè.** Rollback phải trả về **đúng bộ byte đã chạy**;
 ghi đè một version làm cho `deploy/state.yaml` vẫn trỏ đúng tên nhưng nội dung đã khác —
 và rollback khôi phục một thứ không ai chọn. Bucket đã bật versioning nên vẫn cứu được,

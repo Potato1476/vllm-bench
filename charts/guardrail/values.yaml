@@ -13,6 +13,12 @@ models:
   qwen2.5-7b: http://vllm-a.inference.svc.cluster.local:8000/v1
   qwen2.5-1.5b: http://vllm-b.inference.svc.cluster.local:8000/v1
 
+# Live route table written by Argo CD from deploy/state.yaml (deploy/rollout/). Empty
+# disables the mount and the env table above is all there is.
+routes:
+  configMap: guardrail-routes
+  reloadSeconds: 5
+
 defaultAccessLevel: internal-demo
 upstreamTimeoutSeconds: 300
 
