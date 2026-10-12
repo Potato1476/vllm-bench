@@ -58,10 +58,27 @@ data "aws_iam_policy_document" "github_rollout_trust" {
     # main only. A pull request's workflow runs the PR author's code; letting it assume
     # this role would hand the bucket listing to anyone who can open a PR on a public
     # repository. Schedule, dispatch and repository_dispatch all run on main.
+    # KHONG dieu kien tren `sub`. Do la cai bay dau tien gap phai o day: sub that ma
+    # GitHub phat ra la
+    #
+    #     repo:Potato1476@144371399/vllm-bench@1375694617:ref:refs/heads/main
+    #
+    # -- ten chu repo va ten repo deu kem ID so, de sub khong vo khi doi ten. Mot
+    # StringEquals tren "repo:<owner>/<repo>:ref:refs/heads/main" vi vay KHONG BAO GIO
+    # khop, va loi bao ra la "Not authorized to perform sts:AssumeRoleWithWebIdentity",
+    # doc nhu mot van de quyen chu khong phai mot chuoi khong khop.
+    #
+    # Hai claim duoi day sach va co cung tac dung chan: dung mot repo, dung nhanh main.
+    # pull_request co ref la refs/pull/N/merge nen khong qua duoc.
     condition {
       test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+      variable = "token.actions.githubusercontent.com:repository"
+      values   = [var.github_repository]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = ["refs/heads/main"]
     }
   }
 }
@@ -141,10 +158,27 @@ data "aws_iam_policy_document" "github_images_trust" {
     }
     # main only. Workflow của một pull request chạy mã của người mở PR; cho nó đẩy image
     # lên ECR là cho bất kỳ ai mở được PR trên một repo công khai làm việc đó.
+    # KHONG dieu kien tren `sub`. Do la cai bay dau tien gap phai o day: sub that ma
+    # GitHub phat ra la
+    #
+    #     repo:Potato1476@144371399/vllm-bench@1375694617:ref:refs/heads/main
+    #
+    # -- ten chu repo va ten repo deu kem ID so, de sub khong vo khi doi ten. Mot
+    # StringEquals tren "repo:<owner>/<repo>:ref:refs/heads/main" vi vay KHONG BAO GIO
+    # khop, va loi bao ra la "Not authorized to perform sts:AssumeRoleWithWebIdentity",
+    # doc nhu mot van de quyen chu khong phai mot chuoi khong khop.
+    #
+    # Hai claim duoi day sach va co cung tac dung chan: dung mot repo, dung nhanh main.
+    # pull_request co ref la refs/pull/N/merge nen khong qua duoc.
     condition {
       test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+      variable = "token.actions.githubusercontent.com:repository"
+      values   = [var.github_repository]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = ["refs/heads/main"]
     }
   }
 }
