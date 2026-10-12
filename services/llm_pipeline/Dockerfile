@@ -7,6 +7,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Ban va bao mat cua base image. IMG-002 cua bo quy tac Quality Gate chan moi CVE
+# CRITICAL/HIGH **co ban va**, va python:3.12.11-slim (Debian 13.1) den voi 8 cai nhu vay
+# trong perl-base va util-linux. Co ban va thi cach dung la lay ban va, khong phai xin
+# ngoai le -- mot ngoai le o day chi la ghi lai rang minh chon khong vá.
+#
+# `upgrade` chu khong phai ghim tung goi: danh sach CVE doi theo tuan, nen ghim phien ban
+# se bien moi lan Debian phat hanh ban va thanh mot lan sua Dockerfile.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Two small serving dependencies: numpy computes dense-retrieval/cache similarity and
 # redis talks to the pod-local response-cache sidecar. No web framework or model runtime is
 # pulled into this image; the dense module is still imported lazily so lexical-only startup

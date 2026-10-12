@@ -224,7 +224,13 @@ class Verdict:
 
 
 def judge(findings: list[Finding], levels: Levels, exceptions: list[Exception_],
-          today: date) -> Verdict:
+          today: date, *, complete: bool = True) -> Verdict:
+    """`complete=False` khi chi chay mot phan bo quet.
+
+    Bao "ngoai le nay khong con vi pham nao khop" chi dung khi da chay DU: mot buoc chi
+    quet image se thay moi ngoai le ve manifest la khong dung, va khuyen xoa chung --
+    tuc khuyen tat nhung quy tac dang can tat vi mot ly do khong lien quan.
+    """
     v = Verdict()
     used: set[int] = set()
     for f in findings:
@@ -243,7 +249,8 @@ def judge(findings: list[Finding], levels: Levels, exceptions: list[Exception_],
             v.enforced.append((f, level))
         else:
             v.informational.append((f, level))
-    v.unused = [e for i, e in enumerate(exceptions) if i not in used]
+    if complete:
+        v.unused = [e for i, e in enumerate(exceptions) if i not in used]
     return v
 
 
@@ -319,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     today = date.fromisoformat(a.today) if a.today else date.today()
+    # Du bo quet = ca bon nguon deu duoc truyen. Thieu bat ky nguon nao thi khong ket
+    # luan duoc ve ngoai le nao khong con dung.
+    complete = all((a.kyverno, a.conftest, a.trivy_secret, a.trivy_vuln))
 
     if a.list_exceptions:
         if not exceptions:
@@ -342,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     findings += parse_trivy_secret(read_json(a.trivy_secret))
     findings += parse_trivy_vuln(read_json(a.trivy_vuln))
 
-    v = judge(findings, levels, exceptions, today)
+    v = judge(findings, levels, exceptions, today, complete=complete)
     report = render(v, levels, a.gate_ref)
     print(report)
     if a.summary:
