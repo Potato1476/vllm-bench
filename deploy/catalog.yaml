@@ -16,8 +16,8 @@ qwen2.5-7b:
 qwen2.5-1.5b:
   watch: models/qwen2.5-1.5b/
   allowed_signers: [external, mlops-model-ci]
-  # Track RE NHAT de thu luong CD, va la track nen nham khi ben ghi model muon kiem bat
-  # tay: trong so 1.5B AWQ chi 1,5 GiB nen pod ung vien len trong vai phut thay vi nua
-  # gio, va buoc danh gia chay xong nhanh hon nhieu so voi 7B.
-  auto_rollout: true
+  # TAM TAT cho buoi chay thu dau-cuoi 12/10: track nay ve 1 card de tong con 3 node GPU
+  # (~3,37 USD/gio) thay vi 4. Mot card van hop le khi idle; chi khong rollout duoc.
+  # Bat lai: cards: 2 trong state.yaml va auto_rollout: true o day.
+  auto_rollout: false
   canary_weight: 25
