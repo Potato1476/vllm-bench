@@ -18,5 +18,12 @@ qwen2.5-7b:
     engine: vllm/vllm-openai:v0.29.0
     verify: false
     reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
-  phase: idle
+  phase: evaluating
+  candidate:
+    weights: models/qwen2.5-7b/4da05a8edb55c6046cce958586c33b61da07bb79
+    engine: vllm/vllm-openai:v0.29.0
+    weights_gib: 5.6797
+  candidate_since: '2026-10-12T14:38:17Z'
   cards: 2
+  phase_since: '2026-10-12T14:38:17Z'
+  watermark: '2026-10-12T13:51:27Z'
