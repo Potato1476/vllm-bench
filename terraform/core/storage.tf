@@ -113,3 +113,63 @@ resource "aws_ecr_lifecycle_policy" "guardrail" {
     }]
   })
 }
+
+# Quyen ghi model cho ben ghi o account khac (hop dong §7).
+#
+# Pham vi hep nhat ma `publish_model.py` can: ghi va doc lai duoi models/, liet ke bucket
+# gioi han prefix models/. KHONG co DeleteObject, khong cham runs/ (bang chung do nghiem
+# thu), datasets/ hay audit/.
+#
+# PutObject van cho phep GHI DE mot object da co -- S3 khong tach hai viec do. Hai thu
+# chan hau qua: versioning dang bat nen ban goc con lay lai duoc, va init container bam
+# lai tung file doi chieu manifest da ky moi lan pod khoi dong, nen mot ban ghi de khong
+# ky duoc se lam pod khong len thay vi duoc phuc vu.
+#
+# Object Ownership cua bucket la BucketOwnerEnforced, nen object ho ghi thuoc ve account
+# minh -- khong can ho dat ACL gi.
+data "aws_iam_policy_document" "artifacts_bucket" {
+  count = length(var.model_publisher_principals) > 0 ? 1 : 0
+
+  statement {
+    sid    = "ModelPublisherWriteModels"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = var.model_publisher_principals
+    }
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = ["${aws_s3_bucket.artifacts.arn}/models/*"]
+  }
+
+  statement {
+    sid    = "ModelPublisherListModelsPrefix"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = var.model_publisher_principals
+    }
+    # Chi ListBucket. `s3:prefix` khong ap dung cho ListBucketMultipartUploads, nen de
+    # chung mot statement thi PutBucketPolicy tra ve MalformedPolicy "Conditions do not
+    # apply to combination of actions and resources". Tach ra thi phai cap khong dieu
+    # kien, va ben ghi khong can no: do la quyen DO upload dang do, con bucket la cua
+    # minh nen minh do duoc.
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.artifacts.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["models/*", "models/"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "artifacts" {
+  count  = length(var.model_publisher_principals) > 0 ? 1 : 0
+  bucket = aws_s3_bucket.artifacts.id
+  policy = data.aws_iam_policy_document.artifacts_bucket[0].json
+}

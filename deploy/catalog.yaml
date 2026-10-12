@@ -10,12 +10,12 @@
 # Kiem bang: python3 bench/scripts/rollout_controller.py check-catalog
 qwen2.5-7b:
   watch: models/qwen2.5-7b/
-  allowed_signers: [external]
+  allowed_signers: [external, mlops-model-ci]
   auto_rollout: true
   canary_weight: 25
 qwen2.5-1.5b:
   watch: models/qwen2.5-1.5b/
-  allowed_signers: [external]
+  allowed_signers: [external, mlops-model-ci]
   # false, va day la su that chu khong phai mot gioi han tam thoi: track nay chi co 1 card
   # (xem ghi chu trong deploy/state.yaml), nen rollout se lam stable tut xuong 0 pod.
   # Dat true o day se khien moi version moi bi bo qua voi mot dong `skipped` khong ai doc.

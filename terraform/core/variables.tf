@@ -39,3 +39,14 @@ variable "budget_limit_usd" {
   type        = number
   default     = 200
 }
+
+# Ai duoc ghi model vao bucket, tu account khac.
+#
+# De trong trong git va dat trong terraform.tfvars (da gitignore): day la ARN cua account
+# NGUOI KHAC. Repo nay cong khai, va so account cua doi tac khong phai thu minh dua len
+# thay ho.
+variable "model_publisher_principals" {
+  description = "ARN cac principal cross-account duoc ghi vao models/. Rong = khong mo."
+  type        = list(string)
+  default     = []
+}

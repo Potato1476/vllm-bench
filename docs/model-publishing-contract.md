@@ -7,7 +7,7 @@ nền tảng serving của DA#51 chấp nhận và tự đưa model ra productio
 
 | | |
 |---|---|
-| **Dành cho** | Nhóm Deployment Quality Gate (bước `publish` trong pipeline CI) |
+| **Dành cho** | Nhóm **ML Deployment Pipeline** — bên chạy bước `publish`. Nhóm Deployment Quality Gate cung cấp các cổng kiểm chạy trong CI đó, không ghi model. |
 | **Liên hệ** | Nguyễn Gia Bảo — DA#51 |
 | **Công cụ kiểm** | `bench/scripts/check_model.py` trong repo công khai [`Potato1476/vllm-bench`](https://github.com/Potato1476/vllm-bench) |
 
@@ -86,7 +86,7 @@ file không được khai là nội dung **chưa ký** nằm ngay trong thư m�
   "version": "db1f81ad4b8c",
   "kind": "full",
   "served_name": "qwen2.5-7b",
-  "producer": "quality-gate-ci",
+  "producer": "mlops-model-ci",
   "source": "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4 @ db1f81ad4b8c...",
   "files": [
     {
@@ -129,7 +129,7 @@ Ký `manifest.json` bằng **cosign v3** với khoá **AWS KMS** riêng của b�
 
 ```bash
 cosign sign-blob \
-  --key awskms:///alias/model-signer-quality-gate \
+  --key awskms:///alias/model-signer-mlops-model-ci \
   --bundle manifest.bundle \
   --yes \
   manifest.json
@@ -149,14 +149,14 @@ artefact digest X lúc Y"* là lộ thông tin không mua lại được gì.
 
 ```bash
 KEY=$(aws kms create-key --key-spec ECC_NIST_P256 --key-usage SIGN_VERIFY \
-        --description "Quality Gate CI: model signer" \
+        --description "ML Deployment Pipeline: model signer" \
         --query KeyMetadata.KeyId --output text)
-aws kms create-alias --alias-name alias/model-signer-quality-gate --target-key-id "$KEY"
+aws kms create-alias --alias-name alias/model-signer-mlops-model-ci --target-key-id "$KEY"
 
-cosign public-key --key awskms:///alias/model-signer-quality-gate > quality-gate.pub
+cosign public-key --key awskms:///alias/model-signer-mlops-model-ci > mlops-model-ci.pub
 ```
 
-Gửi file `quality-gate.pub` cho DA#51. Nó sẽ được commit vào `deploy/signers/` và thêm
+Gửi file `mlops-model-ci.pub` cho DA#51. Nó sẽ được commit vào `deploy/signers/` và thêm
 vào danh sách `allowed_signers`.
 
 **Khoá công khai nằm trong git là có chủ ý:** thêm một bên được phép đưa model vào
@@ -195,7 +195,7 @@ upload, đọc lại từ S3 đối chiếu, rồi mới ghi `_READY`.
 ```bash
 python3 bench/scripts/publish_model.py \
   --from ./build/moc-7b --name moc-7b --version db1f81ad4b8c \
-  --served-name qwen2.5-7b --signer quality-gate --bucket <bucket>
+  --served-name qwen2.5-7b --signer mlops-model-ci --bucket <bucket>
 ```
 
 ---
@@ -232,7 +232,7 @@ CD hiện **dò S3 mỗi 15 phút**. Một tin nhắn SQS rút độ trễ xuố
   "prefix": "models/moc-7b/db1f81ad4b8c",
   "name": "moc-7b",
   "version": "db1f81ad4b8c",
-  "producer": "quality-gate-ci",
+  "producer": "mlops-model-ci",
   "published_at": "2026-10-12T09:14:00Z"
 }
 ```
@@ -276,11 +276,15 @@ Phía bên ghi cấp cho DA#51: quyền đọc và xoá tin trên SQS queue
 
 ## 8. Danh sách kiểm trước buổi làm việc chung
 
-- [ ] Tạo khoá KMS `alias/model-signer-quality-gate`, gửi `quality-gate.pub` cho DA#51
+- [x] Tạo khoá KMS, gửi `mlops-model-ci.pub` cho DA#51 — **xong 12/10**, đã commit vào
+      `deploy/signers/mlops-model-ci.pub` và thêm vào `allowed_signers` của cả hai track
+- [x] Mở quyền ghi S3 cho principal của bên ghi — **xong 12/10** (bucket policy, phạm vi
+      `models/*`; không có DeleteObject, không chạm `runs/`, `datasets/`, `audit/`)
 - [ ] Chốt quy ước đặt `<tên-model>` và `<version>`
 - [ ] Chạy `check_model.py --verify-hashes` trên một bộ trọng số thật, thoát `0`
 - [ ] Xác nhận `_READY` được ghi **sau cùng** trong bước `publish`
-- [ ] Chốt ai tạo SQS queue và cấp quyền hai chiều
+- [x] SQS — **bỏ**, theo đề nghị của bên ghi. Lịch dò S3 15 phút là đủ; §6 vẫn giữ để
+      sau này cần thì nối, và quy tắc "tin nhắn là gợi ý, `_READY` là sự thật" không đổi
 - [ ] Gửi ARN của IAM role CI để DA#51 viết bucket policy
 
 ---
