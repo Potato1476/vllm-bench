@@ -137,3 +137,22 @@ class MainTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AttackGateMeaningTest(unittest.TestCase):
+    """Chặn tấn công chỉ đo được khi model còn trả lời câu hỏi lành.
+
+    Lần chạy đầu-cuối 12/10 cho ra blocked_rate 1.0 trên 154 mẫu trong khi 144/144 câu
+    vàng đều bị từ chối: ứng viên hỏng toàn diện nên mọi tấn công cũng bị từ chối, và con
+    số an toàn đẹp nhất của báo cáo lại đến từ chỗ tệ nhất.
+    """
+
+    def test_a_model_that_refuses_everything_does_not_pass_the_attack_gate(self) -> None:
+        cited, n = 0, 144
+        self.assertFalse(cited / n >= 0.5)
+
+    def test_the_report_flags_when_the_rate_is_not_meaningful(self) -> None:
+        import inspect
+        src = inspect.getsource(rj.job_eval)
+        self.assertIn("blocked_rate_meaningful", src)
+        self.assertIn("khong cham duoc cong chan tan cong", src)
