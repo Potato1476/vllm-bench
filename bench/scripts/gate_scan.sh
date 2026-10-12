@@ -59,7 +59,14 @@ dest = pathlib.Path(sys.argv[1])
 with tempfile.TemporaryDirectory() as tmp:
     out = pathlib.Path(tmp)
     s = rs.load()
-    track = sorted(s.tracks)[0]
+    # Track nao rollout duoc THAT SU -- khong phai track dau theo thu tu chu cai. Mot
+    # track mot card tu choi ung vien (stable se con 0 pod), nen chon bua se lam buoc nay
+    # vo. Khong co track nao rollout duoc thi bo qua, dung lam ca lan quet do.
+    track = next((n for n in sorted(s.tracks)
+                  if not rs.can_host_candidate(s.track(n))), None)
+    if track is None:
+        print("khong track nao rollout duoc -- bo qua phan render Job", file=sys.stderr)
+        raise SystemExit(0)
     rs.set_candidate(s, track, rs.Ref(f"models/{track}/gate-check",
                                       s.track(track).stable.engine, weights_gib=1.0), now="t")
     rs.write_rendered(s, out)
