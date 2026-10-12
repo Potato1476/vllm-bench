@@ -29,6 +29,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	cluster-config argocd-up argocd-status argocd-password rollout-render rollout-check \
 	litellm-ui-password \
 	rollout-pause rollout-resume rollout-step rollout-jobs rollout-report \
+	guardrail-tag \
 	gate-check gate-exceptions \
 	model-check model-publish \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
@@ -427,6 +428,12 @@ GUARDRAIL_TAG ?= src-$(shell find guardrails prompt rag services/llm_pipeline \
 	data/xanhsm_mock_warehouse/sql/views.sql \
 	-type f ! -path '*/__pycache__/*' ! -name '*.pyc' \
 	| LC_ALL=C sort | xargs git hash-object | git hash-object --stdin | cut -c1-12)
+
+guardrail-tag: ## In ra tag image guardrail (mot dinh nghia duy nhat, CI doc tu day)
+# gate.yml goi target nay thay vi tu tinh lai. Hai cong thuc song song tung ton tai mot
+# ngay va cho ra hai tag khac nhau tren cung mot ma nguon, nghia la image duoc deploy
+# khong phai image ma CI da quet va ky.
+	@echo $(GUARDRAIL_TAG)
 
 guardrail-image: guardrails-test ## Build and push the guardrail service image to the core ECR repository
 	@set -e; repo=$$($(TFC) output -raw ecr_guardrail_url 2>/dev/null \

@@ -154,9 +154,12 @@ jobs:
         id: tag
         run: |
           set -euo pipefail
-          h=$(git ls-files -s services/llm_pipeline guardrails rag prompt | sha256sum | cut -c1-12)
-          echo "tag=src-$h" >> "$GITHUB_OUTPUT"
-          echo "ref=${{ secrets.ECR_GUARDRAIL_REPO }}:src-$h" >> "$GITHUB_OUTPUT"
+          # Hoi Makefile, khong tu tinh lai. Cong thuc o do bao ca corpus va SQL warehouse
+          # ma Dockerfile COPY vao image; ban tinh rieng o day tung bo sot chung, nghia la
+          # doi corpus khong sinh tag moi va CI se day de mot tag ECR bat bien.
+          tag=$(make -s guardrail-tag)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ secrets.ECR_GUARDRAIL_REPO }}:$tag" >> "$GITHUB_OUTPUT"
 
       - name: Image đã có chưa
         id: exists
