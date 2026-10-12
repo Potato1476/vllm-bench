@@ -682,7 +682,8 @@ ROLLOUT_NS = "benchmark"
 # and it has python3 3.9 -- which is why rollout_jobs.py is stdlib-only.
 JOB_IMAGE = "amazon/aws-cli:2.36.47"
 GOLD_PATH = REPO_ROOT / "data" / "xanhsm_retrieval_mock" / "eval" / "retrieval_eval.jsonl"
-ATTACKS_PATH = REPO_ROOT / "bench" / "datasets" / "attacks-v1.jsonl"
+ATTACKS_BUILDER = REPO_ROOT / "bench" / "datasets" / "make_attacks.py"
+ATTACKS_MANIFEST = REPO_ROOT / "bench" / "datasets" / "attacks-manifest-v1.json"
 JOBS_SCRIPT = REPO_ROOT / "bench" / "scripts" / "rollout_jobs.py"
 
 # How long Kubernetes lets each Job run before killing it. Generous on purpose: the Job
@@ -799,6 +800,36 @@ def _job(kind: str, track: str, rid: str) -> dict:
     }
 
 
+def _attack_rows() -> list[dict]:
+    """The 343-sample attack set, rebuilt from its generator and checked against the hash
+    the measurements were reported on.
+
+    The .jsonl itself is gitignored -- it is derived -- so the PR check, which runs on a
+    fresh checkout, would not have it. Rebuilding from the seed is deterministic, and the
+    sha256 in the committed manifest proves the rebuilt set is byte for byte the one TC3
+    was measured on. A generator edited without regenerating the manifest fails here,
+    rather than gating candidates on a set nobody reported a number for.
+    """
+    import hashlib as _hashlib
+    import importlib.util
+    import random
+
+    spec = importlib.util.spec_from_file_location("make_attacks", ATTACKS_BUILDER)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    # Registered before running: @dataclass looks its own module up in sys.modules.
+    sys.modules.setdefault("make_attacks", module)
+    spec.loader.exec_module(module)
+    samples = module.build(random.Random(module.SEED))
+    text = "".join(json.dumps(s.__dict__, ensure_ascii=False) + "\n" for s in samples)
+    expected = json.loads(ATTACKS_MANIFEST.read_text(encoding="utf-8"))["sha256"]
+    actual = _hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if actual != expected:
+        raise StateError(f"bo tan cong sinh lai co sha256 {actual[:16]}, manifest ghi "
+                         f"{expected[:16]} -- chay lai make_attacks.py va commit manifest")
+    return [s.__dict__ for s in samples]
+
+
 def _assets() -> dict[str, str]:
     """The script and the two datasets the Jobs read, trimmed to the fields they use.
 
@@ -808,8 +839,7 @@ def _assets() -> dict[str, str]:
     """
     gold = [json.loads(line) for line in GOLD_PATH.read_text(encoding="utf-8").splitlines()
             if line.strip()]
-    attacks = [json.loads(line) for line in ATTACKS_PATH.read_text(encoding="utf-8").splitlines()
-               if line.strip()]
+    attacks = _attack_rows()
     # User placement only, as bench/k6/lib/workload.js does: a document-placed injection
     # needs a poisoned corpus to arrive through, and asking it as a question measures
     # nothing about the defence it is meant to test.
