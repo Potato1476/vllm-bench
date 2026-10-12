@@ -111,7 +111,7 @@ def main() -> int:
         "một index lệch với bucket còn tệ hơn không có, vì người ta sẽ tin nó.",
         "",
         "Báo cáo và kế hoạch nằm trong git, không nằm ở đây:",
-        "`docs/acceptance-report.md` và `docs/completion-plan.md`.",
+        "`docs/acceptance-report.md`.",
         "",
         "---",
         "",

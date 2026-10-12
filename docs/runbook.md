@@ -29,7 +29,7 @@ có họ máy GPU đã chọn — không phải region nào cũng có `g5`.
 State nằm trên S3, khoá bằng `use_lockfile` (S3-native locking, có từ Terraform 1.10) nên
 **không cần DynamoDB**. Khối `backend` không đọc được biến, nên bucket phải tạo **trước**
 lần `init` đầu tiên và tên phải điền literal vào
-[core/versions.tf:17-24](terraform/core/versions.tf#L17-L24).
+[core/versions.tf:17-24](../terraform/core/versions.tf#L17-L24).
 
 ```bash
 export REGION=us-east-1
@@ -284,12 +284,12 @@ tải bù từ HuggingFace — một lần tải bù là một phép đo dùng m
 
 ## Triển khai LiteLLM gateway
 
-Profile 3 replica cho LiteLLM và guardrail: [docs/ha-serving.md](docs/ha-serving.md).
+Profile 3 replica cho LiteLLM và guardrail: [docs/ha-serving.md](ha-serving.md).
 Profile này cần Redis dùng chung và node tooling ở nhiều AZ; triển khai bằng
 `make litellm-up HA=1` sau khi hoàn tất các điều kiện trong tài liệu.
 
 Tài liệu chi tiết về các thay đổi, Aurora và cách đọc/sử dụng Makefile nằm tại
-[`docs/litellm-aurora-implementation.md`](docs/litellm-aurora-implementation.md).
+[`docs/litellm-aurora-implementation.md`](litellm-aurora-implementation.md).
 
 Gateway dùng cùng `MODE` với chart vLLM và lắng nghe cổng `4000`. Profile lab dùng
 `ClusterIP` sau ingress-nginx; production có thể override sang NodePort `30443` cho
@@ -538,7 +538,7 @@ Sửa dashboard trong UI để khám phá thì được, nhưng phải export ng
 
 `observability/dashboards/gateway-guardrail.json` đi theo luồng request từ trên xuống:
 Catalog tên, labels, ý nghĩa và PromQL của toàn bộ metric nằm tại
-[`docs/metric-names.md`](docs/metric-names.md).
+[`docs/metric-names.md`](metric-names.md).
 
 | Hàng | Nội dung |
 |---|---|
@@ -695,3 +695,19 @@ dịch cả đường lên — nghĩa là không thể trừ đi sau khi đo xon
 - **StorageClass mặc định của EKS là gp2.** `storage.tf` tạo `gp3` và đặt làm mặc định.
   Nếu áp dụng lên cụm đã có sẵn, phải gỡ annotation default khỏi `gp2` trước, nếu không
   cụm có hai default class và scheduler chọn ngẫu nhiên.
+
+### Bẫy khi đọc số liệu chi phí
+
+Năm cái dưới đây mỗi cái đã làm số liệu sai ít nhất một lần. Chuyển về đây từ
+`docs/finops-handoff.md` (07/10/2026) khi file bàn giao đó hết việc.
+
+| Bẫy | Triệu chứng | Cách tránh |
+|---|---|---|
+| Credit che chi phí | Cost Explorer theo dịch vụ ra ~0 | lọc `RECORD_TYPE=Usage`; `make cost` đã sửa |
+| Phụ phí EKS extended support | cụm đắt gấp 6 mà không lỗi gì | guard trong `version_guard.tf`; xem bảng biến Terraform |
+| Đọc tải đỉnh vào đường cong | phóng đại tiết kiệm ~3× | trục hoành phải là **trung bình 24/7**, không phải đỉnh |
+| Cache ngữ nghĩa bật trong phép đo | p95 đẹp bất thường, 98,7% trả từ Redis | k6 gửi `X-Bypass-Cache` mặc định ở các kịch bản đo dung lượng |
+| Gọi Cost Explorer trong vòng lặp | mỗi request tốn 0,01 USD | gọi tay, không loop |
+
+`make lab-down` xuất số liệu Prometheus lên S3 **trước** khi xoá cụm. Đừng
+`terraform destroy` tay — số của phiên đó sẽ mất theo.

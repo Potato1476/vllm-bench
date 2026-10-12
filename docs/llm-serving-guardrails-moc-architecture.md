@@ -133,4 +133,6 @@ API chỉ mở qua kết nối nội bộ phù hợp với MOC; dùng TLS, servi
 5. Bộ test guardrail/citation offline, báo cáo TC3 và danh sách lỗi còn lọt.
 6. Nhật ký pilot 14 ngày, báo cáo TC4, runbook, rollback và quyết định vận hành.
 
-Kiến trúc triển khai AWS chi tiết nằm tại [docs/aws-architecture.md](docs/aws-architecture.md). Kế hoạch thực hiện nằm tại [kế hoạch 6 tuần](ke-hoach-trien-khai-vllm-aws-6-tuan.md).
+Kiến trúc triển khai AWS chi tiết và thứ tự dựng nằm tại [`docs/runbook.md`](runbook.md); bản đồ dự án và lý do các lựa chọn ở [`docs/OVERVIEW.md`](OVERVIEW.md); kết quả đối chiếu với các ngưỡng trên ở [`docs/acceptance-report.md`](acceptance-report.md).
+
+> Hai tài liệu từng được trỏ tới ở đây — `aws-architecture.md` và một bản kế hoạch 6 tuần — chưa bao giờ được viết; nội dung của chúng nằm rải trong ba file vừa nêu.

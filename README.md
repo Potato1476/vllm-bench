@@ -179,7 +179,6 @@ make lab-down             # xuất số liệu lên S3, hạ node về 0, rồi 
 | [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) | mô hình đe doạ và từng tầng kiểm tra |
 | [`docs/k6-load-testing.md`](docs/k6-load-testing.md) | thiết kế bộ đo và cách đọc kết quả |
 | [`docs/ha-serving.md`](docs/ha-serving.md) | profile 3 replica với Redis dùng chung |
-| [`docs/completion-plan.md`](docs/completion-plan.md) | việc còn lại tới nghiệm thu |
 | [`docs/pilot-guide.html`](docs/pilot-guide.html) | trang phát cho analyst trước buổi dùng thử |
 | [`clients/python/README.md`](clients/python/README.md) | hướng dẫn tích hợp cho DA#19/20/32/39/41/44/45 |
 

@@ -17,7 +17,26 @@ dừng khẩn (§4.3).
 
 ---
 
-## 1. Hiện trạng
+## 0. Phần nào của kế hoạch này đã dựng — 12/10/2026
+
+| Mục | Trạng thái |
+|---|---|
+| §3 quyết định thiết kế (C1–C4) | giữ nguyên, đã áp dụng |
+| §4 luồng model: hợp đồng, cổng CPU, kiểm lúc nạp, ký KMS | **xong** |
+| §4.3 tự phát hiện, `paused` | **xong** — gộp vào `rollout.yml`, không có `watch-models.yml` riêng |
+| §4.4 ngưỡng, §4.5 rollback | **xong** — ngưỡng nằm trong `bench/scripts/rollout_jobs.py` |
+| Máy trạng thái, Argo CD, Job đánh giá/canary/theo dõi, controller | **xong** |
+| Guardrail chia traffic có trọng số, nhãn `model_version` | **xong** |
+| §5 luồng image (`pr.yml`, `images.yml`, Renovate, Job smoke) | **chưa làm** — xem §5.1, là phần việc kế tiếp |
+| §8 demo đầu-cuối trên cụm thật | **chưa chạy** |
+
+Cách chạy và cách gỡ phần đã dựng: [`docs/cd-runbook.md`](cd-runbook.md). Sơ đồ ở §2 và lộ
+trình ở §7 là **bản kế hoạch gốc 08/10**, giữ lại để đối chiếu — tên workflow thật chỉ có
+`rollout-check.yml` và `rollout.yml`.
+
+---
+
+## 1. Hiện trạng *(viết ngày 08/10, trước khi dựng)*
 
 **Chưa có CI lẫn CD.** Repo không có `.github/workflows`. Mọi thứ chạy bằng `make` từ laptop.
 
@@ -215,10 +234,13 @@ qwen2.5-7b:
 
 Công tắc `paused` nằm ở đầu `deploy/state.yaml` (`make rollout-pause REASON=...`).
 
-`watch-models.yml` chạy 15 phút một lần, liệt kê `_READY` mới dưới các thư mục được theo dõi. Có
-nhiều version mới thì lấy version mới nhất, bỏ các bản cũ hơn.
+`rollout.yml` chạy 15 phút một lần, liệt kê `_READY` mới dưới các thư mục được theo dõi. Có
+nhiều version mới thì lấy version mới nhất, bỏ các bản cũ hơn. (Kế hoạch gốc tách việc này
+thành `watch-models.yml`; khi dựng thì gộp vào một workflow, vì nó cùng đọc một file trạng
+thái và cùng chịu `concurrency` như nhau.) Mốc `watermark` trong `deploy/state.yaml` ghi
+version mới nhất đã xét, nên bản cũ hơn không bao giờ được đề xuất lại.
 
-**Công tắc dừng khẩn.** `paused: true` làm `watch-models.yml` và `rollout.yml` dừng ở bước kế tiếp:
+**Công tắc dừng khẩn.** `paused: true` làm `rollout.yml` dừng ở bước kế tiếp:
 rollout đang chạy đứng nguyên chỗ, không rollout mới nào bắt đầu. Để trong git để việc dừng cũng
 có lịch sử. Dùng khi cần đo tải, khi demo, hoặc khi production có gì lạ chưa rõ nguyên nhân.
 
@@ -378,18 +400,18 @@ Image vẫn ký keyless (§5.1), vì hoàn cảnh khác: image build từ repo p
 
 ## 7. Lộ trình
 
-| Giai đoạn | Việc | Công |
-|---|---|---|
-| P1 | Hợp đồng model; `check_model.py`, `publish_model.py`; khoá KMS; init container băm; ghi lại một checkpoint demo theo hợp đồng | 2 ngày |
-| P2 | `pr.yml`, `images.yml`; OIDC + role trong `terraform/core` | 1,5 ngày |
-| P3 | Argo CD trong `lab-up`; Application; `deploy/state.yaml` | 1,5 ngày |
-| P4 | chart stable/candidate; route có trọng số và nhãn `model_version` trong guardrail | 1,5 ngày |
-| P5 | Job đánh giá, canary, smoke, theo dõi sau promote | 2 ngày |
-| P6 | `watch-models.yml`, `rollout.yml`: máy trạng thái, PR qua GitHub App và tự merge, tự revert, issue mỗi lần promote, công tắc `paused`; branch protection | 2 ngày |
-| P7 | Renovate, ghim digest cho mọi image upstream | 0,5 ngày |
-| P8 | demo đầu-cuối | 1 ngày |
+| Giai đoạn | Việc | Công | Trạng thái |
+|---|---|---|---|
+| P1 | Hợp đồng model; `check_model.py`, `publish_model.py`; khoá KMS; init container băm; ghi lại một checkpoint demo theo hợp đồng | 2 ngày | **xong** |
+| P2 | `pr.yml`, `images.yml`; OIDC + role trong `terraform/core` | 1,5 ngày | role OIDC **xong** (chỉ đọc S3/SQS, **chưa có quyền ECR**); hai workflow **chưa làm** |
+| P3 | Argo CD trong `lab-up`; Application; `deploy/state.yaml` | 1,5 ngày | **xong** |
+| P4 | chart stable/candidate; route có trọng số và nhãn `model_version` trong guardrail | 1,5 ngày | **xong** |
+| P5 | Job đánh giá, canary, smoke, theo dõi sau promote | 2 ngày | **xong**, trừ Job smoke của image (thuộc P2) |
+| P6 | máy trạng thái, PR qua GitHub App và tự merge, tự revert, issue mỗi lần promote, công tắc `paused`; branch protection | 2 ngày | code **xong**; cài đặt GitHub (App, secret, branch protection) **chưa làm** |
+| P7 | Renovate, ghim digest cho mọi image upstream | 0,5 ngày | **chưa làm** |
+| P8 | demo đầu-cuối | 1 ngày | **chưa chạy** — cần cụm 4 GPU ~2,5 giờ |
 
-**Tổng:** khoảng 12 ngày công.
+**Tổng:** khoảng 12 ngày công. Còn lại: P2, P7, P8 cộng phần cài đặt của P6.
 
 ### Kịch bản demo
 

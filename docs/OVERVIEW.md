@@ -22,13 +22,17 @@ Tài liệu chi tiết cho từng mảng:
 Một nền serving LLM nội bộ dùng chung cho ≥7 agent copilot MOC, có guardrail và đo lường
 được. Ngân sách AWS **200 USD**, 6 tuần.
 
+> **Số đo chính thức không nằm ở đây.** Mọi con số nghiệm thu ở
+> [`docs/acceptance-report.md`](acceptance-report.md), cùng cỡ mẫu và điều kiện đo. Bảng
+> dưới chỉ là trạng thái; để số ở hai nơi thì sớm muộn hai nơi nói khác nhau.
+
 | Tiêu chí | Trạng thái |
 |---|---|
-| p95 < 3s ở 50 req/s | **chưa chạm 50 req/s** (đỉnh 1,98). Xem §1a — ở độ dài trả lời thật, AWQ đạt 3s còn FP16 thì không |
-| Uptime ≥ 99,5%, pilot 2 tuần | bộ đo đã xong (§1b); 2 tuần **liên tục** không nằm trong ngân sách, nhưng cũng không cần |
-| Chi phí/1k token giảm ≥30% so với API ngoài | rule đã có (`platform:cost_usd_per_1k_output_tokens`); hiện **đắt gấp 3** vì thiếu tải |
-| Chặn ≥95% bộ test prompt injection / PII leak | **100% trên 294 mẫu tấn công**, chặn nhầm 0% trên 49 câu hỏi thật — **đạt** |
-| Dashboard latency/chi phí/token **theo agent** | chưa có nhãn `agent` — cần Aurora + virtual key |
+| TC1a · p95 < 3s ở 50 req/s | **đạt** — xem §1a về vì sao độ dài trả lời quyết định con số này |
+| TC1b · Uptime ≥ 99,5%, pilot 2 tuần | **đạt** theo cận dưới; **thiếu phủ lịch 14 ngày liên tục** (ngoài ngân sách) |
+| TC2 · Chi phí/1k token giảm ≥30% | **đạt**; đi kèm hai cảnh báo trong báo cáo nghiệm thu |
+| TC3 · Chặn ≥95% injection / PII leak | **đạt** — 100%, chặn nhầm 0% trên câu hỏi thật |
+| TC4 · Dashboard latency/chi phí/token **theo agent** | **đạt** theo cách đọc năng lực: virtual key mang nhãn agent, dashboard theo agent chạy. **0/7 DA đã gọi thật** |
 
 ### 1a. Câu trả lời dài bao nhiêu — và vì sao nó quyết định SLO
 
@@ -626,17 +630,20 @@ từ hạ tầng AWS, mà IP đó không nằm trong `publicAccessCidrs`. Dùng 
 | Dataset tổng hợp (warehouse + corpus truy hồi) | Minh, xong |
 | Nhánh dense (BM25 + embedding, RRF) | xong; **đã nối vào serving**, cần dựng TEI mới bật được |
 | Bộ test tấn công 343 mẫu, chia hai nửa | xong — **100%** chặn, 0% chặn nhầm |
-| Trọng số AWQ 4-bit + `mode: shared` | trọng số đã lên S3, chart đã chuyển, **chưa đo** |
+| Trọng số AWQ 4-bit | xong — cả hai track đang phục vụ bằng AWQ |
+| `mode: shared` (hai model chung một card) | chart có, **chưa từng đo**; CD dùng `solo-a`, mỗi model một card |
 | Trace request (Tempo, span theo từng stage) | xong |
+| Gateway LiteLLM (nhãn agent, đếm lỗi, định tuyến) | xong — virtual key theo agent, team rate limit |
+| Panel chi phí/1k token | xong — TC2 đã có số |
+| Bộ test tấn công tiếng Việt | xong — 343 mẫu, xem dòng trên |
+| **CD: model tự lên production** | xong — hợp đồng, cổng, Argo CD, Job đánh giá/canary/theo dõi, controller. **Chưa chạy đầu-cuối trên cụm thật** |
+| CD cho image guardrail (`images.yml`, quét + ký) | **chưa làm** — [`docs/cicd-plan.md`](cicd-plan.md) §5.1 |
 | Rerank | **chưa ai làm** |
-| Gateway LiteLLM (nhãn agent, đếm lỗi, định tuyến) | **chưa ai làm** |
-| Probe uptime ngoài cụm (Lambda) | Minh, chưa làm |
-| Panel chi phí/1k token | rule đã có, thiếu tải để có số |
-| Bộ test tấn công ~200 mẫu tiếng Việt | chưa ai làm |
+| Probe uptime ngoài cụm (Lambda) | chưa làm — TC1b hiện đo bằng probe trong cụm |
 
-Thứ tự đề nghị: **dense + rerank** trước (nó mở khoá hai nhóm truy vấn đang hỏng), rồi
-**gateway** (vì guardrail sẽ cắm vào đó, và nó mang theo nhãn `agent` mà đề bài đòi), rồi
-mới tới phần đo chi phí và uptime.
+Việc kế tiếp theo thứ tự: **CD cho image guardrail** (bịt chỗ duy nhất còn lên production
+bằng tay), rồi **một vòng rollout đầu-cuối trên cụm thật**, rồi mới tới rerank và probe
+ngoài cụm.
 
 Một câu nên hỏi mentor sớm, vì nó quyết định toàn bộ bài toán sizing: **câu trả lời trung
 bình của MOC dài bao nhiêu token?** Với ITL đo được trên FP16, ràng buộc "p95 < 3s" chỉ đủ
