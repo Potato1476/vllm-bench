@@ -119,6 +119,16 @@ phân biệt được "Job đang chạy" với "cụm đang tắt buổi tối".
 luôn để lại báo cáo, kể cả khi trượt vì hết giờ hay vì lỗi. Im lặng quá 6 giờ chỉ được ghi
 là `stalled` trong tóm tắt lần chạy, cho người xem.
 
+**Thử luồng bằng track 1.5B, không phải 7B.** Cả hai track đều bật `auto_rollout`, nhưng
+1.5B là track rẻ và nhanh hơn nhiều: trọng số AWQ 1,5 GiB nên pod ứng viên lên trong vài
+phút thay vì tới nửa giờ, và bước đánh giá chạy xong nhanh hơn. Đó là track nên nhắm khi
+bên ghi model muốn kiểm bắt tay, hoặc khi thử lại luồng sau một thay đổi.
+
+Bốn node GPU khi cả hai track chạy, **~4,49 USD/giờ** — đúng trần quota 16 vCPU. Muốn một
+buổi thử rẻ hơn thì hạ `cards` của 7B về `1`: một card **vẫn hợp lệ khi track đang idle**
+(máy trạng thái chỉ từ chối `cards < 2` lúc có ứng viên), nên 1 + 2 = 3 node,
+**~3,4 USD/giờ**, mà track 1.5B vẫn rollout bình thường.
+
 **Mỗi version chỉ được thử một lần.** `watermark` trong state ghi thời điểm `_READY` của
 version mới nhất đã xét; mọi thứ cũ hơn bị bỏ qua mãi mãi, kể cả khi bị loại. Muốn thử lại
 một bản đã trượt: xuất bản nó thành version mới.

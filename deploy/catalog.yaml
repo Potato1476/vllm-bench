@@ -16,9 +16,8 @@ qwen2.5-7b:
 qwen2.5-1.5b:
   watch: models/qwen2.5-1.5b/
   allowed_signers: [external, mlops-model-ci]
-  # false, va day la su that chu khong phai mot gioi han tam thoi: track nay chi co 1 card
-  # (xem ghi chu trong deploy/state.yaml), nen rollout se lam stable tut xuong 0 pod.
-  # Dat true o day se khien moi version moi bi bo qua voi mot dong `skipped` khong ai doc.
-  # Muon bat: cho track nay 2 card, tuc them mot node GPU (~1,1 USD/gio).
-  auto_rollout: false
+  # Track RE NHAT de thu luong CD, va la track nen nham khi ben ghi model muon kiem bat
+  # tay: trong so 1.5B AWQ chi 1,5 GiB nen pod ung vien len trong vai phut thay vi nua
+  # gio, va buoc danh gia chay xong nhanh hon nhieu so voi 7B.
+  auto_rollout: true
   canary_weight: 25

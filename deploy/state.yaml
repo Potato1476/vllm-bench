@@ -9,15 +9,20 @@ paused: false
 # mo hinh khac co, phuc vu dong thoi, moi cai co vong doi rollout rieng -- chu khong
 # phai mot bo trong so duoi hai ten.
 #
-# Track 7B lay 2 card, track 1.5B lay 1 -- tong 3 node GPU, ~3,4 USD/gio.
+# Ca hai track lay 2 card -- tong 4 node GPU, ~4,49 USD/gio, dung tran quota 16 vCPU.
+#
+# 1.5B len 2 card de no rollout duoc: day la track re nhat de thu luong CD, va la track
+# nen dung khi ben ghi model muon kiem bat tay bang mot model nho.
+#
+# Muon mot buoi thu re hon: ha 7B ve cards: 1. Mot card VAN hop le khi track dang idle --
+# rollout_state chi tu choi cards < 2 khi co ung vien -- nen 1 + 2 = 3 node, ~3,4 USD/gio,
+# va track 1.5B van rollout duoc binh thuong.
 #
 # 7B phai la 2, khong phai 1: `helm_values` tinh stable = card_count - 1, nen mot track
 # mot card se cho stable 0 pod ngay khi co ung vien, trong khi bang route canary van gui
 # 75% traffic that vao Service cua stable. rollout_state.py tu choi trang thai do.
 #
-# 1.5B giu 1 card va khai auto_rollout: false trong catalog: quota 16 vCPU khong du cho
-# hai rollout cung luc, nen cho no 2 card chi de "co the rollout" la tra tien cho mot thu
-# khong dung den.
+# Hai rollout cung luc van vua quota: 7B (1 stable + 1 ung vien) + 1.5B (1 + 1) = 4 node.
 #
 # Do TC1a thi doi cards cua 7B len 4 va tat track 1.5B.
 qwen2.5-7b:
@@ -37,5 +42,5 @@ qwen2.5-1.5b:
     engine: vllm/vllm-openai:v0.29.0
     verify: false
     reason: "checkpoint dua len tay truoc khi co hop dong model; chua co manifest"
-  cards: 1
+  cards: 2
   phase: idle
