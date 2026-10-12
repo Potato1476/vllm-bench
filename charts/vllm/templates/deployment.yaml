@@ -218,6 +218,13 @@ spec:
             # hand before the contract existed, which carry no manifest; it is not a knob
             # to reach for when verification fails, because a failure there means the
             # bytes are not the signed ones.
+            # aws-cli ghi cache cau hinh vao $HOME/.aws. Mac dinh HOME la /root, va voi
+            # `capabilities: drop: [ALL]` thi root mat CAP_DAC_OVERRIDE nen khong con ghi
+            # duoc vao do -- loi ra la "fatal error: [Errno 13] Permission denied:
+            # '/root/.aws'", doc nhu mot van de quyen IAM chu khong phai quyen file.
+            # /tmp la 1777 nen moi uid deu ghi duoc, khong can capability nao.
+            - name: HOME
+              value: /tmp
             - name: VERIFY_MANIFEST
               # KHONG dung `| default true`. Trong Go template, `false` la mot gia tri
               # RONG, nen `false | default true` tra ve true -- va mot co tat an toan

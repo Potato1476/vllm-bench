@@ -804,6 +804,11 @@ def _job(kind: str, track: str, rid: str) -> dict:
                             # carries the account ID and this repository is public.
                             {"name": "S3_BUCKET", "valueFrom": {"configMapKeyRef": {
                                 "name": "cluster-config", "key": "artifactsBucket"}}},
+                            # Cung ly do nhu init container cua chart vLLM: aws-cli ghi
+                            # cache vao $HOME/.aws, ma uid 65534 khong co dong trong
+                            # /etc/passwd nen HOME thanh "/" va khong ghi duoc. Loi ra la
+                            # Permission denied tren '//.aws', doc nhu loi quyen AWS.
+                            {"name": "HOME", "value": "/tmp"},
                             {"name": "ROLLOUT_ASSETS", "value": "/assets"},
                             {"name": "PYTHONUNBUFFERED", "value": "1"},
                         ],
