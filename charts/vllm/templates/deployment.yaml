@@ -71,11 +71,22 @@ spec:
       # node for every pod the extra one stays Pending and says so, which is the honest
       # outcome: a preference would silently co-schedule and hand back numbers under a
       # name that claims otherwise.
-      {{- if or (eq $root.Values.mode "split") (gt (int ($m.replicas | default $root.Values.replicaCount | default 1)) 1) }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
-            {{- if gt (int ($m.replicas | default $root.Values.replicaCount | default 1)) 1 }}
+            # NEVER two pod cua CUNG mot model-class tren mot node, du o che do nao va du
+            # moi Deployment chi co mot replica.
+            #
+            # Dieu kien cu la `replicas > 1`, va no bo sot dung luc rollout: stable tut ve
+            # 1 pod, ung vien co 1 pod, nen KHONG BEN NAO render luat -- hai Deployment
+            # khac nhau, moi ben mot replica, scheduler duoc phep xep ca hai len mot node.
+            # Voi time-slicing advertising 2 GPU moi card, do la hai engine chia nhau mot
+            # A10G trong khi moi ben dat gpu-memory-utilization 0.9.
+            #
+            # Selector khong rang buoc `release`, nen no bat CHEO giua stable va candidate
+            # -- dung thu can. maxSurge: 0 lo phan rolling update, nen luat luon bat
+            # khong lam pod moi ket Pending cho pod cu nha card.
+            #
             # NEVER two replicas of the SAME model on one node, in any mode.
             #
             # This rule was missing, and the reason it was missing is that nothing needed
@@ -97,7 +108,6 @@ spec:
                     operator: In
                     values: [{{ $key | quote }}]
               topologyKey: kubernetes.io/hostname
-            {{- end }}
             {{- if eq $root.Values.mode "split" }}
             # One model CLASS per node, which is what split means.
             #
@@ -113,7 +123,6 @@ spec:
                     values: ["vllm-server"]
               topologyKey: kubernetes.io/hostname
             {{- end }}
-      {{- end }}
       nodeSelector:
         {{- toYaml $root.Values.nodeSelector | nindent 8 }}
       tolerations:
