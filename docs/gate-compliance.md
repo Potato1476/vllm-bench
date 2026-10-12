@@ -150,6 +150,40 @@ nó chứng minh được nhiều hơn. Đề xuất gửi gate: [`docs/gate-ml-
 
 ---
 
+## 4b. Đường image — đã chạy thật trên CI, 12/10/2026
+
+Tầng FULL của [`.github/workflows/gate.yml`](../.github/workflows/gate.yml) đã đi hết một
+lượt, **không cần cụm**: build → quét CVE → SBOM → đẩy ECR → ký cosign keyless → xác minh
+lại theo digest. Chữ ký được kiểm ngay trong workflow (`cosign verify`), và kết quả ghi
+*"existence in the transparency log was verified"*.
+
+**IMG-002 đã chặn một lần, và chặn đúng.** Image guardrail trên `python:3.12.11-slim`
+(Debian 13.1) mang 8 CVE CRITICAL/HIGH **đã có bản vá** trong `perl-base` và `util-linux`.
+Có bản vá thì cách đúng là lấy bản vá — một ngoại lệ ở đây chỉ là ghi lại rằng mình chọn
+không vá. Dockerfile giờ chạy `apt-get upgrade` cho các bản vá bảo mật của base image, và
+lượt sau qua sạch.
+
+**IMG-003 (so với baseline CVE) chưa nối.** `gate_check.py` hiện chỉ xét IMG-002 — CVE có
+bản vá thì chặn. Baseline của gate đo trên `rag-service` nên không dùng được cho image này,
+và sau khi vá thì image không còn CVE CRITICAL/HIGH có bản vá nào, nên một file baseline
+lúc này sẽ rỗng. Tôi không tạo file đó: một baseline mà phép so chưa được hiện thực là một
+file không ai đọc. Khi nối IMG-003 thì sinh baseline từ chính lượt quét đó.
+
+### Bốn lỗi của DA#51 mà lượt chạy thật phát hiện
+
+Không lỗi nào lộ ra khi test từng mảnh; cả bốn chỉ xuất hiện khi ghép lại trên CI.
+
+| Lỗi | Vì sao không ai thấy trước |
+|---|---|
+| Trust policy OIDC điều kiện trên một `sub` mà GitHub không phát ra — sub thật kèm ID số (`Potato1476@144371399/vllm-bench@1375694617`) | Lỗi trả về là *"Not authorized to perform sts:AssumeRoleWithWebIdentity"*, đọc như vấn đề quyền chứ không phải chuỗi không khớp |
+| `terraform apply` thất bại mà tôi tưởng đã xong | Tôi grep lấy dòng "Modifying..." và lọc mất dòng `Error`. AWS bắt buộc điều kiện trên `sub` hoặc `job_workflow_ref` |
+| `${REPO##*/}` cắt mất namespace, nên bước "image đã có chưa" luôn báo chưa | Bước đó vẫn **xanh**; hậu quả chỉ hiện ở bước sau khi đẩy lại một tag ECR bất biến |
+| Bước ký bị bỏ qua cùng với bước build | Sinh ra đúng trạng thái tệ nhất: image **đã đẩy mà chưa ký**, và không gì báo ra điều đó |
+
+Cái cuối là lý do bước ký giờ **không** phụ thuộc vào việc có bỏ qua build hay không.
+
+---
+
 ## 5. Chạy lại
 
 ```bash
