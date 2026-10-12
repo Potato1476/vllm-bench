@@ -1,0 +1,11 @@
+6ff9d3b2daf5eb1ccfc05118681e704c67bb8c4d
+# ^ Commit cua kdvh-gsm-vsf-group/deployment-quality-gate ma DA#51 dang cham theo.
+#
+# MOT NGUON DUY NHAT: .github/workflows/gate.yml va `make gate-check` deu doc dong dau
+# file nay. Ghim theo commit vi repo gate chua phat hanh tag nao; khi co tag thi doi sang
+# tag va nang qua PR co review.
+#
+# Dung de `main`: canary cua gate chi trigger duoc pipeline GitLab, nen DA#51 nam ngoai
+# vung bao ve do -- policy ho doi co the lam CI o day do ma khong bao truoc.
+#
+# Nang SHA thi doc lai docs/gate-compliance.md: muc chan cua tung rule co the da doi.

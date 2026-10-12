@@ -114,3 +114,82 @@ output "github_rollout_role_arn" {
   description = "Set as the ROLLOUT_ROLE_ARN Actions variable (Settings > Variables)."
   value       = aws_iam_role.github_rollout.arn
 }
+
+# Danh tính thứ hai: build, quét, ký và đẩy image lên ECR (tầng FULL của gate.yml).
+#
+# TÁCH KHỎI github_rollout, KHÔNG MỞ RỘNG NÓ
+#
+# Role rollout cố ý chỉ-đọc, và dòng ghi chú ở đầu file này nói đúng như vậy. Thêm quyền
+# đẩy image vào đó sẽ làm câu đó thành sai, và "role này chỉ đọc" là thứ người ta dựa vào
+# khi đánh giá hậu quả của một workflow bị lộ. Hai role thì mỗi câu vẫn đúng.
+#
+# Không có quyền KMS: image được ký cosign **keyless**, chữ ký gắn với danh tính OIDC của
+# workflow, nên không có khoá bí mật nào phải giữ. Khác với manifest model — chỗ đó dùng
+# khoá KMS và không đẩy lên log công khai (xem docs/cicd-plan.md §4.6).
+
+data "aws_iam_policy_document" "github_images_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [local.github_oidc_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    # main only. Workflow của một pull request chạy mã của người mở PR; cho nó đẩy image
+    # lên ECR là cho bất kỳ ai mở được PR trên một repo công khai làm việc đó.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "github_images" {
+  # Bắt buộc phải ở phạm vi "*": ECR không cho giới hạn hành động này theo repository.
+  statement {
+    sid       = "EcrLogin"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+  statement {
+    sid = "PushGuardrailAndRunner"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    # Chỉ hai repository của dự án này. Không có ecr:BatchDeleteImage: tag ECR đã bất biến,
+    # và một workflow không cần xoá được image cũ -- lifecycle policy làm việc đó.
+    resources = [
+      aws_ecr_repository.guardrail.arn,
+      aws_ecr_repository.bench_runner.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role" "github_images" {
+  name                 = "${var.project}-github-images"
+  assume_role_policy   = data.aws_iam_policy_document.github_images_trust.json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy" "github_images" {
+  name   = "ecr-push"
+  role   = aws_iam_role.github_images.id
+  policy = data.aws_iam_policy_document.github_images.json
+}
+
+output "github_images_role_arn" {
+  description = "Dat lam secret IMAGES_ROLE_ARN cua Actions (Settings > Secrets)."
+  value       = aws_iam_role.github_images.arn
+}

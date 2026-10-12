@@ -15,6 +15,10 @@ metadata:
   namespace: {{ $root.Release.Namespace }}
   labels:
     app: vllm-server
+    # K8S-011 cua bo quy tac Quality Gate. Khong nam trong selector: selector la
+    # immutable, them nhan vao do se lam Helm khong upgrade duoc release dang chay.
+    app.kubernetes.io/name: vllm
+    app.kubernetes.io/version: {{ $root.Chart.Version | quote }}
     model-class: {{ $key }}
     # The release, in the SELECTOR as well as here. Names colliding is loud -- Helm
     # refuses to adopt a resource another release owns. Selectors colliding is silent and
@@ -53,6 +57,8 @@ spec:
     metadata:
       labels:
         app: vllm-server
+        app.kubernetes.io/name: vllm
+        app.kubernetes.io/version: {{ $root.Chart.Version | quote }}
         model-class: {{ $key }}
         release: {{ $root.Release.Name }}
     spec:
@@ -219,7 +225,21 @@ spec:
               cpu: 500m
               memory: 512Mi
             limits:
+              # ML-006. CPU limit o day khong anh huong so do nao: buoc nay chay TRUOC
+              # container chinh, no quyet dinh thoi gian khoi dong chu khong phai TTFT.
+              # 2 core de `aws s3 sync` va sha256sum khong bi bop lai thanh 20 phut.
+              cpu: "2"
               memory: 1Gi
+              # ML-005/ML-006: emptyDir tinh vao ephemeral-storage cua container. Trong
+              # so 5-15 GiB do vao day, khong co tran thi mot checkpoint lon bat thuong
+              # co the lam node evict pod cua nguoi khac.
+              ephemeral-storage: {{ $m.ephemeralStorageLimit }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
 
       containers:
         - name: vllm
@@ -274,6 +294,15 @@ spec:
               readOnly: true
             - name: shm
               mountPath: /dev/shm
+          # K8S-006. runAsNonRoot (K8S-004) va readOnlyRootFilesystem (K8S-013) CHUA bat:
+          # image vllm-openai chay bang root o nhieu ban va ghi cache bien dich luc khoi
+          # dong, nen phai thu tren node A10G that truoc. Xem security/gate-exceptions.yaml.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           {{- $res := include "vllm.resources" (dict "root" $root "key" $key) | fromYaml }}
           resources:
             requests:
@@ -282,7 +311,13 @@ spec:
             limits:
               # Deliberately no CPU limit. A limit would only risk CFS throttling, which
               # inflates exactly the TTFT numbers this platform exists to measure.
+              #
+              # Day la mot NGOAI LE co y so voi K8S-008 cua bo quy tac Quality Gate, khai
+              # trong security/gate-exceptions.yaml: p95 1590 ms o 50 req/s duoc do khi
+              # KHONG co CPU limit, nen them vao roi bao cao cung con so do la sai.
               {{- toYaml $res.limits | nindent 14 }}
+              # ML-005: tran cho emptyDir trong so + /dev/shm.
+              ephemeral-storage: {{ $m.ephemeralStorageLimit }}
               nvidia.com/gpu: 1
           startupProbe:
             # Up to 20 minutes: a cold NVMe syncs the weights from S3 and then loads them

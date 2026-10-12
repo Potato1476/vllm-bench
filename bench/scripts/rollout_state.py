@@ -781,8 +781,15 @@ def _job(kind: str, track: str, rid: str) -> dict:
                             {"name": "ROLLOUT_ASSETS", "value": "/assets"},
                             {"name": "PYTHONUNBUFFERED", "value": "1"},
                         ],
+                        # K8S-008 cua bo quy tac Quality Gate doi du bon gia tri. Job
+                        # nay cho HTTP gan het thoi gian, nen mot core la tran khong bao
+                        # gio cham toi -- 12 req/s o buoc danh gia la I/O, khong phai CPU.
                         "resources": {"requests": {"cpu": "200m", "memory": "256Mi"},
-                                      "limits": {"memory": "512Mi"}},
+                                      # ML-005 doi tran ephemeral-storage o moi container.
+                                      # Job nay chi ghi file tam cua aws cli va mot bao
+                                      # cao JSON vai KB; 1Gi la du rong.
+                                      "limits": {"cpu": "1", "memory": "512Mi",
+                                                 "ephemeral-storage": "1Gi"}},
                         "volumeMounts": [{"name": "assets", "mountPath": "/assets",
                                           "readOnly": True}],
                         "securityContext": {

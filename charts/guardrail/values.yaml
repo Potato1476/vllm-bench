@@ -92,6 +92,9 @@ semanticCache:
         cpu: 25m
         memory: 64Mi
       limits:
+        # K8S-008 doi du bon gia tri. Redis nay chi phuc vu qua unix socket trong pod,
+        # 500m la gap nhieu lan muc no dung.
+        cpu: 500m
         memory: 256Mi
 
 tracing:
@@ -112,6 +115,9 @@ resources:
     cpu: 250m
     memory: 256Mi
   limits:
+    # K8S-008. Do duoc 1,1 core o 50 req/s, nen 2 core la tran khong bao gio cham toi
+    # trong phep do -- dat sat hon se gay CFS throttling va lam p95 xau di that.
+    cpu: "2"
     memory: 512Mi
 
 nodeSelector:

@@ -126,6 +126,10 @@ models:
     maxNumSeqs: 128
     dtype: float16
     weightsSizeLimit: 40Gi
+    # Tran ephemeral-storage cua container = sizeLimit cua emptyDir trong so (40Gi) + shm
+    # (2Gi) + cho log va cache bien dich. Phai >= weightsSizeLimit, neu khong thi kubelet
+    # evict pod ngay khi trong so sync xong.
+    ephemeralStorageLimit: 46Gi
     # Sized per mode, because the node is shared in exactly the way the card is.
     # g6.xlarge has 4 vCPU and ~14.4 GiB allocatable; giving each model what it would
     # get alone does not fit, and the symptom is a pod stuck Pending with
@@ -150,6 +154,7 @@ models:
     maxNumSeqs: 256
     dtype: float16
     weightsSizeLimit: 20Gi
+    ephemeralStorageLimit: 26Gi
     resources:
       solo:
         requests: {cpu: "3", memory: 10Gi}

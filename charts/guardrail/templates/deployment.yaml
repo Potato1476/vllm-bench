@@ -6,6 +6,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     app: guardrail
+    # K8S-011. Ngoai selector, vi selector la immutable.
+    app.kubernetes.io/name: guardrail
+    app.kubernetes.io/version: {{ .Values.image.tag | quote }}
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
@@ -20,7 +23,13 @@ spec:
     metadata:
       labels:
         app: guardrail
+        app.kubernetes.io/name: guardrail
+        app.kubernetes.io/version: {{ .Values.image.tag | quote }}
     spec:
+      # K8S-014 hai phan: ServiceAccount rieng (khong dung `default`) VA khong mount
+      # token. Guardrail khong goi Kubernetes API bao gio -- no chi can mot danh tinh
+      # rieng de khong chia quyen voi moi pod khac trong namespace.
+      serviceAccountName: guardrail
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       nodeSelector:
@@ -206,6 +215,14 @@ spec:
             exec:
               command: ["redis-cli", "-s", "/run/redis/redis.sock", "ping"]
             periodSeconds: 5
+          # K8S-010. Redis giu cache ngu nghia; mot tien trinh con song nhung khong tra
+          # loi ping thi guardrail coi moi lan tra cuu la cache miss va cu the chay --
+          # cham hon ma khong co gi bao. livenessProbe bien cai do thanh mot lan restart.
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-s", "/run/redis/redis.sock", "ping"]
+            periodSeconds: 20
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

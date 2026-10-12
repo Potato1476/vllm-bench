@@ -29,6 +29,7 @@ TF  := terraform -chdir=$(CLUSTER_DIR)
 	cluster-config argocd-up argocd-status argocd-password rollout-render rollout-check \
 	litellm-ui-password \
 	rollout-pause rollout-resume rollout-step rollout-jobs rollout-report \
+	gate-check gate-exceptions \
 	model-check model-publish \
 	tunnel-secret tunnel-up tunnel-status tunnel-down agents-sim finops-plot \
 	monitoring-secret monitoring-up monitoring-down audit-metrics pf dashboards \
@@ -781,6 +782,24 @@ rollout-pause: ## Dung moi rollout. BAT BUOC truoc khi do tai. REASON="..."
 
 rollout-resume: ## Cho phep rollout chay lai
 	@python3 bench/scripts/rollout_state.py resume
+
+gate-check: ## Quet security + quality bang bo policy cua team Quality Gate (can docker)
+# Dung dung script va dung phien ban ma gate.yml dung, nen "xanh o local" va "xanh tren CI"
+# co cung nghia. Gate duoc clone vao thu muc tam NGOAI repo: no chua fixture key gia co y,
+# clone vao trong roi quet se ra mot dong phat hien khong phai cua minh.
+	@ref=$$(head -1 security/gate-ref.txt); \
+	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; \
+	echo "  gate @ $$ref"; \
+	git clone -q --no-checkout https://gitlab.com/kdvh-gsm-vsf-group/deployment-quality-gate.git "$$dir/gate"; \
+	git -C "$$dir/gate" fetch -q --depth 1 origin "$$ref"; \
+	git -C "$$dir/gate" checkout -q "$$ref"; \
+	GATE="$$dir/gate" OUT="$$dir/out" bash bench/scripts/gate_scan.sh; \
+	python3 bench/scripts/gate_check.py --gate "$$dir/gate" --gate-ref "$$(echo $$ref | cut -c1-8)" \
+		--kyverno "$$dir/out/kyverno.txt" --conftest "$$dir/out/conftest.json" \
+		--trivy-secret "$$dir/out/secret.json" --trivy-vuln "$$dir/out/vuln.json"
+
+gate-exceptions: ## Ngoai le nao sap het han
+	@python3 bench/scripts/gate_check.py --gate . --list-exceptions
 
 model-check: ## Kiem mot version model trong S3 truoc khi tin no. SOURCE=s3://...
 	@test -n "$(SOURCE)" || { echo "can SOURCE=s3://bucket/models/<ten>/<version>/"; exit 1; }

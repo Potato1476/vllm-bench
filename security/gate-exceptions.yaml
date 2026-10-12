@@ -1,0 +1,90 @@
+# Những quy tắc của Quality Gate mà DA#51 TẠM thời không chặn, và vì sao.
+#
+# Cơ chế này sao lại ý của `security/exceptions/` và `MUC_RULE_GHI_DE` bên gate: một quy
+# tắc chưa đáp ứng được thì phải khai ra đây kèm lý do, người chịu trách nhiệm và NGÀY HẾT
+# HẠN. Hết hạn thì `gate_check.py` coi như không có ngoại lệ và check đỏ lại — đó là điểm
+# khác biệt giữa một ngoại lệ và việc tắt quy tắc đi.
+#
+# KHÔNG khai được hard gate (IMG-001, K8S-001, K8S-002, K8S-003, K8S-007, ML-002).
+# `gate_check.py` tự từ chối, đúng như gate quy định: "không file ghi đè nào hạ xuống được".
+#
+# `resources` là danh sách glob. Bỏ trống = áp cho mọi tài nguyên, nên hãy ghi hẹp nhất có
+# thể: một ngoại lệ cho `Deployment/vllm-*` không được che luôn guardrail.
+#
+# Đo lần cuối 12/10/2026, gate ở commit 6ff9d3b2. Chi tiết từng vi phạm:
+# docs/gate-compliance.md
+
+exceptions:
+  - rule: K8S-008
+    resources: ["Deployment/vllm-*"]
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-11-09"
+    reason: >-
+      Container vLLM cố ý không có limits.cpu. CFS throttling làm tăng đúng TTFT mà nền
+      tảng này tồn tại để đo, và p95 1590 ms ở 50 req/s được đo khi KHÔNG có limit — thêm
+      vào rồi vẫn báo cáo con số đó là sai. initContainer thì đã có limit, vì nó chạy
+      trước container chính và không nằm trong đường đo.
+      Cần chốt với gate: hoặc ngoại lệ dài hạn cho workload đo hiệu năng, hoặc đo lại TC1a
+      với limit rồi báo cáo con số mới.
+
+  - rule: K8S-004
+    resources: ["Deployment/vllm-*"]
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-11-09"
+    reason: >-
+      runAsNonRoot chưa bật trên pod vLLM. Image vllm/vllm-openai chạy bằng root ở nhiều
+      bản và có ràng buộc truy cập thiết bị GPU; bật mù sẽ làm pod không khởi động trên
+      node A10G. Phải thử trên cụm có GPU trước khi kết luận — kết luận đúng có thể là
+      ngoại lệ dài hạn. guardrail và Job rollout đã đạt quy tắc này.
+
+  - rule: K8S-013
+    resources: []
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-11-09"
+    reason: >-
+      readOnlyRootFilesystem chưa bật ở đâu cả. vLLM ghi cache biên dịch và cache
+      HuggingFace lúc khởi động; guardrail và Job rollout cũng chưa rõ ghi vào đâu. Bật mà
+      không mount đủ emptyDir vào các đường đó thì pod không lên, và lỗi chỉ lộ ra trên
+      cụm. Cần một lần thử trên cụm để biết mỗi tiến trình ghi vào đâu.
+
+  - rule: K8S-014
+    resources: ["Deployment/vllm-*", "Job/rollout-*"]
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-11-09"
+    reason: >-
+      automountServiceAccountToken chưa đặt false trên pod dùng IRSA (vLLM đọc trọng số từ
+      S3, Job rollout ghi báo cáo). Token của IRSA là projected volume riêng do webhook của
+      EKS tiêm, nên về lý thuyết tắt automount không ảnh hưởng — nhưng chưa kiểm chứng trên
+      cụm này, và nếu sai thì init container không tải được trọng số. guardrail đã đặt
+      false và đã có ServiceAccount riêng.
+
+  - rule: K8S-016
+    resources: []
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-12-31"
+    reason: >-
+      replicas: 1 cho mỗi model. Quota GPU đã duyệt là 16 vCPU, tức tối đa 4 node
+      g5.xlarge, và một 7B cần nguyên card để đạt 50 req/s — hai replica mỗi model là
+      không khả thi, không phải chưa làm. Gate cũng đang để quy tắc này ở mức `warn` vì
+      cụm kind của họ một node. Khai ở đây để khi nó lên `block` thì không ai bất ngờ.
+
+  - rule: IMG-004
+    resources: []
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-11-09"
+    reason: >-
+      Hai base image không nằm trong security/base-image-allowlist.yaml của gate, và DA#51
+      không sửa được một phía. `python:3.12-slim` — allowlist chỉ có 3.11, nhưng bộ test và
+      rollout-check.yml của repo này chạy 3.12, nên hạ về 3.11 là sai hướng; đường đúng là
+      thêm vào allowlist qua MR có số đo CVE theo docs/base-image-survey.md của gate.
+      `vllm/vllm-openai` — bench/runner build FROM image engine để dùng cùng CUDA runtime,
+      và image đó sẽ không bao giờ nằm trong một allowlist chung.
+
+  - rule: IMG-005
+    resources: []
+    owner: "Nguyễn Gia Bảo"
+    expires: "2026-10-26"
+    reason: >-
+      Chưa pin digest ở hai Dockerfile. Đây là việc của DA#51, sửa được, nhưng pin digest
+      khi base image còn chưa qua IMG-004 thì phải pin lại lần nữa sau khi allowlist chốt.
+      Hạn ngắn hơn các ngoại lệ khác vì nó không phụ thuộc vào ai.

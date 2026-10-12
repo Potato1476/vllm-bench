@@ -1,0 +1,244 @@
+# Quét security và quality bằng CHÍNH bộ policy của team Deployment Quality Gate.
+#
+# Không có `include: project:` ở GitHub Actions, và job của gate gắn cứng runner tag
+# "aws-cloud", $CI_JOB_TOKEN, Alpine và GitLab Container Registry. Nên DA#51 tái dùng phần
+# dùng lại được — policy và cấu hình, là dữ liệu khai báo — và tự viết phần chạy. Lý do đầy
+# đủ ở docs/cicd-plan.md §5; kết quả đo và danh sách ngoại lệ ở docs/gate-compliance.md.
+#
+# Hai tầng, chia như gate (ADR-005 của họ):
+#   FAST  mọi PR và mọi push. Không build image. Quét secret, CVE của phụ thuộc khai trong
+#         repo, Dockerfile, và manifest Kubernetes.
+#   FULL  chỉ push vào main. Build image guardrail, quét image, so với baseline CVE CỦA
+#         CHÍNH NÓ, ký theo digest, đẩy ECR.
+#
+# GHIM GATE THEO COMMIT, KHÔNG THEO `main`
+#
+# Repo gate chưa phát hành tag nào, nên chỉ ghim được SHA. Và phải ghim: cơ chế canary của
+# gate trigger pipeline của bên tiêu thụ bằng `strategy: depend`, thứ chỉ chạy được với
+# consumer GitLab — DA#51 nằm ngoài vùng bảo vệ đó, nên một thay đổi policy bên họ có thể
+# làm CI ở đây đỏ mà không báo trước. Nâng SHA là một PR có review, như mọi thay đổi khác.
+name: gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GATE_URL: https://gitlab.com/kdvh-gsm-vsf-group/deployment-quality-gate.git
+  # GATE_REF đọc từ security/gate-ref.txt ở bước đầu mỗi job, để SHA chỉ nằm một chỗ.
+  TRIVY_IMAGE: aquasec/trivy:0.74.0
+  CONFTEST_IMAGE: openpolicyagent/conftest:v0.70.0
+  KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1
+
+jobs:
+  fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml==6.0.2
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.0
+
+      # Vào $RUNNER_TEMP, NGOÀI thư mục làm việc. Repo gate chứa fixture có key giả cố ý;
+      # clone vào trong repo rồi quét sẽ ra một đống phát hiện không phải của DA#51, và
+      # cách chữa bằng --skip-dirs là thứ sớm muộn ai cũng quên.
+      - name: Kéo gate ở commit đã ghim
+        run: |
+          set -euo pipefail
+          GATE_REF=$(head -1 security/gate-ref.txt)
+          echo "GATE_REF=$GATE_REF" >> "$GITHUB_ENV"
+          git clone -q --no-checkout "$GATE_URL" "$RUNNER_TEMP/gate"
+          git -C "$RUNNER_TEMP/gate" fetch -q --depth 1 origin "$GATE_REF"
+          git -C "$RUNNER_TEMP/gate" checkout -q "$GATE_REF"
+          echo "gate @ $(git -C "$RUNNER_TEMP/gate" rev-parse --short HEAD)"
+
+      # Chiều nghịch nằm trong script: mỗi máy quét phải bắt được fixture vi phạm của gate
+      # TRƯỚC khi kết quả sạch trên mã thật được tin. Không bắt đủ thì thoát 2.
+      - name: Quét
+        run: GATE="$RUNNER_TEMP/gate" OUT="$RUNNER_TEMP/out" bash bench/scripts/gate_scan.sh
+
+      - name: Chấm theo mức của gate và ngoại lệ của DA#51
+        run: |
+          python3 bench/scripts/gate_check.py \
+            --gate "$RUNNER_TEMP/gate" --gate-ref "${GATE_REF:0:8}" \
+            --kyverno "$RUNNER_TEMP/out/kyverno.txt" \
+            --conftest "$RUNNER_TEMP/out/conftest.json" \
+            --trivy-secret "$RUNNER_TEMP/out/secret.json" \
+            --trivy-vuln "$RUNNER_TEMP/out/vuln.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-reports
+          path: ${{ runner.temp }}/out/*.json
+          retention-days: 30
+
+  # Chưa cấu hình thì bỏ qua êm, không làm đỏ mọi push vào main. Cùng kiểu với rollout.yml.
+  preflight:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      ready: ${{ steps.c.outputs.ready }}
+    steps:
+      - id: c
+        env:
+          ROLE: ${{ secrets.IMAGES_ROLE_ARN }}
+          REPO: ${{ secrets.ECR_GUARDRAIL_REPO }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$REPO" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::IMAGES_ROLE_ARN / ECR_GUARDRAIL_REPO chua cau hinh -- bo qua tang FULL. Xem docs/cicd-plan.md §5.1"
+          fi
+
+  full:
+    needs: [fast, preflight]
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write   # OIDC cho AWS, và cho cosign keyless
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml==6.0.2
+
+      - name: Kéo gate ở commit đã ghim
+        run: |
+          set -euo pipefail
+          GATE_REF=$(head -1 security/gate-ref.txt)
+          echo "GATE_REF=$GATE_REF" >> "$GITHUB_ENV"
+          git clone -q --no-checkout "$GATE_URL" "$RUNNER_TEMP/gate"
+          git -C "$RUNNER_TEMP/gate" fetch -q --depth 1 origin "$GATE_REF"
+          git -C "$RUNNER_TEMP/gate" checkout -q "$GATE_REF"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.IMAGES_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # Tag theo nội dung nguồn, giữ đúng quy ước `make guardrail-image` đang dùng: cùng
+      # mã nguồn thì cùng tag, và tag ECR là bất biến nên tag đã có thì bỏ qua build.
+      - name: Tag theo nội dung nguồn
+        id: tag
+        run: |
+          set -euo pipefail
+          h=$(git ls-files -s services/llm_pipeline guardrails rag prompt | sha256sum | cut -c1-12)
+          echo "tag=src-$h" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ secrets.ECR_GUARDRAIL_REPO }}:src-$h" >> "$GITHUB_OUTPUT"
+
+      - name: Image đã có chưa
+        id: exists
+        env:
+          REPO: ${{ secrets.ECR_GUARDRAIL_REPO }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name=${REPO##*/}
+          if aws ecr describe-images --repository-name "$name" --image-ids "imageTag=$TAG" \
+               --query 'imageDetails[0].imageDigest' --output text 2>/dev/null | grep -q sha256; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG da co tren ECR -- bo qua build, tag ECR la bat bien"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        if: steps.exists.outputs.skip == 'false'
+        run: docker build -f services/llm_pipeline/Dockerfile -t "${{ steps.tag.outputs.ref }}" .
+
+      # IMG-002/003: CVE của image, so với baseline CỦA CHÍNH IMAGE NÀY. Baseline của gate
+      # đo trên rag-service; dùng nó thì IMG-003 so hai image khác nhau, và doc của gate
+      # nói rõ service khác phải tự đo.
+      - name: Quét image và so baseline
+        if: steps.exists.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/gate:/gate:ro" -v "$RUNNER_TEMP/out:/out" "$TRIVY_IMAGE" \
+            image --config /gate/security/trivy-co-lap.yaml \
+            --ignorefile /gate/security/trivy-co-lap.trivyignore \
+            --severity CRITICAL,HIGH --exit-code 0 --format json --quiet \
+            --output /out/image.json "${{ steps.tag.outputs.ref }}"
+          python3 bench/scripts/gate_check.py \
+            --gate "$RUNNER_TEMP/gate" --gate-ref "${GATE_REF:0:8}" \
+            --trivy-vuln "$RUNNER_TEMP/out/image.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: SBOM
+        if: steps.exists.outputs.skip == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/out:/out" "$TRIVY_IMAGE" image --format cyclonedx --quiet \
+            --output /out/sbom.cdx.json "${{ steps.tag.outputs.ref }}"
+
+      - name: Đẩy ECR
+        if: steps.exists.outputs.skip == 'false'
+        id: push
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.tag.outputs.ref }}"
+          d=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ steps.tag.outputs.ref }}")
+          echo "digest=${d##*@}" >> "$GITHUB_OUTPUT"
+          echo "Image: \`${{ steps.tag.outputs.tag }}@${d##*@}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Keyless: chữ ký gắn với danh tính OIDC của workflow này, không có khoá bí mật nào
+      # phải giữ (docs/cicd-plan.md §5.1). Khác với manifest model -- chỗ đó cố ý dùng khoá
+      # KMS và không đẩy lên log công khai, vì "tổ chức X vừa ký artefact Y" là thông tin
+      # không mua lại được. Một image của repo public thì không có gì để giấu.
+      - uses: sigstore/cosign-installer@v3
+        if: steps.exists.outputs.skip == 'false'
+        with:
+          cosign-release: v3.1.3
+
+      - name: Ký theo digest
+        if: steps.exists.outputs.skip == 'false'
+        env:
+          REPO: ${{ secrets.ECR_GUARDRAIL_REPO }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$REPO@$DIGEST"
+          cosign verify "$REPO@$DIGEST" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            > /dev/null
+          echo "Đã ký và xác minh lại theo digest." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-reports
+          path: ${{ runner.temp }}/out/*.json
+          retention-days: 30
