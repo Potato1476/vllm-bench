@@ -94,7 +94,9 @@ jobs:
 
   # Chưa cấu hình thì bỏ qua êm, không làm đỏ mọi push vào main. Cùng kiểu với rollout.yml.
   preflight:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # workflow_dispatch cũng được, để chạy lại đường image theo yêu cầu mà không phải tạo
+    # một commit giả -- và để kiểm được cả tầng FULL khi chưa có cụm.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     outputs:
       ready: ${{ steps.c.outputs.ready }}
