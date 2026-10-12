@@ -165,10 +165,15 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          name=${REPO##*/}
-          if aws ecr describe-images --repository-name "$name" --image-ids "imageTag=$TAG" \
-               --query 'imageDetails[0].imageDigest' --output text 2>/dev/null | grep -q sha256; then
+          # Cat HOST, giu namespace: ten repository la "vllm-bench/guardrail", khong phai
+          # "guardrail". Dung ${REPO##*/} thi describe-images luon that bai, buoc nay luon
+          # bao "chua co", va lan chay sau day lai mot tag ECR bat bien da ton tai.
+          name=${REPO#*/}
+          d=$(aws ecr describe-images --repository-name "$name" --image-ids "imageTag=$TAG" \
+                --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [ "${d#sha256:}" != "$d" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$d" >> "$GITHUB_OUTPUT"
             echo "::notice::$TAG da co tren ECR -- bo qua build, tag ECR la bat bien"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -223,8 +228,10 @@ jobs:
       # ben canh, va cosign v3 khong phat hanh file do nua -- curl tra 404 (exit 22).
       # Cach duoi day la cach rollout.yml dang dung va da chay duoc: doi chieu
       # cosign_checksums.txt, thu ma ban phat hanh co that.
+      # KHONG dieu kien tren skip. Image co the da nam tren ECR ma chua ky -- dung trang
+      # thai sinh ra khi mot lan chay truoc day xong roi trat o buoc ky. Neu buoc nay cung
+      # bi bo qua thi image do khong bao gio duoc ky, va khong gi bao ra dieu do.
       - name: Cai cosign
-        if: steps.exists.outputs.skip == 'false'
         env:
           COSIGN_VERSION: v3.1.3
         run: |
@@ -238,12 +245,15 @@ jobs:
           cosign version | grep GitVersion
 
       - name: Ký theo digest
-        if: steps.exists.outputs.skip == 'false'
         env:
           REPO: ${{ secrets.ECR_GUARDRAIL_REPO }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          # Digest tu buoc day, hoac tu buoc kiem ton tai khi da bo qua build.
+          DIGEST: ${{ steps.push.outputs.digest || steps.exists.outputs.digest }}
         run: |
           set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "khong co digest -- build va kiem ton tai deu khong ra"; exit 1; }
+          # Ky lai mot image da co chu ky la vo hai: cosign them mot chu ky nua vao cung
+          # digest. Re hon viec phai biet truoc image nay da duoc ky hay chua.
           cosign sign --yes "$REPO@$DIGEST"
           cosign verify "$REPO@$DIGEST" \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
