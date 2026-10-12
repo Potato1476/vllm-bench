@@ -49,15 +49,56 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
 resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
 
+  # Don dep upload do. Khong co quy tac nay thi mot lan `aws s3 cp` dut giua duong de lai
+  # cac part tra tien mai -- da gap mot lan, va phai abort bang tay.
   rule {
-    id     = "expire-noncurrent"
+    id     = "abort-incomplete-uploads"
     status = "Enabled"
     filter {}
-    noncurrent_version_expiration {
-      noncurrent_days = 7
-    }
     abort_incomplete_multipart_upload {
       days_after_initiation = 3
+    }
+  }
+
+  # Ban cu cua MOI THU TRU models/ chi giu 7 ngay.
+  #
+  # Phai liet ke tung prefix chu khong dung filter rong roi them mot quy tac rieng cho
+  # models/: S3 ap DU moi quy tac khop, va khi hai quy tac doi nhau thi han NGAN hon
+  # thang. Mot quy tac "models/ giu 365 ngay" dat canh mot quy tac "toan bucket 7 ngay"
+  # vi vay khong co tac dung gi.
+  dynamic "rule" {
+    for_each = ["runs/", "datasets/", "metrics/", "audit/", "tfstate/"]
+    content {
+      id     = "expire-noncurrent-${replace(rule.value, "/", "")}"
+      status = "Enabled"
+      filter {
+        prefix = rule.value
+      }
+      noncurrent_version_expiration {
+        noncurrent_days = 7
+      }
+    }
+  }
+
+  # models/ giu ban cu MOT NAM.
+  #
+  # Mot version model theo hop dong khong bao gio duoc ghi de, nen binh thuong o day
+  # khong co ban cu nao va quy tac nay khong ton dong nao. No chi co tac dung dung luc
+  # can: khi mot file bi ghi de -- do key bi lo, hay do mot pipeline loi -- ban goc la
+  # thu duy nhat khop manifest da ky, va 7 ngay la qua ngan khi cum tat phan lon thoi
+  # gian va khong ai thay gi trong ca tuan.
+  #
+  # Thu CHAN hau qua van la init container bam lai tung file moi lan pod khoi dong: mot
+  # ban ghi de khong ky duoc lam pod khong len, chu khong duoc phuc vu. Quy tac nay chi
+  # de con duong QUAY LAI, khong phai de phat hien.
+  rule {
+    id     = "keep-model-versions"
+    status = "Enabled"
+    filter {
+      prefix = "models/"
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 365
     }
   }
 }
