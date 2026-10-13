@@ -13,13 +13,6 @@ qwen2.5-1.5b:
   phase: idle
   cards: 2
   phase_since: '2026-10-13T02:11:05Z'
-  watermark: '2026-10-13T01:23:10Z'
-  rejected:
-  - weights: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
-    reason: 'eval: trich dan 0/144 < 95%; khong cham duoc cong chan tan cong: chi
-      0/144 cau lanh duoc phuc vu, nen mot tan cong bi tu choi khong chung minh duoc
-      gi; p95 7419 ms o 12.0 req/s >= 3000 ms; loi 116/1586 > 1%'
-    at: '2026-10-13T02:11:05Z'
 qwen2.5-7b:
   stable:
     weights: models/Qwen2.5-7B-Instruct-AWQ
