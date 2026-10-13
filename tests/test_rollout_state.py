@@ -653,9 +653,15 @@ class SingleCardTrackTest(_Tmp):
         body["qwen2.5-7b"]["cards"] = 1
         self.assertEqual(self.load(body).track("qwen2.5-7b").card_count, 1)
 
-    def test_the_committed_state_can_host_a_rollout(self) -> None:
-        """Track nào trong catalog cũng phải rollout được, nếu không thì model mới lên S3
-        sẽ bị bỏ qua với một dòng `skipped` mà không ai đọc."""
+    def test_every_auto_rollout_track_has_enough_cards(self) -> None:
+        """Track nào CD sẽ đề xuất ứng viên cho thì phải đủ card, nếu không model mới lên
+        S3 sẽ bị bỏ qua với một dòng `skipped` mà không ai đọc.
+
+        Chỉ xét SỐ CARD, không gọi can_host_candidate(): hàm đó còn trả về lý do khi track
+        đang ở giữa một rollout, và đó là trạng thái đúng chứ không phải cấu hình sai. Bản
+        trước của test này gọi nó, nên nó bắt đỏ mọi PR của bot trong suốt một rollout --
+        tức luồng CD không bao giờ đi quá bước đầu tiên. Bắt được khi chạy thật ngày 13/10.
+        """
         import sys
         sys.path.insert(0, str(ROOT))
         from bench.scripts import rollout_controller as rc
@@ -665,5 +671,16 @@ class SingleCardTrackTest(_Tmp):
         self.assertTrue(tracked, "khong track nao bat auto_rollout")
         for name in tracked:
             with self.subTest(name):
-                self.assertEqual(rs.can_host_candidate(state.track(name)), "",
-                                 f"{name} khong rollout duoc")
+                self.assertGreaterEqual(
+                    state.track(name).card_count, 2,
+                    f"{name} bat auto_rollout nhung chi co "
+                    f"{state.track(name).card_count} card")
+
+    def test_a_track_mid_rollout_is_not_a_configuration_error(self) -> None:
+        """can_host_candidate() nói 'khong' cho một track đang evaluating, và đó là đúng.
+        Test cấu hình không được coi trạng thái tạm thời đó là lỗi."""
+        body = make(rs.EVALUATING)
+        body["qwen2.5-7b"]["cards"] = 2
+        track = self.load(body).track("qwen2.5-7b")
+        self.assertIn("phase", rs.can_host_candidate(track))
+        self.assertGreaterEqual(track.card_count, 2)
