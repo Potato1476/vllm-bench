@@ -5,17 +5,17 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rollout-eval-qwen2-5-1-5b-bc1db78c5c
+  name: rollout-canary-qwen2-5-1-5b-bc1db78c5c
   namespace: benchmark
   labels: &id001
     app.kubernetes.io/part-of: rollout
-    rollout/kind: eval
+    rollout/kind: canary
     rollout/id: qwen2-5-1-5b-bc1db78c5c
   annotations:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   backoffLimit: 1
-  activeDeadlineSeconds: 10800
+  activeDeadlineSeconds: 7200
   template:
     metadata:
       labels: *id001
@@ -25,19 +25,19 @@ spec:
       nodeSelector:
         workload: tooling
       containers:
-      - name: eval
+      - name: canary
         image: amazon/aws-cli:2.36.47
         command:
         - python3
         - /assets/rollout_jobs.py
         args:
-        - eval
+        - canary
         - --id
         - qwen2-5-1-5b-bc1db78c5c
         - --track
         - qwen2.5-1.5b
         - --report
-        - s3://$(S3_BUCKET)/runs/rollout/qwen2-5-1-5b-bc1db78c5c/eval.json
+        - s3://$(S3_BUCKET)/runs/rollout/qwen2-5-1-5b-bc1db78c5c/canary.json
         env:
         - name: S3_BUCKET
           valueFrom:
