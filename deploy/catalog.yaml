@@ -8,14 +8,14 @@
 #   canary_weight    phan tram traffic cho ung vien o buoc canary (1..50).
 #
 # Kiem bang: python3 bench/scripts/rollout_controller.py check-catalog
-qwen2.5-7b:
-  watch: models/qwen2.5-7b/
+llama3.1-8b:
+  watch: models/llama3.1-8b/
   allowed_signers: [external, mlops-model-ci]
-  # Tat trong buoi 13/10: track nay dang o 1 card nen khong host duoc ung vien. De `true`
-  # thi moi version 7B moi se bi bo qua voi mot dong `skipped` khong ai doc -- khai dung
-  # thuc te con hon. Bat lai cung luc voi cards: 2 trong state.yaml.
+  # 1 card nen chua rollout duoc -- khai dung thuc te. Muon bat: cards: 2 trong state.yaml
+  # (them mot node GPU, ~1,1 USD/gio) roi doi dong nay thanh true.
   auto_rollout: false
   canary_weight: 25
+
 qwen2.5-1.5b:
   watch: models/qwen2.5-1.5b/
   allowed_signers: [external, mlops-model-ci]

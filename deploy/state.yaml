@@ -4,6 +4,13 @@
 # paused: true dung MOI rollout o buoc ke tiep. Bat truoc khi do tai -- mot lan
 # rollout chen vao giua phep do lam cum chi con 3/4 dung luong va so TC1a sai.
 paused: false
+llama3.1-8b:
+  stable:
+    weights: models/llama3.1-8b/db1f81ad4b8c7e39777509fac66c652eb0a52f91
+    engine: vllm/vllm-openai:v0.29.0
+    weights_gib: 5.3361
+  phase: idle
+  cards: 1
 qwen2.5-1.5b:
   stable:
     weights: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
@@ -19,18 +26,3 @@ qwen2.5-1.5b:
   cards: 2
   phase_since: '2026-10-13T03:17:53Z'
   watermark: '2026-10-13T01:23:10Z'
-qwen2.5-7b:
-  stable:
-    weights: models/Qwen2.5-7B-Instruct-AWQ
-    engine: vllm/vllm-openai:v0.29.0
-    verify: false
-    reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
-  phase: idle
-  cards: 1
-  phase_since: '2026-10-12T14:48:42Z'
-  watermark: '2026-10-12T13:51:27Z'
-  rejected:
-  - weights: models/qwen2.5-7b/4da05a8edb55c6046cce958586c33b61da07bb79
-    reason: 'eval: trich dan 0/144 < 95%; p95 23276 ms o 12.0 req/s >= 3000 ms; loi
-      311/1586 > 1%'
-    at: '2026-10-12T14:48:42Z'

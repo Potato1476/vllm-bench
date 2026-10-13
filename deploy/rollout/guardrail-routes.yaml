@@ -12,6 +12,6 @@ metadata:
 data:
   routes.json: |
     {
-     "qwen2.5-1.5b": "http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1",
-     "qwen2.5-7b": "http://vllm-qwen2-5-7b-stable-a.inference.svc.cluster.local:8000/v1"
+     "llama3.1-8b": "http://vllm-llama3-1-8b-stable-a.inference.svc.cluster.local:8000/v1",
+     "qwen2.5-1.5b": "http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1"
     }

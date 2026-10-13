@@ -29,8 +29,8 @@ existingSecret:
 
 models:
   a:
-    publicName: qwen2.5-7b
-    upstreamModel: qwen2.5-7b
+    publicName: llama3.1-8b
+    upstreamModel: llama3.1-8b
     # LiteLLM must not bypass the pre/post-generation pipeline. The guardrail service
     # selects the matching vLLM backend after retrieval and input screening.
     apiBase: http://guardrail.llm-serving.svc.cluster.local:8080/v1
