@@ -20,7 +20,7 @@ spec:
         mode: solo-a
         quantization: none
         clusterConfigMap: cluster-config
-        replicaCount: 2
+        replicaCount: 1
         verifyManifest: false
         image:
           repository: vllm/vllm-openai
