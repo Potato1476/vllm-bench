@@ -20,15 +20,16 @@ spec:
         mode: solo-a
         quantization: none
         clusterConfigMap: cluster-config
-        replicaCount: 1
-        verifyManifest: false
+        replicaCount: 2
+        verifyManifest: true
         image:
           repository: vllm/vllm-openai
           tag: v0.29.0
         models:
           a:
             servedName: qwen2.5-1.5b
-            s3Prefix: models/Qwen2.5-1.5B-Instruct-AWQ
+            s3Prefix: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
+            weightsGiB: 1.5037
   destination:
     server: https://kubernetes.default.svc
     namespace: inference
