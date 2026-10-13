@@ -12,6 +12,19 @@ metadata:
 data:
   routes.json: |
     {
-     "qwen2.5-1.5b": "http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1",
+     "qwen2.5-1.5b": [
+      {
+       "url": "http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1",
+       "version": "stable",
+       "weight": 100
+      }
+     ],
+     "qwen2.5-1.5b-candidate": [
+      {
+       "url": "http://vllm-qwen2-5-1-5b-candidate-a.inference.svc.cluster.local:8000/v1",
+       "version": "candidate",
+       "weight": 100
+      }
+     ],
      "qwen2.5-7b": "http://vllm-qwen2-5-7b-stable-a.inference.svc.cluster.local:8000/v1"
     }
