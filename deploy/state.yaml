@@ -11,7 +11,7 @@ qwen2.5-1.5b:
     verify: false
     reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
   phase: idle
-  cards: 1
+  cards: 2
 qwen2.5-7b:
   stable:
     weights: models/Qwen2.5-7B-Instruct-AWQ
@@ -19,7 +19,7 @@ qwen2.5-7b:
     verify: false
     reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
   phase: idle
-  cards: 2
+  cards: 1
   phase_since: '2026-10-12T14:48:42Z'
   watermark: '2026-10-12T13:51:27Z'
   rejected:

@@ -11,13 +11,16 @@
 qwen2.5-7b:
   watch: models/qwen2.5-7b/
   allowed_signers: [external, mlops-model-ci]
-  auto_rollout: true
+  # Tat trong buoi 13/10: track nay dang o 1 card nen khong host duoc ung vien. De `true`
+  # thi moi version 7B moi se bi bo qua voi mot dong `skipped` khong ai doc -- khai dung
+  # thuc te con hon. Bat lai cung luc voi cards: 2 trong state.yaml.
+  auto_rollout: false
   canary_weight: 25
 qwen2.5-1.5b:
   watch: models/qwen2.5-1.5b/
   allowed_signers: [external, mlops-model-ci]
-  # TAM TAT cho buoi chay thu dau-cuoi 12/10: track nay ve 1 card de tong con 3 node GPU
-  # (~3,37 USD/gio) thay vi 4. Mot card van hop le khi idle; chi khong rollout duoc.
-  # Bat lai: cards: 2 trong state.yaml va auto_rollout: true o day.
-  auto_rollout: false
+  # Track dung de chung minh nhanh promote. Trong so 1,5 GiB nen pod ung vien len trong
+  # vai phut, va no khong phai model suy luan -- khac Qwen3-8B bi loai o cong danh gia
+  # ngay 12/10 vi khoi <think> lam token dau ra tang ~7 lan va bao hoa card duoi tai.
+  auto_rollout: true
   canary_weight: 25
