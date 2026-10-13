@@ -16,7 +16,12 @@ data:
       {
        "url": "http://vllm-qwen2-5-1-5b-stable-a.inference.svc.cluster.local:8000/v1",
        "version": "stable",
-       "weight": 100
+       "weight": 75
+      },
+      {
+       "url": "http://vllm-qwen2-5-1-5b-candidate-a.inference.svc.cluster.local:8000/v1",
+       "version": "candidate",
+       "weight": 25
       }
      ],
      "qwen2.5-1.5b-candidate": [
