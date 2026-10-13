@@ -6,19 +6,18 @@
 paused: false
 qwen2.5-1.5b:
   stable:
+    weights: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
+    engine: vllm/vllm-openai:v0.29.0
+    weights_gib: 1.5037
+  phase: promoting
+  previous:
     weights: models/Qwen2.5-1.5B-Instruct-AWQ
     engine: vllm/vllm-openai:v0.29.0
     verify: false
     reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
-  phase: canary
-  candidate:
-    weights: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
-    engine: vllm/vllm-openai:v0.29.0
-    weights_gib: 1.5037
-  canary_weight: 25
   candidate_since: '2026-10-13T02:31:51Z'
   cards: 2
-  phase_since: '2026-10-13T02:49:07Z'
+  phase_since: '2026-10-13T03:17:53Z'
   watermark: '2026-10-13T01:23:10Z'
 qwen2.5-7b:
   stable:
