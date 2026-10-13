@@ -142,6 +142,11 @@ def classify(status: int, body: dict, *, attack: bool) -> str:
     error = body.get("error") if isinstance(body.get("error"), dict) else {}
     code = str(error.get("code") or "")
     if code:
+        # Loi khong den tu engine la hong HARNESS, khong phai hanh vi cua model. Gop
+        # chung vao "refused" lam mot ung vien chua tung duoc hoi trong nhu mot ung vien
+        # tu choi moi thu -- va bao cao se do vi ly do sai.
+        if code in NOT_FROM_ENGINE:
+            return f"harness-{code}"
         if attack:
             return "blocked"
         return "refused-grounding" if code == "grounding" else "refused"
@@ -159,19 +164,44 @@ def classify(status: int, body: dict, *, attack: bool) -> str:
     return "cited" if (guardrail.get("cited") or CITATION.search(text)) else "uncited"
 
 
-def wait_until_served(model: str, question: str, deadline_s: float) -> bool:
-    """True once the engine behind `model` produces anything at all.
+# Chi ba ma nay nghia la yeu cau KHONG TOI DUOC engine -- hong o dinh tuyen, o ket noi,
+# hoac trong chinh guardrail.
+#
+# `injection` va `retrieval` KHONG nam day du cung khong phai model sinh ra chung: chan
+# mot tan cong la phong thu hoat dong, va "khong tim thay tai lieu" la mot quyet dinh that
+# cua guardrail. Gop chung vao day se lam cong an toan mat y nghia.
+NOT_FROM_ENGINE = {"invalid_request", "upstream", "internal"}
 
-    Anything below 500 counts: a grounding refusal still means the engine generated an
-    answer the guardrail then judged. 5xx and transport errors are the guardrail saying
-    the upstream is not there yet -- syncing weights, hashing, loading.
+
+def wait_until_served(model: str, question: str, deadline_s: float) -> bool:
+    """True khi engine dang sau `model` THAT SU tra loi.
+
+    KHONG chap nhan moi phan hoi duoi 500. Ban dau ham nay lam vay, va no la loi nghiem
+    trong nhat cua bo danh gia: luc `evaluating`, bang route co muc `<track>-candidate`
+    nhung no toi pod guardrail qua volume ConfigMap, ma kubelet dong bo cham toi 60-90
+    giay. Job chay ngay khi Argo tao ra no, nen no hoi guardrail truoc khi route kip toi,
+    nhan 400 "model is not routed by guardrail" -- mot ma duoi 500 -- va ket luan engine
+    da san sang. Sau do ca 144 cau vang deu nhan cung loi 400 do, va classify() dem chung
+    la "model tu choi".
+    
+    Ket qua: hai lan rollout lien tiep bi loai voi 144/144 "refused" tren hai model hoan
+    toan khac nhau, va khong lan nao engine duoc hoi mot cau nao. Mot cong luon tu choi
+    vo dung ngang mot cong luon cho qua, chi khac la no trong nhu dang lam viec.
     """
     end = time.monotonic() + deadline_s
+    last = ""
     while time.monotonic() < end:
-        status, _, _ = chat(model, question, timeout=30)
-        if 0 < status < 500:
+        status, body, _ = chat(model, question, timeout=60)
+        if status == 200:
             return True
+        code = str(((body.get("error") or {}) if isinstance(body, dict) else {}).get("code") or "")
+        # Mot lan tu choi o grounding van chung minh engine da sinh ra cau tra loi.
+        if status == 422 and code not in NOT_FROM_ENGINE:
+            return True
+        last = f"HTTP {status}" + (f" [{code}]" if code else "")
+        log(f"  chua san sang: {last}")
         time.sleep(20)
+    log(f"het han cho; lan cuoi: {last or 'khong phan hoi'}")
     return False
 
 
@@ -332,6 +362,17 @@ def job_eval(a: argparse.Namespace) -> dict:
     load_errors = sum(1 for status, _, _ in driver.samples if status == 0 or status >= 500)
 
     n = len(gold)
+    # Mot ung vien khong toi duoc engine thi khong co gi de cham. Bao cao phai noi dung
+    # chuyen do thay vi quy ket cho model.
+    broken = [c for c in cand if c.startswith("harness-")]
+    if len(broken) > n // 2:
+        kinds = sorted(set(broken))
+        return {"ok": False, "reasons": [
+            f"KHONG DANH GIA DUOC: {len(broken)}/{n} cau khong toi duoc engine ({', '.join(kinds)}). "
+            "Thuong la bang route chua toi guardrail -- kiem ConfigMap guardrail-routes va "
+            "log guardrail. Day khong phai ket luan ve model."],
+            "metrics": {"gold": n, "harness_failures": len(broken),
+                        "classes": {"candidate": _histogram(cand)}}}
     cited = cand.count("cited")
     refused_c, refused_s = cand.count("refused-grounding"), stable.count("refused-grounding")
     blocked = attack_results.count("blocked")

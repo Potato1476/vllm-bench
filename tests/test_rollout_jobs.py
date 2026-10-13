@@ -156,3 +156,58 @@ class AttackGateMeaningTest(unittest.TestCase):
         src = inspect.getsource(rj.job_eval)
         self.assertIn("blocked_rate_meaningful", src)
         self.assertIn("khong cham duoc cong chan tan cong", src)
+
+
+class HarnessFailureTest(unittest.TestCase):
+    """Một yêu cầu không tới được engine không phải là model từ chối.
+
+    Hai lần rollout liên tiếp bị loại với 144/144 "refused" trên hai model hoàn toàn khác
+    nhau, và không lần nào engine được hỏi một câu. Nguyên nhân: lúc `evaluating`, bảng
+    route có mục `<track>-candidate` nhưng nó tới pod guardrail qua volume ConfigMap mà
+    kubelet đồng bộ chậm; Job hỏi trước khi route kịp tới, nhận 400 "model is not routed",
+    và `wait_until_served` coi mọi mã dưới 500 là "engine đã sẵn sàng".
+    """
+
+    def test_an_unrouted_model_is_a_harness_failure_not_a_refusal(self) -> None:
+        body = {"error": {"code": "invalid_request",
+                          "message": "model is not routed by guardrail: x-candidate"}}
+        self.assertEqual(rj.classify(400, body, attack=False), "harness-invalid_request")
+
+    def test_an_unreachable_engine_is_a_harness_failure(self) -> None:
+        for code in ("upstream", "internal"):
+            with self.subTest(code):
+                self.assertTrue(rj.classify(400, {"error": {"code": code}},
+                                            attack=False).startswith("harness-"))
+
+    def test_a_blocked_attack_is_still_a_defence_not_a_harness_failure(self) -> None:
+        """injection và retrieval là quyết định thật của guardrail, không phải hỏng."""
+        self.assertEqual(rj.classify(400, {"error": {"code": "injection"}}, attack=True),
+                         "blocked")
+        self.assertEqual(rj.classify(422, {"error": {"code": "retrieval"}}, attack=False),
+                         "refused")
+
+    def test_waiting_does_not_accept_an_unrouted_model_as_ready(self) -> None:
+        calls = []
+
+        def fake(model, question, timeout=60.0):
+            calls.append(model)
+            if len(calls) < 3:
+                return 400, {"error": {"code": "invalid_request"}}, 1.0
+            return 200, {"choices": [{"message": {"content": "ok [DOC-1]"}}]}, 1.0
+
+        with mock.patch.object(rj, "chat", fake), mock.patch.object(rj.time, "sleep"):
+            self.assertTrue(rj.wait_until_served("m-candidate", "q", 600))
+        self.assertEqual(len(calls), 3, "phai doi qua hai lan 400 roi moi coi la san sang")
+
+    def test_waiting_gives_up_rather_than_declaring_an_unrouted_model_ready(self) -> None:
+        with mock.patch.object(rj, "chat",
+                               lambda *a, **k: (400, {"error": {"code": "invalid_request"}}, 1.0)), \
+                mock.patch.object(rj.time, "sleep"), \
+                mock.patch.object(rj.time, "monotonic", side_effect=[0, 0, 10, 700]):
+            self.assertFalse(rj.wait_until_served("m-candidate", "q", 600))
+
+    def test_the_report_blames_the_harness_not_the_model(self) -> None:
+        import inspect
+        src = inspect.getsource(rj.job_eval)
+        self.assertIn("KHONG DANH GIA DUOC", src)
+        self.assertIn("Day khong phai ket luan ve model", src)
