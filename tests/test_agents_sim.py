@@ -42,9 +42,29 @@ class CoverageTest(unittest.TestCase):
         self.assertGreaterEqual(len(grounded), 2, "khong du duong co trich dan")
         self.assertGreaterEqual(len(plain), 2, "khong du duong khong-RAG")
 
+    def test_every_workload_targets_a_track_that_exists(self) -> None:
+        """Mỗi workload phải gọi một model thật sự đang được phục vụ.
+
+        Ghim vào `deploy/state.yaml` chứ không vào một chuỗi cố định. Ngày 15/10 track
+        `qwen2.5-7b` được thay bằng `llama3.1-8b`, còn danh sách agent thì không ai sửa:
+        bốn trong tám workload gọi một model không còn tồn tại, nhận 400, và trình mô
+        phỏng báo "24/24 mẫu tấn công KHÔNG bị chặn" trong khi phòng thủ vẫn nguyên vẹn.
+        Một cảnh báo an toàn sai là một cảnh báo sẽ bị phớt lờ lần sau.
+        """
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from bench.scripts import rollout_state as rs
+        served = set(rs.load(ROOT / "deploy" / "state.yaml").tracks)
+        for w in WORKLOADS:
+            base = w.model.removesuffix("-plain")
+            with self.subTest(w.agent_id):
+                self.assertIn(base, served,
+                              f"{w.agent_id} goi {w.model}, khong co track nao phuc vu")
+
     def test_both_model_tiers_are_exercised(self) -> None:
-        self.assertTrue(any("7b" in w.model for w in WORKLOADS))
-        self.assertTrue(any("1.5b" in w.model for w in WORKLOADS))
+        """Mô phỏng phải trải khắp nền tảng, không dồn vào một model."""
+        bases = {w.model.removesuffix("-plain") for w in WORKLOADS}
+        self.assertGreaterEqual(len(bases), 2, f"chi dung mot model: {bases}")
 
     def test_output_budgets_actually_differ(self) -> None:
         """A classifier emitting two words and a summariser emitting a paragraph put very

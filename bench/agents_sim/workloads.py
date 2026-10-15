@@ -71,7 +71,7 @@ WORKLOADS: tuple[Workload, ...] = (
     Workload(
         agent_id="da19",
         title="Tra cứu định nghĩa chỉ số",
-        model="qwen2.5-7b",
+        model="llama3.1-8b",
         inputs=(
             "Một chuyến xe được tính là hoàn thành khi đáp ứng điều kiện nào?",
             "GBV được tính như thế nào và loại trừ những khoản nào?",
@@ -97,7 +97,7 @@ WORKLOADS: tuple[Workload, ...] = (
     Workload(
         agent_id="da45",
         title="Quy trình điều tra khi chỉ số biến động",
-        model="qwen2.5-7b",
+        model="llama3.1-8b",
         inputs=(
             "GBV tuần này giảm so với tuần trước, cần kiểm tra những gì trước?",
             "Tỷ lệ hoàn thành giảm đột ngột ở một thành phố, điều tra theo thứ tự nào?",
@@ -124,7 +124,7 @@ WORKLOADS: tuple[Workload, ...] = (
     Workload(
         agent_id="da32",
         title="Trích xuất trường có cấu trúc từ mô tả sự cố",
-        model="qwen2.5-7b-plain",
+        model="llama3.1-8b-plain",
         system="Trích xuất thời gian, địa điểm và loại sự cố. Trả về đúng ba dòng "
                "dạng `thoi_gian: ...`, `dia_diem: ...`, `loai_su_co: ...`.",
         inputs=_INCIDENTS,
@@ -145,7 +145,7 @@ WORKLOADS: tuple[Workload, ...] = (
         agent_id="da39",
         title="Tóm tắt nhiều phản hồi thành chủ đề",
         # The long-input shape. Everything else here sends one or two lines.
-        model="qwen2.5-7b-plain",
+        model="llama3.1-8b-plain",
         system="Đọc các phản hồi và nêu tối đa ba chủ đề nổi bật, mỗi chủ đề một dòng.",
         inputs=("\n".join(f"- {f}" for f in _FEEDBACK),),
         max_tokens=192,
