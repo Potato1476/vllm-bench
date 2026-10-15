@@ -16,13 +16,12 @@ qwen2.5-1.5b:
     weights: models/qwen2.5-1.5b/3ecffa0ceb27851800f45519bab9c457a04405e1
     engine: vllm/vllm-openai:v0.29.0
     weights_gib: 1.5037
-  phase: watching
+  phase: idle
   previous:
     weights: models/Qwen2.5-1.5B-Instruct-AWQ
     engine: vllm/vllm-openai:v0.29.0
     verify: false
     reason: checkpoint dua len tay truoc khi co hop dong model; chua co manifest
-  candidate_since: '2026-10-13T02:31:51Z'
   cards: 2
-  phase_since: '2026-10-13T09:25:38Z'
+  phase_since: '2026-10-15T06:19:15Z'
   watermark: '2026-10-13T01:23:10Z'
